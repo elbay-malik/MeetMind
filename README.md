@@ -8,8 +8,9 @@ the entire video on the user's machine. Audio is extracted and compressed **in t
 browser** with ffmpeg.wasm; only ~7-11 MB of 16 kHz mono Opus per meeting hour is ever
 uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
 
-> Status: early development. Currently built: repo scaffold, five-screen skeleton, and
-> the ffmpeg.wasm audio-extraction spike ([ADR-0002](docs/adr/0002-ffmpeg-spike-results.md)).
+> Status: early development. Currently built: repo scaffold, five-screen skeleton, the
+> ffmpeg.wasm audio-extraction spike ([ADR-0002](docs/adr/0002-ffmpeg-spike-results.md)),
+> and a working in-browser upload → audio-extraction flow on the home screen.
 
 ## Architecture
 
@@ -76,10 +77,11 @@ pnpm dev            # http://localhost:3000
 
 ## Roadmap
 
-Phases 0-2 of the [playbook](docs/PLAYBOOK.md) are done (scaffold + FFmpeg spike).
-Next: upload & storage (R2/Supabase), Groq Whisper transcription with chunk/timestamp
-merging, transcript ↔ waveform sync, structured summaries, pgvector semantic Q&A,
-archive & cross-meeting search, rate limiting, deployment on Cloudflare Workers.
+Phases 0-2 of the [playbook](docs/PLAYBOOK.md) are done (scaffold + FFmpeg spike), and
+the home screen already extracts audio in-browser. Next: upload & storage (R2/Supabase),
+Groq Whisper transcription with chunk/timestamp merging, transcript ↔ waveform sync,
+structured summaries, pgvector semantic Q&A, archive & cross-meeting search, rate
+limiting, deployment on Cloudflare Workers.
 
 ## License
 
