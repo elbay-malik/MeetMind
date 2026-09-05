@@ -75,11 +75,20 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
       return { size: length, contentType: res.headers.get('content-type') }
     },
 
-    async get(key): Promise<StoredAudio | null> {
+    async get(key, maxBytes): Promise<StoredAudio | null> {
       const res = await client.fetch(objectUrl(key).href, { method: 'GET' })
       if (res.status === 404) return null
       if (!res.ok) throw new Error(`R2 GET ${key} failed with HTTP ${res.status}`)
+      // Refuse before buffering. The object is still writable for as long as the
+      // presigned PUT lives, so its size at completion does not bind here.
+      const declared = Number(res.headers.get('content-length'))
+      if (maxBytes !== undefined && Number.isFinite(declared) && declared > maxBytes) {
+        throw new Error(`R2 object ${key} is ${declared} bytes, over the ${maxBytes}-byte limit`)
+      }
       const bytes = new Uint8Array(await res.arrayBuffer())
+      if (maxBytes !== undefined && bytes.byteLength > maxBytes) {
+        throw new Error(`R2 object ${key} is ${bytes.byteLength} bytes, over the ${maxBytes}-byte limit`)
+      }
       // Trust the body over the header: the length we act on is the length we
       // actually received.
       return { bytes, size: bytes.byteLength, contentType: res.headers.get('content-type') }

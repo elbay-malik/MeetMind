@@ -18,17 +18,21 @@ export interface StoredObject {
  * store using a time-limited URL minted by the server.
  *
  * The server inspects and deletes objects, and from Phase 4 also reads them, to
- * hand the audio to the speech-to-text provider. Reading is bounded: the upload
- * path caps every object at {@link MAX_AUDIO_BYTES}, so `get` never buffers more
- * than 25 MB. The raw video still never reaches any of this — only the audio the
- * browser already compressed, which was always destined for transcription.
+ * hand the audio to the speech-to-text provider. Callers pass the size they will
+ * accept: the cap checked at upload does not bind later, because an R2 object
+ * stays writable for as long as its presigned PUT lives. The raw video still
+ * never reaches any of this — only the audio the browser already compressed,
+ * which was always destined for transcription.
  */
 export interface AudioStore {
   readonly kind: 'r2' | 'local'
   presignPut(input: PresignPutInput): Promise<UploadInstructions>
   head(key: string): Promise<StoredObject | null>
-  /** The object's bytes, or `null` when it is not there. */
-  get(key: string): Promise<StoredAudio | null>
+  /**
+   * The object's bytes, or `null` when it is not there. `maxBytes` is refused
+   * before the body is buffered where the driver can tell in advance.
+   */
+  get(key: string, maxBytes?: number): Promise<StoredAudio | null>
   delete(key: string): Promise<void>
 }
 

@@ -1,5 +1,6 @@
+import { isError } from 'h3'
 import type { Meeting, TranscriptSegment } from '#shared/types/meeting'
-import { AUDIO_MIME } from '#shared/utils/meeting'
+import { AUDIO_MIME, MAX_AUDIO_BYTES } from '#shared/utils/meeting'
 import { useAudioStore } from '../../../utils/storage'
 import { useMeetingRepository, useTranscriptRepository } from '../../../utils/db'
 import { conflict, notFound, requireMeetingId } from '../../../utils/http'
@@ -7,12 +8,21 @@ import { useTranscriber } from '../../../utils/transcription'
 import { TranscriptionError } from '../../../utils/transcription/transcriber'
 
 /**
+ * How long a claim is honoured before another caller may take it over. A crash,
+ * a deploy or a Workers eviction between claiming and finishing would otherwise
+ * leave the meeting in `transcribing` with nothing running and no way back.
+ */
+const CLAIM_LEASE_MS = 15 * 60_000
+
+/** Statuses that mean transcription has already happened. */
+const PAST_TRANSCRIPTION = ['summarizing', 'indexing', 'ready']
+
+/**
  * Transcribe a meeting's stored audio and persist the segments.
  *
  * Phase 4 has no orchestrator — that is Phase 9 — so this is invoked directly.
  * It is safe to call twice: an already-transcribed meeting returns what it has,
- * and the `transcribing` claim keeps two concurrent callers from both spending
- * the provider's quota on the same audio.
+ * and the claim keeps concurrent callers from both spending the provider's quota.
  */
 export default defineEventHandler(async (event): Promise<{
   meeting: Meeting
@@ -24,38 +34,33 @@ export default defineEventHandler(async (event): Promise<{
 
   const meeting = await repo.get(id)
   if (!meeting) throw notFound('Meeting not found')
-
-  // Already past transcription: hand back what is stored rather than paying to
-  // redo it.
-  if (['summarizing', 'indexing', 'ready'].includes(meeting.status)) {
+  if (PAST_TRANSCRIPTION.includes(meeting.status)) {
     return { meeting, segments: await transcripts.listForMeeting(id) }
   }
-  if (meeting.status === 'transcribing') {
-    throw conflict('Transcription is already running for this meeting')
-  }
-  if (meeting.status !== 'uploaded') {
-    throw conflict(`Meeting is ${meeting.status}; it has no audio ready to transcribe`)
-  }
 
-  // Claim atomically. The checks above are a courtesy for the common case; this
-  // is what actually stops two callers both spending the transcription quota on
-  // the same audio, because only one of them can move the row out of `uploaded`.
-  const claimed = await repo.claim(id, 'uploaded', { status: 'transcribing', errorMessage: null })
+  const claimed = await claim(repo, meeting)
   if (!claimed) {
-    // Someone else got there first, or the meeting moved on. Re-read rather than
-    // guess which.
+    // Lost the race, or the meeting moved on. Re-read rather than guess which.
     const current = await repo.get(id)
     if (!current) throw notFound('Meeting not found')
-    if (['summarizing', 'indexing', 'ready'].includes(current.status)) {
+    if (PAST_TRANSCRIPTION.includes(current.status)) {
       return { meeting: current, segments: await transcripts.listForMeeting(id) }
     }
-    throw conflict(`Meeting is ${current.status}; transcription cannot start`)
+    throw conflict(current.status === 'transcribing'
+      ? 'Transcription is already running for this meeting'
+      : `Meeting is ${current.status}; it has no audio ready to transcribe`)
   }
 
   try {
-    const audio = await useAudioStore(event).get(meeting.audioKey)
+    const audio = await useAudioStore(event).get(meeting.audioKey, MAX_AUDIO_BYTES)
     if (!audio) {
       throw new TranscriptionError('The meeting audio is missing from storage', 409, false)
+    }
+    if (audio.size !== meeting.audioBytes) {
+      // The object changed after we verified it at upload.
+      throw new TranscriptionError(
+        `Stored audio is ${audio.size} bytes, expected ${meeting.audioBytes}`, 409, false,
+      )
     }
 
     const result = await useTranscriber(event).transcribe({
@@ -66,26 +71,55 @@ export default defineEventHandler(async (event): Promise<{
     await transcripts.replaceForMeeting(id, result.segments)
 
     const updated = await repo.update(id, { status: 'summarizing', errorMessage: null })
-    if (!updated) throw notFound('Meeting not found')
-    return { meeting: updated, segments: result.segments }
+    // The transcript is stored either way; a missing row here is not a reason to
+    // discard it.
+    return { meeting: updated ?? { ...claimed, status: 'summarizing' }, segments: result.segments }
   }
   catch (err) {
-    // Release the claim, or the meeting is stuck in `transcribing` forever with
-    // no way for the user to retry.
-    const message = err instanceof TranscriptionError
-      ? err.message
-      : err instanceof Error ? err.message : String(err)
-    const retryable = err instanceof TranscriptionError ? err.retryable : false
+    // An h3 error already says what it means; do not rewrite it as a 500 or
+    // record it as a transcription failure. h3 marks these with a static on the
+    // class, so its own predicate is the only correct test.
+    if (isError(err)) {
+      await repo.update(id, { status: 'uploaded', errorMessage: null })
+      throw err
+    }
+
+    const transcription = err instanceof TranscriptionError ? err : null
+    const message = transcription?.message ?? (err instanceof Error ? err.message : String(err))
+    // Default to retryable. A storage or database blip is transient, and the
+    // worse mistake is parking a perfectly good meeting on `failed`, which
+    // nothing can move again.
+    const retryable = transcription ? transcription.retryable : true
     await repo.update(id, {
-      // A retryable failure goes back to `uploaded` so the user can try again;
-      // anything else is terminal until someone intervenes.
       status: retryable ? 'uploaded' : 'failed',
       errorMessage: message,
     })
     throw createError({
-      statusCode: err instanceof TranscriptionError ? err.statusCode : 500,
+      statusCode: transcription?.statusCode ?? 500,
       statusMessage: 'Transcription failed',
       message,
     })
   }
 })
+
+/**
+ * Take the meeting for transcription, if it is ours to take. Also recovers a
+ * claim whose holder is gone: `transcribing` older than the lease is stale,
+ * since nothing renews it.
+ */
+async function claim(
+  repo: ReturnType<typeof useMeetingRepository>,
+  meeting: Meeting,
+): Promise<Meeting | null> {
+  const patch = { status: 'transcribing' as const, errorMessage: null }
+  if (meeting.status === 'uploaded') return repo.claim(meeting.id, 'uploaded', patch)
+
+  const staleSince = Date.now() - CLAIM_LEASE_MS
+  if (meeting.status === 'transcribing' && new Date(meeting.updatedAt).getTime() < staleSince) {
+    return repo.claim(meeting.id, 'transcribing', patch)
+  }
+  // `failed` is recoverable: the audio is still there, and the user asking again
+  // is exactly the retry the status was recorded for.
+  if (meeting.status === 'failed') return repo.claim(meeting.id, 'failed', patch)
+  return null
+}

@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -136,6 +136,43 @@ describe('POST /api/meetings/:id/transcribe', () => {
     // A second call is served from storage rather than re-transcribed.
     const again = await transcribe(meeting.id)
     expect(again.meeting.status).toBe('summarizing')
+  })
+})
+
+describe('recovery', () => {
+  it('lets a meeting that failed be transcribed again once the cause is gone', async () => {
+    const meeting = await uploadedMeeting()
+    const path = join(dataDir, 'audio', ...meeting.audioKey.split('/'))
+    const audioBytes = await readFile(path)
+    const meta = await readFile(`${path}.meta`)
+
+    // Remove the audio so transcription fails terminally.
+    await rm(path)
+    const failed = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    expect(failed.status).toBe(409)
+    const { meeting: broken } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    expect(broken.status).toBe('failed')
+    expect(broken.errorMessage).toMatch(/missing from storage/)
+
+    // Put it back: asking again must work rather than being refused forever.
+    await writeFile(path, audioBytes)
+    await writeFile(`${path}.meta`, meta)
+    const { meeting: recovered, segments } = await transcribe(meeting.id)
+    expect(recovered.status).toBe('summarizing')
+    expect(recovered.errorMessage).toBeNull()
+    expect(segments.length).toBeGreaterThan(0)
+  })
+
+  it('refuses when the stored audio no longer matches what was verified', async () => {
+    const meeting = await uploadedMeeting()
+    const path = join(dataDir, 'audio', ...meeting.audioKey.split('/'))
+    // Swap the object for a different one, as a replayed upload URL could.
+    await writeFile(path, new Uint8Array(audio.byteLength + 500))
+
+    const res = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    expect(res.status).toBe(409)
+    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    expect(after.errorMessage).toMatch(/expected \d+/)
   })
 })
 

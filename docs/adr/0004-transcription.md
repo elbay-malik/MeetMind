@@ -23,11 +23,13 @@ Chunking is not built, for three independent reasons:
   size, a minimum file length and a minimum billed length, and no maximum length
   of any kind. Its own docs frame chunking purely as a size workaround: "For
   audio files that exceed our size limits".
-- **The size limit cannot be reached.** The upload cap is enforced three times
-  before a byte is stored — the zod schema at registration, a Postgres CHECK, and
+- **The size limit cannot be reached through the app.** The cap is checked at
+  registration by the zod schema, by a Postgres CHECK on the row, and by
   `inspectStoredAudio` at completion, which deletes the object and fails the row.
-  Every object that can exist is already a legal single request. The playbook's
-  condition, "for audio over 25MB", is unreachable.
+  Those bound what the app will *record*, not what the bucket can *hold*: an R2
+  object stays writable for as long as its presigned PUT lives. So the read path
+  passes its own limit and refuses anything larger, and transcription additionally
+  requires the stored size to still match what completion verified.
 - **Chunking would not lift the limit that actually binds.** The real ceiling is
   audio-seconds per hour: 7,200 on the free tier, or two hours of audio per clock
   hour. That budget is consumed by audio submitted, not by request count. Nineteen
@@ -70,7 +72,13 @@ rather than quietly widen it. `AudioStore.get` buffers the object and posts it t
 the provider. This does not touch the privacy thesis — the raw video still never
 leaves the browser, and the compressed audio was always destined for
 transcription — but the architectural claim was narrower than the privacy one and
-is now retired. The read is bounded by construction at 25 MB.
+is now retired.
+
+The read is bounded because the caller says so, not by construction: `get` takes
+the maximum it will accept and refuses larger objects before buffering. An
+earlier draft of this record claimed the 25 MB upload cap made that unnecessary.
+It does not, because the object remains writable while its presigned PUT is
+valid, so the size verified at completion is not the size read back later.
 
 ### 6. Transcription claims the meeting atomically before doing any work.
 
@@ -97,6 +105,14 @@ new database constraint for no behavioural gain.
   the provider. The route surfaces that as a quota message rather than a raw 429,
   and marks it retryable, but the gap is real and only a paid tier or Phase 9
   scheduling closes it.
+- A failure leaves the meeting where it can be retried. Only a cause that
+  retrying cannot fix — missing audio, or audio that no longer matches what was
+  verified — is terminal, and even that is recoverable once the cause is gone.
+  A claim older than its lease can be taken over, so a crash mid-transcription
+  does not strand the meeting.
+- Transcript reads are paged. PostgREST caps result sets server-side and returns
+  a short array with no error, which would have silently truncated any meeting
+  past roughly ninety minutes.
 - Re-running transcription is a replacement, not a duplication: the composite
   primary key `(meeting_id, idx)` makes it idempotent. PostgREST has no
   cross-call transactions, so replacing a transcript is a delete followed by an

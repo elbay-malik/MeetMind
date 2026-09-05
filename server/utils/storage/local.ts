@@ -100,11 +100,14 @@ export function createLocalAudioStore(options: { dataDir: string, secret: string
       return { size, contentType: meta?.contentType ?? null }
     },
 
-    async get(key): Promise<StoredAudio | null> {
+    async get(key, maxBytes): Promise<StoredAudio | null> {
       const s = await storage()
       const raw = await s.getItemRaw<Uint8Array>(key)
       if (!raw) return null
       const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw)
+      if (maxBytes !== undefined && bytes.byteLength > maxBytes) {
+        throw new Error(`Object ${key} is ${bytes.byteLength} bytes, over the ${maxBytes}-byte limit`)
+      }
       const meta = await s.getItem<ObjectMeta>(metaKey(key))
       return { bytes, size: bytes.byteLength, contentType: meta?.contentType ?? null }
     },

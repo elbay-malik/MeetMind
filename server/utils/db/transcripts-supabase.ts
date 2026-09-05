@@ -47,12 +47,22 @@ export function createSupabaseTranscriptRepository(options: SupabaseOptions): Tr
     },
 
     async listForMeeting(meetingId) {
-      const { data, error } = await table()
-        .select()
-        .eq('meeting_id', meetingId)
-        .order('idx', { ascending: true })
-      if (error) fail('transcript select', error)
-      return data.map(rowToSegment)
+      // PostgREST enforces a server-side row cap (Supabase's "Max rows",
+      // 1000 by default) and returns a short array with no error and no signal.
+      // Whisper emits a segment every few seconds, so a 90-minute meeting
+      // reaches that cap and would be silently cut in half. Page explicitly.
+      const PAGE = 1000
+      const segments = []
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await table()
+          .select()
+          .eq('meeting_id', meetingId)
+          .order('idx', { ascending: true })
+          .range(from, from + PAGE - 1)
+        if (error) fail('transcript select', error)
+        segments.push(...data.map(rowToSegment))
+        if (data.length < PAGE) return segments
+      }
     },
   }
 }
