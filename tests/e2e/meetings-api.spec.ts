@@ -70,6 +70,33 @@ describe('POST /api/meetings', () => {
     expect(new Date(upload.expiresAt).getTime()).toBeGreaterThan(Date.now())
   })
 
+  it('refuses a body larger than the registration payload needs', async () => {
+    // h3 buffers the whole body before any schema runs, so the limit has to be
+    // applied from the Content-Length before reading.
+    const res = await fetch('/api/meetings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, title: 'x'.repeat(8192) }),
+    })
+    expect(res.status).toBe(413)
+  })
+
+  it('requires a Content-Length so the body cannot be streamed past the limit', async () => {
+    const res = await fetch('/api/meetings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(JSON.stringify(validBody)))
+          controller.close()
+        },
+      }),
+      // @ts-expect-error -- undici needs duplex for stream bodies; not in lib.dom's RequestInit
+      duplex: 'half',
+    })
+    expect(res.status).toBe(411)
+  })
+
   it('rejects malformed payloads', async () => {
     for (const body of [
       { ...validBody, audioBytes: MAX_AUDIO_BYTES + 1 },

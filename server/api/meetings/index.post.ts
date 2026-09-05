@@ -9,11 +9,27 @@ import { badRequest } from '../../utils/http'
 const UPLOAD_URL_TTL_SEC = 15 * 60
 
 /**
+ * The registration payload is a few hundred bytes. h3 buffers the whole body
+ * before any schema runs and applies no limit of its own, so bound it here
+ * rather than letting an arbitrary body into memory.
+ */
+const MAX_BODY_BYTES = 4096
+
+/**
  * Register a meeting and hand the browser a one-shot upload URL for its
  * compressed audio. The row starts as `pending_upload`; the client confirms
  * the upload via `POST /api/meetings/:id/complete`.
  */
 export default defineEventHandler(async (event): Promise<CreateMeetingResponse> => {
+  // Checked before reading, so an oversized body is refused rather than buffered.
+  const declaredLength = Number(getRequestHeader(event, 'content-length'))
+  if (!Number.isFinite(declaredLength)) {
+    throw createError({ statusCode: 411, statusMessage: 'Content-Length is required' })
+  }
+  if (declaredLength > MAX_BODY_BYTES) {
+    throw createError({ statusCode: 413, statusMessage: 'Payload Too Large' })
+  }
+
   const parsed = createMeetingBodySchema.safeParse(await readBody(event))
   if (!parsed.success) throw badRequest('Invalid meeting payload', parsed.error)
   const input = parsed.data

@@ -45,6 +45,7 @@ const uploadLabel = computed(() => ({
   uploading: 'Uploading audio…',
   confirming: 'Confirming upload…',
   done: 'Uploaded',
+  cancelled: 'Upload cancelled',
   error: 'Upload failed',
 }[uploader.state.status]))
 

@@ -219,7 +219,13 @@ export function useAudioExtract() {
 
   function cancel() {
     if (!activeJobId) return
+    // Tear the worker down instead of reusing it. The cancelled job may still
+    // be inside ffmpeg.exec, so a reused worker could end up running two jobs
+    // at once, and ffmpeg.wasm never reclaims its heap anyway. The next
+    // extract() spawns a fresh one.
     ensureWorker().postMessage({ type: 'cancel' } satisfies ExtractRequest)
+    worker?.terminate()
+    worker = null
     state.elapsedMs = performance.now() - t0
     state.status = 'cancelled'
     stopTimers()

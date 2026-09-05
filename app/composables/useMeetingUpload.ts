@@ -1,6 +1,7 @@
 import type { CreateMeetingInput, CreateMeetingResponse, Meeting } from '#shared/types/meeting'
 
-export type UploadStatus = 'idle' | 'registering' | 'uploading' | 'confirming' | 'done' | 'error'
+export type UploadStatus
+  = 'idle' | 'registering' | 'uploading' | 'confirming' | 'done' | 'cancelled' | 'error'
 
 export interface UploadState {
   status: UploadStatus
@@ -10,6 +11,14 @@ export interface UploadState {
   totalBytes: number
   meeting: Meeting | null
   error: string | null
+}
+
+/** Thrown when the user aborts the transfer — an outcome, not a fault. */
+class UploadCancelled extends Error {
+  constructor() {
+    super('Upload cancelled')
+    this.name = 'UploadCancelled'
+  }
 }
 
 export interface UploadJob {
@@ -57,7 +66,7 @@ export function useMeetingUpload() {
         }
       }
       request.onerror = () => reject(new Error('Network error while uploading audio'))
-      request.onabort = () => reject(new Error('Upload cancelled'))
+      request.onabort = () => reject(new UploadCancelled())
       request.open('PUT', new URL(url, window.location.origin).href)
       // Set explicitly so the stored media type is exactly what the server granted.
       for (const [name, value] of Object.entries(headers)) request.setRequestHeader(name, value)
@@ -96,8 +105,15 @@ export function useMeetingUpload() {
       return confirmed.meeting
     }
     catch (err) {
-      state.error = describeError(err)
-      state.status = 'error'
+      if (err instanceof UploadCancelled) {
+        // The user asked for this; show it as a stopped upload, not a failure.
+        state.status = 'cancelled'
+        state.error = null
+      }
+      else {
+        state.error = describeError(err)
+        state.status = 'error'
+      }
       return null
     }
     finally {
