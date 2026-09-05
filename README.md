@@ -118,6 +118,7 @@ production services (each pair is independent).
 | `pnpm test` / `pnpm test:watch` | Vitest unit + Nuxt-runtime tests |
 | `pnpm test:e2e` | Builds the app, then tests the Nitro routes against the local drivers |
 | `node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: drop → extract → upload → progress page, then inspects storage |
+| `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
 
 ## Roadmap
 

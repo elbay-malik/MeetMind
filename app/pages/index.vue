@@ -292,7 +292,7 @@ async function uploadAndContinue() {
           variant="subtle"
           icon="i-lucide-triangle-alert"
           title="Recording is too long to transcribe"
-          :description="`This audio is ${formatMegabytes(state.outputBytes)}, over the ${formatMegabytes(MAX_AUDIO_BYTES)} limit. Split the recording and upload each part separately.`"
+          :description="`This audio is ${formatMegabytes(state.outputBytes)}, over the ${MAX_AUDIO_LABEL} limit. Split the recording and upload each part separately.`"
         />
 
         <UAlert

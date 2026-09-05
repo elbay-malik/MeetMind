@@ -3,8 +3,19 @@
  * both sides enforce the same invariants.
  */
 
-/** Groq Whisper's free-tier upload cap; the server rejects anything larger. */
-export const MAX_AUDIO_BYTES = 25 * 1024 * 1024
+/**
+ * Groq Whisper's free-tier upload cap; the server rejects anything larger.
+ *
+ * Groq documents "25 MB" without saying whether it means decimal or binary, so
+ * this takes the smaller reading. Guessing wrong the other way costs 1.2 MB of
+ * headroom but fails at the worst possible moment — after the user has waited
+ * through a full extraction and upload — for roughly ten minutes of extra
+ * recording at 16 kbps. Not a trade worth making.
+ */
+export const MAX_AUDIO_BYTES = 25_000_000
+
+/** How the cap is written in user-facing copy, matching Groq's own wording. */
+export const MAX_AUDIO_LABEL = '25 MB'
 
 /** The only media type the upload path accepts — the browser-encoded Opus-in-Ogg. */
 export const AUDIO_MIME = 'audio/ogg'

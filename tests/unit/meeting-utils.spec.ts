@@ -9,7 +9,10 @@ import {
 
 describe('meeting limits', () => {
   it('pins the Groq free-tier cap and the Opus media type', () => {
-    expect(MAX_AUDIO_BYTES).toBe(26214400)
+    // Decimal, not binary: Groq documents "25 MB" ambiguously, and the smaller
+    // reading is the safe one. See the constant for the reasoning.
+    expect(MAX_AUDIO_BYTES).toBe(25_000_000)
+    expect(MAX_AUDIO_BYTES).toBeLessThan(25 * 1024 * 1024)
     expect(AUDIO_MIME).toBe('audio/ogg')
   })
 })
