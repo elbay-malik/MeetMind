@@ -11,6 +11,12 @@ export interface PresignPutInput {
 export interface StoredObject {
   size: number
   contentType: string | null
+  /**
+   * The store's own validator for these bytes, when it has one. Needed because
+   * an object can be replaced with different content of the same length, which
+   * a size-derived validator cannot distinguish.
+   */
+  etag: string | null
 }
 
 /**

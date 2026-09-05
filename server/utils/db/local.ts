@@ -6,9 +6,15 @@ import type { MeetingPatch, MeetingRepository, NewMeeting } from './meetings'
 const storages = new Map<string, Promise<Storage>>()
 
 /**
- * One promise chain per meeting. The JSON driver reads and writes with an await
- * in between, so without this a concurrent claim could interleave and both
- * callers would win.
+ * One promise chain per meeting, covering reads as well as writes.
+ *
+ * Writes replace a whole JSON file with a truncating write, so in principle a
+ * read can land mid-write and see a partial file. Measured, that window only
+ * opens for values large enough to need several write syscalls — at 1 KB and
+ * 100 KB no concurrent read ever observed a partial file, and meeting rows are
+ * far smaller than that. Reads are queued anyway because this driver's own
+ * contract says it is not safe for concurrent writers and the cost is nil, but
+ * it is a consistency guarantee rather than a fix for an observed failure.
  */
 const chains = new Map<string, Promise<unknown>>()
 
@@ -42,14 +48,18 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
     kind: 'local',
 
     async create(input: NewMeeting) {
-      const now = new Date().toISOString()
-      const meeting: Meeting = { ...input, createdAt: now, updatedAt: now }
-      await (await storage()).setItem<Meeting>(meetingKey(meeting.id), meeting)
-      return meeting
+      return serialize(input.id, async () => {
+        const now = new Date().toISOString()
+        const meeting: Meeting = { ...input, createdAt: now, updatedAt: now }
+        await (await storage()).setItem<Meeting>(meetingKey(meeting.id), meeting)
+        return meeting
+      })
     },
 
     async get(id) {
-      return (await (await storage()).getItem<Meeting>(meetingKey(id))) ?? null
+      return serialize(id, async () => {
+        return (await (await storage()).getItem<Meeting>(meetingKey(id))) ?? null
+      })
     },
 
     async list({ limit }) {

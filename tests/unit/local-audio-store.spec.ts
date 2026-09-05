@@ -68,7 +68,9 @@ describe('createLocalAudioStore', () => {
 
     const bytes = new Uint8Array([1, 2, 3, 4, 5])
     await store.put(key, bytes, 'audio/ogg')
-    expect(await store.head(key)).toEqual({ size: 5, contentType: 'audio/ogg' })
+    expect(await store.head(key)).toMatchObject({ size: 5, contentType: 'audio/ogg' })
+    // A validator that tracks the bytes, so a same-length replacement is a miss.
+    expect((await store.head(key))!.etag).toMatch(/^"[a-z0-9]+-5"$/)
     expect(await readFile(join(dataDir, 'audio', 'meetings', 'xyz', 'audio.ogg'))).toEqual(Buffer.from(bytes))
 
     await store.delete(key)

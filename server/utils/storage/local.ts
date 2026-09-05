@@ -104,7 +104,10 @@ export function createLocalAudioStore(options: { dataDir: string, secret: string
       const meta = await s.getItem<ObjectMeta>(metaKey(key))
       const stat = await s.getMeta(key)
       const size = typeof stat.size === 'number' ? stat.size : meta?.size ?? 0
-      return { size, contentType: meta?.contentType ?? null }
+      // Modification time plus size changes whenever the bytes do, which a
+      // size-only validator would not.
+      const mtime = stat.mtime instanceof Date ? stat.mtime.getTime() : 0
+      return { size, contentType: meta?.contentType ?? null, etag: `"${mtime.toString(36)}-${size}"` }
     },
 
     async get(key, maxBytes): Promise<StoredAudio | null> {
@@ -116,7 +119,7 @@ export function createLocalAudioStore(options: { dataDir: string, secret: string
         throw new Error(`Object ${key} is ${bytes.byteLength} bytes, over the ${maxBytes}-byte limit`)
       }
       const meta = await s.getItem<ObjectMeta>(metaKey(key))
-      return { bytes, size: bytes.byteLength, contentType: meta?.contentType ?? null }
+      return { bytes, size: bytes.byteLength, contentType: meta?.contentType ?? null, etag: null }
     },
 
     async openRange(key, window: ByteWindow | null): Promise<OpenedAudio | null> {
@@ -138,12 +141,22 @@ export function createLocalAudioStore(options: { dataDir: string, secret: string
       const info = await stat(path).catch(() => null)
       if (!info?.isFile()) return null
 
-      const served: ByteWindow = window ?? { start: 0, end: Math.max(0, info.size - 1) }
+      // end = -1 for an empty object: an inclusive window cannot say 'nothing'
+      // any other way, and rounding it to one byte promises a byte we lack.
+      const served: ByteWindow = window ?? { start: 0, end: info.size - 1 }
       const meta = await (await storage()).getItem<ObjectMeta>(metaKey(key))
-      const stream = createReadStream(path, { start: served.start, end: served.end })
+      // createReadStream rejects a negative end, so an empty window has to be
+      // served as an empty stream rather than asked of the filesystem.
+      const body: ReadableStream<Uint8Array> = served.end < served.start
+        ? new ReadableStream({
+            start(controller) {
+              controller.close()
+            },
+          })
+        : Readable.toWeb(createReadStream(path, { start: served.start, end: served.end })) as ReadableStream<Uint8Array>
 
       return {
-        body: Readable.toWeb(stream) as ReadableStream<Uint8Array>,
+        body,
         size: info.size,
         contentType: meta?.contentType ?? null,
         window: served,

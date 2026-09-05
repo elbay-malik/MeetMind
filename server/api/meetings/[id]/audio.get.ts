@@ -8,8 +8,8 @@ import { notFound, requireMeetingId } from '../../../utils/http'
  * Stream a meeting's audio to the browser, with byte ranges.
  *
  * Range support is what makes the audio seekable, and its absence fails
- * quietly: with no valid 206 the browser reports no seekable ranges and a seek
- * snaps to the start rather than erroring. So this always advertises
+ * quietly: without a valid 206 the browser reports no seekable ranges and a
+ * seek snaps to the start rather than erroring. So this always advertises
  * `accept-ranges` and honours a single range.
  *
  * Served from our own origin rather than a presigned URL: the local driver is
@@ -33,10 +33,7 @@ export default defineEventHandler(async (event) => {
   if (requested.kind === 'unsatisfiable') {
     return new Response(null, {
       status: 416,
-      headers: {
-        'content-range': `bytes */${probe.size}`,
-        'accept-ranges': 'bytes',
-      },
+      headers: { 'content-range': `bytes */${probe.size}`, 'accept-ranges': 'bytes' },
     })
   }
 
@@ -46,19 +43,53 @@ export default defineEventHandler(async (event) => {
 
   const partial = requested.kind === 'partial'
   const headers = new Headers({
-    'content-type': opened.contentType ?? AUDIO_MIME,
+    // Pinned, never reflected from the store. On R2 the browser's PUT sets the
+    // object's type and the presigned signature covers only the host, so an
+    // object could carry text/html; echoing that would turn this same-origin
+    // route into a way to serve attacker-chosen markup from our own origin.
+    'content-type': AUDIO_MIME,
+    'x-content-type-options': 'nosniff',
     'content-length': String(rangeLength(opened.window)),
-    // Advertised even on a 200: Chromium marks a resource unseekable without
-    // it, whatever the response code.
+    // Advertised even on a 200: Chromium will not treat a resource as seekable
+    // without it.
     'accept-ranges': 'bytes',
     // Any content-encoding turns seeking off in Firefox regardless of correct
     // range handling, so forbid transformation in transit.
     'cache-control': 'private, max-age=3600, no-transform',
-    // Weak-ish but stable: the object is immutable in practice once uploaded,
-    // and both parts change together if it is ever replaced.
-    'etag': `"${meeting.id}-${opened.size}"`,
+    // The store's own validator when it has one, so a replacement of the same
+    // length is still a cache miss. Falling back to id and size would not
+    // distinguish that case.
+    'etag': probe.etag ?? `"${meeting.id}-${opened.size}-${probe.contentType ?? ''}"`,
   })
   if (partial) headers.set('content-range', contentRangeHeader(opened.window, opened.size))
 
-  return new Response(opened.body, { status: partial ? 206 : 200, headers })
+  const status = partial ? 206 : 200
+
+  // On a Node target, drive the response ourselves. h3's web-stream path pipes
+  // without observing backpressure and never cancels the source when the client
+  // disconnects, so a player that stops reading — which every seek causes — would
+  // pull the rest of the object into memory with nobody listening. `pipeline`
+  // applies backpressure and destroys the source on disconnect. Imported lazily
+  // so the Workers bundle never evaluates node:stream.
+  const nodeRes = event.node?.res
+  if (nodeRes && typeof nodeRes.writeHead === 'function') {
+    const { Readable } = await import('node:stream')
+    const { pipeline } = await import('node:stream/promises')
+    nodeRes.writeHead(status, Object.fromEntries(headers.entries()))
+    try {
+      await pipeline(
+        Readable.fromWeb(opened.body as unknown as Parameters<typeof Readable.fromWeb>[0]),
+        nodeRes,
+      )
+    }
+    catch {
+      // A client that disconnects mid-stream is normal, not an error worth
+      // surfacing; pipeline has already torn the source down.
+    }
+    event._handled = true
+    return
+  }
+
+  // Workers and anything else: the runtime consumes the stream itself.
+  return new Response(opened.body, { status, headers })
 })

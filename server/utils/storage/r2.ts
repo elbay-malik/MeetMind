@@ -90,7 +90,11 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
       if (!Number.isFinite(length)) {
         throw new Error(`R2 HEAD ${key} returned no usable content-length`)
       }
-      return { size: length, contentType: res.headers.get('content-type') }
+      return {
+        size: length,
+        contentType: res.headers.get('content-type'),
+        etag: res.headers.get('etag'),
+      }
     },
 
     async get(key, maxBytes): Promise<StoredAudio | null> {
@@ -109,7 +113,12 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
       }
       // Trust the body over the header: the length we act on is the length we
       // actually received.
-      return { bytes, size: bytes.byteLength, contentType: res.headers.get('content-type') }
+      return {
+        bytes,
+        size: bytes.byteLength,
+        contentType: res.headers.get('content-type'),
+        etag: res.headers.get('etag'),
+      }
     },
 
     async openRange(key, window: ByteWindow | null): Promise<OpenedAudio | null> {
@@ -145,7 +154,8 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
         body: res.body,
         size: total,
         contentType: res.headers.get('content-type'),
-        window: { start: 0, end: Math.max(0, total - 1) },
+        // end = -1 when the object is empty; see the local driver.
+        window: { start: 0, end: total - 1 },
       }
     },
 

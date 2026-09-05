@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -121,6 +121,44 @@ describe('GET /api/meetings/:id/audio', () => {
     expect(first.headers.get('cache-control')).toContain('private')
     expect(first.headers.get('etag')).toBeTruthy()
     expect(second.headers.get('etag')).toBe(first.headers.get('etag'))
+  })
+
+  it('pins the media type instead of reflecting what is stored', async () => {
+    // On R2 the browser's PUT decides the object's content type and our
+    // signature covers only the host, so an object can carry text/html.
+    // Reflecting that would serve attacker-chosen markup from our own origin.
+    const meeting = await uploadedMeeting()
+    const metaPath = join(dataDir, 'audio', ...meeting.audioKey.split('/')) + '.meta'
+    await writeFile(metaPath, JSON.stringify({ contentType: 'text/html', size: audio.byteLength }))
+
+    const res = await fetch(audioUrl(meeting))
+    expect(res.headers.get('content-type')).toContain('audio/ogg')
+    expect(res.headers.get('content-type')).not.toContain('text/html')
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+  })
+
+  it('reports a zero-length object honestly rather than promising a byte', async () => {
+    // An inclusive window cannot express "nothing"; rounding it to one byte
+    // makes the client wait for a byte that will never arrive.
+    const meeting = await uploadedMeeting()
+    await writeFile(join(dataDir, 'audio', ...meeting.audioKey.split('/')), new Uint8Array())
+
+    const res = await fetch(audioUrl(meeting))
+    expect(res.headers.get('content-length')).toBe('0')
+    expect((await res.arrayBuffer()).byteLength).toBe(0)
+  })
+
+  it('changes its validator when the bytes change but the length does not', async () => {
+    const meeting = await uploadedMeeting()
+    const before = (await fetch(audioUrl(meeting))).headers.get('etag')
+
+    // Same length, different content: a size-derived validator would miss this.
+    await new Promise(resolve => setTimeout(resolve, 1100))
+    await writeFile(join(dataDir, 'audio', ...meeting.audioKey.split('/')), audio.map(b => b ^ 0xff))
+
+    const after = (await fetch(audioUrl(meeting))).headers.get('etag')
+    expect(before).toBeTruthy()
+    expect(after).not.toBe(before)
   })
 
   it('404s for an unknown meeting, a malformed id, and one with no audio yet', async () => {

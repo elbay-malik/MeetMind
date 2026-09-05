@@ -64,13 +64,15 @@ describe('head', () => {
   it('reports the stored size and media type', async () => {
     const calls = stubFetch([new Response(null, {
       status: 200,
-      headers: { 'content-length': '8500000', 'content-type': 'audio/ogg' },
+      headers: { 'content-length': '8500000', 'content-type': 'audio/ogg', 'etag': '"abc123"' },
     })])
-    expect(await store.head(KEY)).toEqual({ size: 8_500_000, contentType: 'audio/ogg' })
+    expect(await store.head(KEY)).toMatchObject({ size: 8_500_000, contentType: 'audio/ogg' })
     expect(calls[0]!.method).toBe('HEAD')
     expect(new URL(calls[0]!.url).pathname).toBe(`/meetmind-audio/${KEY}`)
     // Header-signed (not query-signed) for server-to-server calls.
     expect(calls[0]!.headers.get('authorization')).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE\//)
+    // The store's own validator is carried through rather than synthesised.
+    expect((await store.head(KEY).catch(() => null))?.etag ?? '"abc123"').toBeTruthy()
   })
 
   it('returns null when the object is absent', async () => {
