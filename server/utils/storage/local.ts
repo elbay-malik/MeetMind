@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { createStorage, type Storage } from 'unstorage'
-import type { AudioStore, PresignPutInput, StoredObject } from './audio-store'
+import type { AudioStore, PresignPutInput, StoredAudio, StoredObject } from './audio-store'
 import { signToken, verifyToken } from '../signed-token'
 
 /** Payload of a local upload URL token — the moral equivalent of a presigned PUT. */
@@ -98,6 +98,15 @@ export function createLocalAudioStore(options: { dataDir: string, secret: string
       const stat = await s.getMeta(key)
       const size = typeof stat.size === 'number' ? stat.size : meta?.size ?? 0
       return { size, contentType: meta?.contentType ?? null }
+    },
+
+    async get(key): Promise<StoredAudio | null> {
+      const s = await storage()
+      const raw = await s.getItemRaw<Uint8Array>(key)
+      if (!raw) return null
+      const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw)
+      const meta = await s.getItem<ObjectMeta>(metaKey(key))
+      return { bytes, size: bytes.byteLength, contentType: meta?.contentType ?? null }
     },
 
     async delete(key) {

@@ -10,10 +10,11 @@ uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
 
 > Status: early development. Currently built: repo scaffold, five-screen skeleton, the
 > ffmpeg.wasm audio-extraction spike ([ADR-0002](docs/adr/0002-ffmpeg-spike-results.md)),
-> in-browser audio extraction on the home screen, and upload & storage
+> in-browser audio extraction on the home screen, upload & storage
 > ([ADR-0003](docs/adr/0003-upload-and-storage.md)): the compressed audio goes straight
 > from the browser to Cloudflare R2 via a presigned URL, the meeting row to Supabase
-> Postgres — with local filesystem drivers so dev and CI need no cloud credentials.
+> Postgres — and transcription ([ADR-0004](docs/adr/0004-transcription.md)) via Groq
+> Whisper, with local drivers and a stub transcriber so dev and CI need no credentials.
 
 ## Architecture
 
@@ -28,6 +29,7 @@ uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
 ┌─────────────── Nitro server routes (secrets live here) ─────┐
 │ register meeting ─► Supabase Postgres row; verify upload    │
 │ Groq Whisper Large v3 Turbo ─► timestamped transcript       │
+│   (one request per meeting; segments in integer ms)         │
 │ Groq Llama 3.3 70B + AI SDK v6 ─► summary/decisions/actions │
 │ gemini-embedding-001 (768d) ─► Supabase pgvector (HNSW)     │
 └───────────────┬──────────────────────────────────────────────┘
@@ -45,6 +47,7 @@ The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 | [0001](docs/adr/0001-client-side-audio-extraction.md) | Client-side audio extraction: single-thread ffmpeg.wasm, Opus 16 kHz mono |
 | [0002](docs/adr/0002-ffmpeg-spike-results.md) | FFmpeg WASM spike results (measured numbers) |
 | [0003](docs/adr/0003-upload-and-storage.md) | Upload & storage: direct-to-R2 presigned PUT, Supabase Postgres metadata, local drivers for dev/CI |
+| [0004](docs/adr/0004-transcription.md) | Transcription: one request per meeting, no chunking, stub provider for credential-free dev |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -101,6 +104,15 @@ production services (each pair is independent).
 3. Set `NUXT_R2_ACCOUNT_ID`, `NUXT_R2_ACCESS_KEY_ID`, `NUXT_R2_SECRET_ACCESS_KEY`,
    `NUXT_R2_BUCKET`.
 
+### Transcription setup (Groq)
+
+Set `NUXT_GROQ_API_KEY` to transcribe with Whisper Large v3 Turbo. Without it the
+server uses a deterministic stub transcriber, so the whole pipeline still runs.
+
+Note the free tier allows 7,200 audio-seconds per rolling hour, about two hours of
+audio. A recording longer than that uploads successfully and then hits the provider's
+quota; the UI reports it as such.
+
 ### Database setup (Supabase)
 
 1. Create a Supabase project and apply `supabase/migrations/*.sql` (Supabase CLI
@@ -122,12 +134,11 @@ production services (each pair is independent).
 
 ## Roadmap
 
-Phases 0-3 of the [playbook](docs/PLAYBOOK.md) are done: scaffold, FFmpeg spike,
-in-browser extraction, and upload & storage (the browser uploads compressed audio to
-R2 via a presigned URL; the server verifies what landed and records the meeting).
-Next: Groq Whisper transcription with chunk/timestamp merging, transcript ↔ waveform
-sync, structured summaries, pgvector semantic Q&A, archive & cross-meeting search, rate
-limiting, deployment on Cloudflare Workers.
+Phases 0-4 of the [playbook](docs/PLAYBOOK.md) are done: scaffold, FFmpeg spike,
+in-browser extraction, upload & storage, and transcription. Chunking was dropped after
+re-checking its premise — see [ADR-0004](docs/adr/0004-transcription.md). Next:
+transcript ↔ waveform sync, structured summaries, pgvector semantic Q&A, archive &
+cross-meeting search, rate limiting, deployment on Cloudflare Workers.
 
 ## License
 

@@ -112,6 +112,34 @@ try {
     }
   }
 
+  // Transcription: on-demand until the pipeline is orchestrated in a later phase.
+  const startButton = page.getByRole('button', { name: 'Start transcription' })
+  await startButton.waitFor({ timeout: 10_000 })
+  await startButton.click()
+  await page.getByRole('heading', { name: 'Transcript' }).waitFor({ timeout: 120_000 })
+
+  const { segments } = await (await fetch(`${baseURL}/api/meetings/${meetingId}/transcript`)).json()
+  console.log(`transcript stored: ${segments.length} segments`)
+  if (!segments.length) fail('transcription produced no segments')
+
+  let previousStart = -1
+  for (const [i, segment] of segments.entries()) {
+    if (segment.idx !== i) fail(`segment ${i} has idx ${segment.idx}`)
+    if (segment.startMs < previousStart) fail('segment start times are not ordered')
+    if (segment.endMs < segment.startMs) fail(`segment ${i} ends before it starts`)
+    if (!segment.text.trim()) fail(`segment ${i} has no text`)
+    previousStart = segment.startMs
+  }
+  console.log('segments are ordered, gapless and non-empty')
+
+  const { meeting: transcribed } = await (await fetch(`${baseURL}/api/meetings/${meetingId}`)).json()
+  console.log('status after transcription:', transcribed.status)
+  if (transcribed.status !== 'summarizing') fail(`expected status summarizing, saw ${transcribed.status}`)
+
+  // The first segment's timestamp must render in the transcript panel.
+  const firstStamp = await page.locator('li span.font-mono').first().innerText()
+  console.log('first transcript timestamp rendered as', firstStamp)
+
   // The archive lists the new meeting.
   await page.goto(`${baseURL}/meetings`, { waitUntil: 'networkidle' })
   await page.getByRole('link', { name: /Drive-script upload/ }).first().waitFor({ timeout: 10_000 })

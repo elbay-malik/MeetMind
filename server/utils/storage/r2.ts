@@ -1,5 +1,5 @@
 import { AwsClient } from 'aws4fetch'
-import type { AudioStore, PresignPutInput, StoredObject } from './audio-store'
+import type { AudioStore, PresignPutInput, StoredAudio, StoredObject } from './audio-store'
 
 export interface R2Options {
   accountId: string
@@ -73,6 +73,16 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
         throw new Error(`R2 HEAD ${key} returned no usable content-length`)
       }
       return { size: length, contentType: res.headers.get('content-type') }
+    },
+
+    async get(key): Promise<StoredAudio | null> {
+      const res = await client.fetch(objectUrl(key).href, { method: 'GET' })
+      if (res.status === 404) return null
+      if (!res.ok) throw new Error(`R2 GET ${key} failed with HTTP ${res.status}`)
+      const bytes = new Uint8Array(await res.arrayBuffer())
+      // Trust the body over the header: the length we act on is the length we
+      // actually received.
+      return { bytes, size: bytes.byteLength, contentType: res.headers.get('content-type') }
     },
 
     async delete(key) {

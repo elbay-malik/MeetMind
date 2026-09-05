@@ -1,0 +1,38 @@
+import { join } from 'node:path'
+import { createStorage, type Storage } from 'unstorage'
+import type { TranscriptSegment } from '#shared/types/meeting'
+import type { TranscriptRepository } from './transcripts'
+
+const storages = new Map<string, Promise<Storage>>()
+
+function storageFor(base: string): Promise<Storage> {
+  let existing = storages.get(base)
+  if (!existing) {
+    existing = import('unstorage/drivers/fs').then(({ default: fsDriver }) =>
+      createStorage({ driver: fsDriver({ base }) }))
+    storages.set(base, existing)
+  }
+  return existing
+}
+
+const transcriptKey = (meetingId: string) => `transcripts/${meetingId}`
+
+/** JSON-file transcripts under `<dataDir>/db/` for development and tests. */
+export function createLocalTranscriptRepository(options: { dataDir: string }): TranscriptRepository {
+  const base = join(options.dataDir, 'db')
+
+  return {
+    kind: 'local',
+
+    async replaceForMeeting(meetingId, segments) {
+      // One file per meeting, so replacing is atomic here in a way the
+      // PostgREST driver cannot be.
+      await (await storageFor(base)).setItem<TranscriptSegment[]>(transcriptKey(meetingId), segments)
+    },
+
+    async listForMeeting(meetingId) {
+      const stored = await (await storageFor(base)).getItem<TranscriptSegment[]>(transcriptKey(meetingId))
+      return stored ?? []
+    },
+  }
+}

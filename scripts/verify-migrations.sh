@@ -78,6 +78,35 @@ reject "a duplicate audio_key is refused" \
   "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes) values (gen_random_uuid(),'x','uploaded','a.mp4',1,'lifecycle_ready',10);" \
   "duplicate key"
 
+check "transcript_segments cascades from meetings" \
+  "select confdeltype='c' from pg_constraint
+   where conrelid='public.transcript_segments'::regclass and contype='f'"
+
+check "a transcript segment is keyed by (meeting_id, idx)" \
+  "select array_agg(att.attname::text order by att.attname) = array['idx','meeting_id']
+   from pg_constraint con
+   join pg_attribute att on att.attrelid=con.conrelid and att.attnum = any(con.conkey)
+   where con.conrelid='public.transcript_segments'::regclass and con.contype='p'"
+
+check "transcript_segments has row-level security on with no policies" \
+  "select relrowsecurity and (select count(*) from pg_policies where tablename='transcript_segments')=0
+   from pg_class where relname='transcript_segments'"
+
+# Segments must survive a re-run and vanish with their meeting.
+psql -q -c "insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
+            select id, 0, 0, 1000, 'hello' from public.meetings where audio_key='lifecycle_ready';"
+reject "a segment ending before it starts is refused" \
+  "insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
+   select id, 1, 5000, 4000, 'backwards' from public.meetings where audio_key='lifecycle_ready';" \
+  "violates check"
+reject "a duplicate (meeting_id, idx) is refused" \
+  "insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
+   select id, 0, 0, 1, 'dup' from public.meetings where audio_key='lifecycle_ready';" \
+  "duplicate key"
+psql -q -c "delete from public.meetings where audio_key='lifecycle_ready';"
+check "deleting a meeting removes its transcript" \
+  "select count(*)=0 from public.transcript_segments"
+
 # updated_at must advance on update. now() is transaction-scoped, so the insert
 # and the update have to happen in separate transactions or this always passes.
 psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)

@@ -1,4 +1,5 @@
 import type { MeetingRow } from './meetings'
+import type { TranscriptSegmentRow } from './transcripts'
 
 /**
  * Hand-written Supabase schema typing for the tables the server touches.
@@ -13,6 +14,12 @@ export interface Database {
         Insert: Omit<MeetingRow, 'created_at' | 'updated_at' | 'audio_mime'>
           & Partial<Pick<MeetingRow, 'created_at' | 'updated_at' | 'audio_mime'>>
         Update: Partial<MeetingRow>
+        Relationships: []
+      }
+      transcript_segments: {
+        Row: TranscriptSegmentRow
+        Insert: Omit<TranscriptSegmentRow, 'created_at'> & Partial<Pick<TranscriptSegmentRow, 'created_at'>>
+        Update: Partial<TranscriptSegmentRow>
         Relationships: []
       }
     }

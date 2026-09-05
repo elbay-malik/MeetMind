@@ -6,7 +6,7 @@ import {
   MAX_FILE_NAME_LENGTH,
   MAX_TITLE_LENGTH,
 } from '../utils/meeting'
-import type { CreateMeetingInput, Meeting, MeetingStatus } from '../types/meeting'
+import type { CreateMeetingInput, Meeting, MeetingStatus, TranscriptSegment } from '../types/meeting'
 
 export const meetingStatusSchema = z.enum([
   'pending_upload',
@@ -50,3 +50,14 @@ export const meetingSchema = z.object({
   uploadedAt: z.iso.datetime({ offset: true }).nullable(),
   errorMessage: z.string().nullable(),
 }) satisfies z.ZodType<Meeting>
+
+/** A single transcript segment as stored and returned by the API. */
+export const transcriptSegmentSchema = z.object({
+  idx: z.int().nonnegative(),
+  startMs: z.int().nonnegative(),
+  endMs: z.int().nonnegative(),
+  text: z.string(),
+}).refine(s => s.endMs >= s.startMs, {
+  message: 'endMs must not precede startMs',
+  path: ['endMs'],
+}) satisfies z.ZodType<TranscriptSegment>

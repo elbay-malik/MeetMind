@@ -37,6 +37,18 @@ export interface Meeting {
   errorMessage: string | null
 }
 
+/**
+ * One timestamped chunk of speech. Times are integer milliseconds from the
+ * start of the audio, so they compare exactly and seek exactly.
+ */
+export interface TranscriptSegment {
+  /** Position in the transcript, gapless from 0. */
+  idx: number
+  startMs: number
+  endMs: number
+  text: string
+}
+
 /** Fields the client supplies when registering a meeting before uploading its audio. */
 export interface CreateMeetingInput {
   title: string

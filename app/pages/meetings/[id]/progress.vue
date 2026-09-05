@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import type { Meeting, MeetingStatus } from '#shared/types/meeting'
+import type { Meeting, MeetingStatus, TranscriptSegment } from '#shared/types/meeting'
 
 const route = useRoute()
 const meetingId = computed(() => String(route.params.id))
 
-const { data, error } = await useFetch<{ meeting: Meeting }>(`/api/meetings/${meetingId.value}`)
+const { data, error, refresh } = await useFetch<{ meeting: Meeting }>(`/api/meetings/${meetingId.value}`)
 if (error.value) {
   throw createError({
     statusCode: error.value.statusCode ?? 500,
@@ -15,6 +15,29 @@ if (error.value) {
 const meeting = computed(() => data.value!.meeting)
 
 useSeoMeta({ title: () => `MeetMind — ${meeting.value.title}` })
+
+const { data: transcriptData, refresh: refreshTranscript }
+  = await useFetch<{ segments: TranscriptSegment[] }>(`/api/meetings/${meetingId.value}/transcript`)
+const segments = computed(() => transcriptData.value?.segments ?? [])
+
+const transcribing = ref(false)
+const transcribeError = ref<string | null>(null)
+
+async function startTranscription() {
+  transcribing.value = true
+  transcribeError.value = null
+  try {
+    await $fetch(`/api/meetings/${meetingId.value}/transcribe`, { method: 'POST' })
+  }
+  catch (err) {
+    const data = (err as { data?: { message?: string } }).data
+    transcribeError.value = data?.message ?? (err instanceof Error ? err.message : String(err))
+  }
+  finally {
+    transcribing.value = false
+    await Promise.all([refresh(), refreshTranscript()])
+  }
+}
 
 interface Stage {
   key: string
@@ -31,8 +54,8 @@ const STAGES: Stage[] = [
     detail: 'Compressed audio stored; the video stayed on your machine.',
     reached: s => s !== 'pending_upload' && s !== 'failed',
   },
-  { key: 'transcribe', label: 'Transcribing', detail: 'Groq Whisper — next build phase.', reached: s => ['summarizing', 'indexing', 'ready'].includes(s) },
-  { key: 'summarize', label: 'Summarizing', detail: 'Decisions and action items.', reached: s => ['indexing', 'ready'].includes(s) },
+  { key: 'transcribe', label: 'Transcribed', detail: 'Speech turned into timestamped segments.', reached: s => ['summarizing', 'indexing', 'ready'].includes(s) },
+  { key: 'summarize', label: 'Summarizing', detail: 'Decisions and action items — next build phase.', reached: s => ['indexing', 'ready'].includes(s) },
   { key: 'index', label: 'Indexing', detail: 'Semantic search across the transcript.', reached: s => s === 'ready' },
 ]
 
@@ -47,8 +70,8 @@ const statusColor = computed(() => ({
 } as const)[meeting.value.status])
 
 const statusText = computed(() => meeting.value.status.replace('_', ' '))
-
 const createdAt = computed(() => new Date(meeting.value.createdAt).toLocaleString())
+const canTranscribe = computed(() => meeting.value.status === 'uploaded')
 </script>
 
 <template>
@@ -104,18 +127,54 @@ const createdAt = computed(() => new Date(meeting.value.createdAt).toLocaleStrin
               <template v-if="stage.key === 'upload' && stage.reached(meeting.status)">
                 {{ formatMegabytes(meeting.audioBytes) }} of 16&nbsp;kHz mono Opus.
               </template>
+              <template v-if="stage.key === 'transcribe' && segments.length">
+                {{ segments.length }} segments.
+              </template>
             </p>
           </div>
         </li>
       </ol>
+
+      <template
+        v-if="canTranscribe"
+        #footer
+      >
+        <div class="flex flex-wrap items-center gap-3">
+          <UButton
+            :loading="transcribing"
+            :disabled="transcribing"
+            icon="i-lucide-captions"
+            @click="startTranscription"
+          >
+            Start transcription
+          </UButton>
+          <span
+            class="text-sm text-muted"
+            role="status"
+            aria-live="polite"
+          >
+            {{ transcribing ? 'Transcribing…' : 'Transcription runs on demand until the pipeline is automated.' }}
+          </span>
+        </div>
+      </template>
     </UCard>
 
     <UAlert
-      v-if="meeting.status === 'failed'"
+      v-if="transcribeError"
+      role="alert"
       color="error"
       variant="subtle"
       icon="i-lucide-triangle-alert"
-      title="Upload failed"
+      title="Transcription failed"
+      :description="transcribeError"
+    />
+    <UAlert
+      v-else-if="meeting.status === 'failed'"
+      role="alert"
+      color="error"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      title="Something went wrong"
       :description="meeting.errorMessage ?? 'The audio did not reach storage intact.'"
     />
     <UAlert
@@ -126,6 +185,31 @@ const createdAt = computed(() => new Date(meeting.value.createdAt).toLocaleStrin
       title="Waiting for audio"
       description="The upload has not been confirmed yet. Return to the upload screen to retry."
     />
+
+    <UCard v-if="segments.length">
+      <template #header>
+        <h2 class="font-semibold">
+          Transcript
+        </h2>
+      </template>
+      <ol class="space-y-3">
+        <li
+          v-for="segment in segments"
+          :key="segment.idx"
+          class="flex gap-3 text-sm"
+        >
+          <span class="shrink-0 font-mono text-xs text-dimmed tabular-nums">
+            {{ formatDuration(segment.startMs / 1000) }}
+          </span>
+          <span>{{ segment.text }}</span>
+        </li>
+      </ol>
+      <template #footer>
+        <p class="text-sm text-muted">
+          Clicking a line to seek the audio arrives with the player in the next phase.
+        </p>
+      </template>
+    </UCard>
 
     <div class="flex gap-3">
       <UButton
