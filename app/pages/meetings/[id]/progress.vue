@@ -22,12 +22,19 @@ const segments = computed(() => transcriptData.value?.segments ?? [])
 
 const transcribing = ref(false)
 const transcribeError = ref<string | null>(null)
+const justFinished = ref(false)
+
+async function reloadAll() {
+  await Promise.all([refresh(), refreshTranscript()])
+}
 
 async function startTranscription() {
   transcribing.value = true
   transcribeError.value = null
+  justFinished.value = false
   try {
     await $fetch(`/api/meetings/${meetingId.value}/transcribe`, { method: 'POST' })
+    justFinished.value = true
   }
   catch (err) {
     const data = (err as { data?: { message?: string } }).data
@@ -35,9 +42,23 @@ async function startTranscription() {
   }
   finally {
     transcribing.value = false
-    await Promise.all([refresh(), refreshTranscript()])
+    await reloadAll()
   }
 }
+
+// A meeting can be left mid-transcription by another tab, or by a request that
+// outlived its page. Poll so this screen converges instead of showing a state
+// that never changes.
+const POLL_MS = 5000
+let poller: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  poller = setInterval(() => {
+    if (meeting.value.status === 'transcribing' && !transcribing.value) void reloadAll()
+  }, POLL_MS)
+})
+onUnmounted(() => {
+  if (poller) clearInterval(poller)
+})
 
 interface Stage {
   key: string
@@ -52,9 +73,18 @@ const STAGES: Stage[] = [
     key: 'upload',
     label: 'Audio uploaded',
     detail: 'Compressed audio stored; the video stayed on your machine.',
-    reached: s => s !== 'pending_upload' && s !== 'failed',
+    // Only `pending_upload` means the audio never arrived. A later failure does
+    // not undo an upload that did happen.
+    reached: s => s !== 'pending_upload',
   },
-  { key: 'transcribe', label: 'Transcribed', detail: 'Speech turned into timestamped segments.', reached: s => ['summarizing', 'indexing', 'ready'].includes(s) },
+  {
+    key: 'transcribe',
+    label: 'Transcribed',
+    detail: 'Speech turned into timestamped segments.',
+    // Requires actual segments: a status alone would show a green tick for a
+    // transcription that produced nothing.
+    reached: s => ['summarizing', 'indexing', 'ready'].includes(s) && segments.value.length > 0,
+  },
   { key: 'summarize', label: 'Summarizing', detail: 'Decisions and action items — next build phase.', reached: s => ['indexing', 'ready'].includes(s) },
   { key: 'index', label: 'Indexing', detail: 'Semantic search across the transcript.', reached: s => s === 'ready' },
 ]
@@ -70,8 +100,26 @@ const statusColor = computed(() => ({
 } as const)[meeting.value.status])
 
 const statusText = computed(() => meeting.value.status.replace('_', ' '))
+
+/** Transcription has run and found nothing, as opposed to not having run. */
+const transcribedButEmpty = computed(() =>
+  ['summarizing', 'indexing', 'ready'].includes(meeting.value.status) && segments.value.length === 0)
 const createdAt = computed(() => new Date(meeting.value.createdAt).toLocaleString())
-const canTranscribe = computed(() => meeting.value.status === 'uploaded')
+const canTranscribe = computed(() =>
+  meeting.value.status === 'uploaded' || meeting.value.status === 'failed')
+
+/**
+ * What the card is doing, as one string in one live region. Screen readers only
+ * announce a region that stays mounted, so the completion message has to appear
+ * in the same element the in-progress message did.
+ */
+const activityLabel = computed(() => {
+  if (transcribing.value) return 'Transcribing. This can take a moment.'
+  if (meeting.value.status === 'transcribing') return 'Transcription is running.'
+  if (justFinished.value) return `Transcription finished with ${segments.value.length} segments.`
+  if (canTranscribe.value) return 'Transcription runs on demand until the pipeline is automated.'
+  return ''
+})
 </script>
 
 <template>
@@ -135,26 +183,29 @@ const canTranscribe = computed(() => meeting.value.status === 'uploaded')
         </li>
       </ol>
 
-      <template
-        v-if="canTranscribe"
-        #footer
-      >
+      <template #footer>
         <div class="flex flex-wrap items-center gap-3">
           <UButton
+            v-if="canTranscribe"
             :loading="transcribing"
             :disabled="transcribing"
             icon="i-lucide-captions"
             @click="startTranscription"
           >
-            Start transcription
+            {{ meeting.errorMessage ? 'Try transcription again' : 'Start transcription' }}
           </UButton>
+          <UIcon
+            v-else-if="meeting.status === 'transcribing'"
+            name="i-lucide-loader-circle"
+            class="size-5 shrink-0 animate-spin text-primary"
+          />
+          <!-- One region for the whole card, so it is never unmounted at the
+               moment it has something to announce. -->
           <span
             class="text-sm text-muted"
             role="status"
             aria-live="polite"
-          >
-            {{ transcribing ? 'Transcribing…' : 'Transcription runs on demand until the pipeline is automated.' }}
-          </span>
+          >{{ activityLabel }}</span>
         </div>
       </template>
     </UCard>
@@ -169,13 +220,13 @@ const canTranscribe = computed(() => meeting.value.status === 'uploaded')
       :description="transcribeError"
     />
     <UAlert
-      v-else-if="meeting.status === 'failed'"
+      v-else-if="meeting.errorMessage"
       role="alert"
-      color="error"
+      :color="meeting.status === 'failed' ? 'error' : 'warning'"
       variant="subtle"
       icon="i-lucide-triangle-alert"
-      title="Something went wrong"
-      :description="meeting.errorMessage ?? 'The audio did not reach storage intact.'"
+      :title="meeting.status === 'failed' ? 'Something went wrong' : 'The last attempt did not finish'"
+      :description="meeting.errorMessage"
     />
     <UAlert
       v-else-if="meeting.status === 'pending_upload'"
@@ -184,6 +235,15 @@ const canTranscribe = computed(() => meeting.value.status === 'uploaded')
       icon="i-lucide-clock"
       title="Waiting for audio"
       description="The upload has not been confirmed yet. Return to the upload screen to retry."
+    />
+
+    <UAlert
+      v-if="transcribedButEmpty"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-message-square-off"
+      title="No speech was found"
+      description="Transcription ran and returned nothing. The recording may be silent."
     />
 
     <UCard v-if="segments.length">
@@ -198,7 +258,10 @@ const canTranscribe = computed(() => meeting.value.status === 'uploaded')
           :key="segment.idx"
           class="flex gap-3 text-sm"
         >
-          <span class="shrink-0 font-mono text-xs text-dimmed tabular-nums">
+          <!-- Fixed width so the text column does not shift when timestamps
+               grow an hours digit. text-muted, not text-dimmed, which measures
+               below the contrast minimum at this size. -->
+          <span class="w-16 shrink-0 text-right font-mono text-xs text-muted tabular-nums">
             {{ formatDuration(segment.startMs / 1000) }}
           </span>
           <span>{{ segment.text }}</span>

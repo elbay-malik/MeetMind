@@ -132,6 +132,23 @@ try {
   }
   console.log('segments are ordered, gapless and non-empty')
 
+  // The stage list must not claim more or less than the truth. Scope to the
+  // pipeline card: the transcript is also an ordered list.
+  const STAGES = ['Audio uploaded', 'Transcribed', 'Summarizing', 'Indexing']
+  const listText = await page.locator('ol li').allInnerTexts()
+  const stages = STAGES.filter(label => listText.some(t => t.includes(label)))
+  if (stages.length !== STAGES.length) {
+    fail(`pipeline is missing stages: ${STAGES.filter(l => !stages.includes(l)).join(', ')}`)
+  }
+  console.log(`pipeline stages rendered: ${stages.length}/${STAGES.length}`)
+
+  // Completion has to be announced somewhere that stays mounted.
+  const announced = await page.locator('[role=status]').allInnerTexts()
+  if (!announced.some(t => /Transcription finished with \d+ segments/.test(t))) {
+    fail(`completion was not announced; live regions said: ${JSON.stringify(announced)}`)
+  }
+  console.log('completion announced to assistive tech')
+
   const { meeting: transcribed } = await (await fetch(`${baseURL}/api/meetings/${meetingId}`)).json()
   console.log('status after transcription:', transcribed.status)
   if (transcribed.status !== 'summarizing') fail(`expected status summarizing, saw ${transcribed.status}`)
