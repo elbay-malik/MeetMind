@@ -3,7 +3,8 @@ import { AUDIO_MIME } from '#shared/utils/meeting'
 import { useAudioStore } from '../../../utils/storage'
 import { useMeetingRepository, useTranscriptRepository } from '../../../utils/db'
 import { conflict, notFound, requireMeetingId } from '../../../utils/http'
-import { TranscriptionError, useTranscriber } from '../../../utils/transcription'
+import { useTranscriber } from '../../../utils/transcription'
+import { TranscriptionError } from '../../../utils/transcription/transcriber'
 
 /**
  * Transcribe a meeting's stored audio and persist the segments.

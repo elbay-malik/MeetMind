@@ -1,5 +1,4 @@
 import { execFileSync } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { AwsClient } from 'aws4fetch'
@@ -16,19 +15,6 @@ import { MAX_AUDIO_BYTES } from '../../shared/utils/meeting'
  * when its variables are absent. Objects and rows are prefixed `verify-` and
  * cleaned up; nothing pre-existing is touched.
  */
-const env: Record<string, string | undefined> = { ...process.env }
-
-beforeAll(async () => {
-  try {
-    const file = await readFile(new URL('../../.env', import.meta.url), 'utf8')
-    for (const line of file.split('\n')) {
-      const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/)
-      if (match?.[1] && !env[match[1]]) env[match[1]] = match[2]!.trim().replace(/^["']|["']$/g, '')
-    }
-  }
-  catch { /* no .env; ambient environment only */ }
-})
-
 const has = (...keys: string[]) => keys.every(k => (process.env[k] ?? '').length > 0)
 
 // ---------------------------------------------------------------- Cloudflare R2

@@ -4,9 +4,6 @@ import { createStubTranscriber } from './stub'
 import type { Transcriber } from './transcriber'
 import { requireAllOrNone } from '../storage'
 
-export type { Transcriber, TranscribeInput, TranscribeResult } from './transcriber'
-export { TranscriptionError } from './transcriber'
-
 let announced = false
 function announce(kind: Transcriber['kind']) {
   if (announced) return
