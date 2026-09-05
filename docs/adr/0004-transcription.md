@@ -72,10 +72,16 @@ leaves the browser, and the compressed audio was always destined for
 transcription — but the architectural claim was narrower than the privacy one and
 is now retired. The read is bounded by construction at 25 MB.
 
-### 6. Transcription claims the meeting before doing any work.
+### 6. Transcription claims the meeting atomically before doing any work.
 
-The route moves the row to `transcribing` before fetching audio, and always
-releases the claim. A retryable failure returns the meeting to `uploaded` so the
+The claim is a conditional update — move to `transcribing` only if the row is
+still `uploaded` — so the database, not the application, decides which of several
+concurrent callers proceeds. A read-then-write would let every caller through:
+each reads `uploaded`, each writes `transcribing`, and each then spends the
+provider's quota on the same audio. The local driver serializes per meeting to
+get the same guarantee across its read-modify-write.
+
+The route always releases the claim. A retryable failure returns the meeting to `uploaded` so the
 user can try again; anything else lands on `failed`. Without the release, a
 single provider outage would strand meetings in a state with no way out.
 

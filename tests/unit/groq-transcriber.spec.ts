@@ -123,6 +123,18 @@ describe('failures', () => {
     expect(err.statusCode).toBe(413)
   })
 
+  it('treats an unreadable body as a retryable provider fault, not a 500', async () => {
+    // Letting response.json() throw would escape TranscriptionError, surface as
+    // a 500, and mark the meeting permanently failed for a transient fault.
+    stubFetch(new Response('<html>gateway timeout</html>', {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }))
+    const err = await transcriber.transcribe(audio).catch((e: TranscriptionError) => e)
+    expect(err).toBeInstanceOf(TranscriptionError)
+    expect(err.retryable).toBe(true)
+    expect(err.message).toMatch(/could not read/i)
+  })
+
   it('turns a network error into a retryable failure rather than an unhandled throw', async () => {
     stubFetch(() => {
       throw new TypeError('fetch failed')

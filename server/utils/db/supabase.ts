@@ -62,6 +62,20 @@ export function createSupabaseMeetingRepository(options: SupabaseOptions): Meeti
       return data.map(rowToMeeting)
     },
 
+    async claim(id, from, patch: MeetingPatch) {
+      // The extra .eq('status', from) is what makes this atomic: PostgREST
+      // sends one UPDATE ... WHERE id = ? AND status = ?, so the database
+      // decides the winner and the loser matches no row.
+      const { data, error } = await table()
+        .update(patchToRow(patch))
+        .eq('id', id)
+        .eq('status', from)
+        .select()
+        .maybeSingle()
+      if (error) fail('claim', error)
+      return data ? rowToMeeting(data) : null
+    },
+
     async update(id, patch: MeetingPatch) {
       const { data, error } = await table()
         .update(patchToRow(patch))

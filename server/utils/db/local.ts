@@ -5,6 +5,19 @@ import type { MeetingPatch, MeetingRepository, NewMeeting } from './meetings'
 
 const storages = new Map<string, Promise<Storage>>()
 
+/**
+ * One promise chain per meeting. The JSON driver reads and writes with an await
+ * in between, so without this a concurrent claim could interleave and both
+ * callers would win.
+ */
+const chains = new Map<string, Promise<unknown>>()
+
+function serialize<T>(id: string, work: () => Promise<T>): Promise<T> {
+  const next = (chains.get(id) ?? Promise.resolve()).then(work, work)
+  chains.set(id, next.catch(() => undefined))
+  return next
+}
+
 function storageFor(base: string): Promise<Storage> {
   let existing = storages.get(base)
   if (!existing) {
@@ -51,12 +64,25 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
     },
 
     async update(id, patch: MeetingPatch) {
-      const s = await storage()
-      const current = await s.getItem<Meeting>(meetingKey(id))
-      if (!current) return null
-      const next: Meeting = { ...current, ...patch, updatedAt: new Date().toISOString() }
-      await s.setItem<Meeting>(meetingKey(id), next)
-      return next
+      return serialize(id, async () => {
+        const s = await storage()
+        const current = await s.getItem<Meeting>(meetingKey(id))
+        if (!current) return null
+        const next: Meeting = { ...current, ...patch, updatedAt: new Date().toISOString() }
+        await s.setItem<Meeting>(meetingKey(id), next)
+        return next
+      })
+    },
+
+    async claim(id, from, patch: MeetingPatch) {
+      return serialize(id, async () => {
+        const s = await storage()
+        const current = await s.getItem<Meeting>(meetingKey(id))
+        if (!current || current.status !== from) return null
+        const next: Meeting = { ...current, ...patch, updatedAt: new Date().toISOString() }
+        await s.setItem<Meeting>(meetingKey(id), next)
+        return next
+      })
     },
   }
 }

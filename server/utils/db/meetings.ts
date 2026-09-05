@@ -13,6 +13,15 @@ export interface MeetingRepository {
   list(options: { limit: number }): Promise<Meeting[]>
   /** Returns the updated row, or `null` when no row has that id. */
   update(id: string, patch: MeetingPatch): Promise<Meeting | null>
+  /**
+   * Move a meeting between states only if it is currently in `from`, so exactly
+   * one of several concurrent callers wins. Returns the updated row, or `null`
+   * when the meeting was in a different state and the caller lost the race.
+   *
+   * A plain read-then-update cannot do this: both callers read `uploaded`, both
+   * write `transcribing`, and both go on to spend the transcription quota.
+   */
+  claim(id: string, from: MeetingStatus, patch: MeetingPatch): Promise<Meeting | null>
 }
 
 /**

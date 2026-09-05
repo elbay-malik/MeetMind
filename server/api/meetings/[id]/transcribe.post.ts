@@ -36,12 +36,20 @@ export default defineEventHandler(async (event): Promise<{
     throw conflict(`Meeting is ${meeting.status}; it has no audio ready to transcribe`)
   }
 
-  // Claim the meeting before doing any work. Two callers that raced past the
-  // check above both write this, but the audio is only fetched and billed once
-  // per caller that then finds itself holding a claim it did not make — which
-  // the status check on the way out catches.
-  const claimed = await repo.update(id, { status: 'transcribing', errorMessage: null })
-  if (!claimed) throw notFound('Meeting not found')
+  // Claim atomically. The checks above are a courtesy for the common case; this
+  // is what actually stops two callers both spending the transcription quota on
+  // the same audio, because only one of them can move the row out of `uploaded`.
+  const claimed = await repo.claim(id, 'uploaded', { status: 'transcribing', errorMessage: null })
+  if (!claimed) {
+    // Someone else got there first, or the meeting moved on. Re-read rather than
+    // guess which.
+    const current = await repo.get(id)
+    if (!current) throw notFound('Meeting not found')
+    if (['summarizing', 'indexing', 'ready'].includes(current.status)) {
+      return { meeting: current, segments: await transcripts.listForMeeting(id) }
+    }
+    throw conflict(`Meeting is ${current.status}; transcription cannot start`)
+  }
 
   try {
     const audio = await useAudioStore(event).get(meeting.audioKey)

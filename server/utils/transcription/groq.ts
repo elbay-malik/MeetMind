@@ -68,7 +68,19 @@ export function createGroqTranscriber(options: GroqOptions): Transcriber {
 
       if (!response.ok) throw await describeFailure(response)
 
-      const parsed = groqResponseSchema.safeParse(await response.json())
+      // A truncated or non-JSON body is a provider fault, and retrying can fix
+      // it. Letting it throw here would surface as a 500 and mark the meeting
+      // permanently failed.
+      const body = await response.json().catch((err: unknown) => {
+        const detail = err instanceof Error ? err.message : String(err)
+        throw new TranscriptionError(
+          `Transcription service returned a body we could not read: ${detail}`,
+          502,
+          true,
+        )
+      })
+
+      const parsed = groqResponseSchema.safeParse(body)
       if (!parsed.success) {
         throw new TranscriptionError(
           `Transcription service returned an unexpected response: ${z.prettifyError(parsed.error)}`,

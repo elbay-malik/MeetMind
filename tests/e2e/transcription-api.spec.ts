@@ -101,17 +101,41 @@ describe('POST /api/meetings/:id/transcribe', () => {
     expect((await fetch('/api/meetings/not-a-uuid/transcribe', { method: 'POST' })).status).toBe(404)
   })
 
-  it('never leaves two concurrent callers both transcribing', async () => {
+  it('lets exactly one of several concurrent callers do the work', async () => {
     const meeting = await uploadedMeeting()
-    const results = await Promise.allSettled([transcribe(meeting.id), transcribe(meeting.id)])
-    const ok = results.filter(r => r.status === 'fulfilled')
-    // Whichever interleaving happens, the meeting ends up transcribed exactly
-    // once and never stuck mid-claim.
-    expect(ok.length).toBeGreaterThanOrEqual(1)
+
+    // Only one caller may move the row out of `uploaded`; the rest must be
+    // turned away rather than each spending the provider's quota.
+    const attempts = await Promise.allSettled([
+      transcribe(meeting.id), transcribe(meeting.id), transcribe(meeting.id),
+    ])
+    const winners = attempts.filter(a => a.status === 'fulfilled')
+    const losers = attempts.filter(a => a.status === 'rejected')
+
+    expect(winners.length + losers.length).toBe(3)
+    expect(winners.length).toBeGreaterThanOrEqual(1)
+    // A loser either raced and was refused, or arrived late enough to be handed
+    // the finished transcript. Both are correct; silently transcribing again is not.
+    for (const loser of losers) {
+      expect((loser as PromiseRejectedResult).reason?.statusCode).toBe(409)
+    }
+
     const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('summarizing')
     const { segments } = await $fetch<{ segments: TranscriptSegment[] }>(`/api/meetings/${meeting.id}/transcript`)
+    expect(segments.length).toBeGreaterThan(0)
     expect(segments.map(s => s.idx)).toEqual(segments.map((_, i) => i))
+  })
+
+  it('refuses to start again while a transcription is in flight', async () => {
+    const meeting = await uploadedMeeting()
+    // Claim it the way the route does, then confirm the route will not proceed.
+    await $fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    const { meeting: done } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    expect(done.status).toBe('summarizing')
+    // A second call is served from storage rather than re-transcribed.
+    const again = await transcribe(meeting.id)
+    expect(again.meeting.status).toBe('summarizing')
   })
 })
 
