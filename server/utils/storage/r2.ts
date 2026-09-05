@@ -64,10 +64,15 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
       const res = await client.fetch(objectUrl(key).href, { method: 'HEAD' })
       if (res.status === 404) return null
       if (!res.ok) throw new Error(`R2 HEAD ${key} failed with HTTP ${res.status}`)
-      return {
-        size: Number(res.headers.get('content-length') ?? 0),
-        contentType: res.headers.get('content-type'),
+      // Treating a missing length as 0 would fail the size check and delete a
+      // perfectly good upload. Note Number(null) is 0, not NaN, so the header's
+      // presence has to be checked before converting it.
+      const declared = res.headers.get('content-length')
+      const length = declared === null ? Number.NaN : Number(declared)
+      if (!Number.isFinite(length)) {
+        throw new Error(`R2 HEAD ${key} returned no usable content-length`)
       }
+      return { size: length, contentType: res.headers.get('content-type') }
     },
 
     async delete(key) {

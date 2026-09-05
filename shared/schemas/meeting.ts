@@ -35,8 +35,9 @@ export const meetingIdSchema = z.uuid()
 /** Full meeting record as returned by the API. */
 export const meetingSchema = z.object({
   id: meetingIdSchema,
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
+  // Postgres returns `+00:00` offsets, not a bare `Z`, so offsets must be allowed.
+  createdAt: z.iso.datetime({ offset: true }),
+  updatedAt: z.iso.datetime({ offset: true }),
   title: z.string(),
   status: meetingStatusSchema,
   sourceFileName: z.string(),
@@ -46,6 +47,6 @@ export const meetingSchema = z.object({
   audioKey: z.string(),
   audioBytes: z.int().positive(),
   audioMime: z.literal(AUDIO_MIME),
-  uploadedAt: z.iso.datetime().nullable(),
+  uploadedAt: z.iso.datetime({ offset: true }).nullable(),
   errorMessage: z.string().nullable(),
 }) satisfies z.ZodType<Meeting>

@@ -32,6 +32,13 @@ const statusLabel = computed(() => ({
   'cancelled': 'Cancelled',
 }[state.status]))
 
+/**
+ * The extracted audio must fit Groq's free-tier upload cap. Surfaced here
+ * because the server would otherwise reject it with a generic schema error
+ * after the user has already waited through a full extraction.
+ */
+const oversized = computed(() => state.outputBytes > MAX_AUDIO_BYTES)
+
 const uploadLabel = computed(() => ({
   idle: '',
   registering: 'Registering meeting…',
@@ -43,16 +50,19 @@ const uploadLabel = computed(() => ({
 
 function selectFile(files: FileList | null) {
   const file = files?.[0]
-  if (!file) return
+  // Never swap the recording out from under a running extraction or upload.
+  if (!file || busy.value) return
   // Discard any previously extracted audio: it belongs to the old recording,
   // and pairing it with this file's metadata would store the wrong meeting.
   resetExtraction()
+  uploader.reset()
   selectedFile.value = file
   title.value = titleFromFileName(file.name)
 }
 
 function onDrop(event: DragEvent) {
   dragOver.value = false
+  if (busy.value) return
   selectFile(event.dataTransfer?.files ?? null)
 }
 
@@ -61,7 +71,9 @@ function start() {
 }
 
 function clearSelection() {
+  if (busy.value) return
   resetExtraction()
+  uploader.reset()
   selectedFile.value = null
   title.value = ''
 }
@@ -221,7 +233,7 @@ async function uploadAndContinue() {
         </UFormField>
         <div class="flex flex-wrap items-center gap-3">
           <UButton
-            :disabled="uploading || !title.trim()"
+            :disabled="uploading || !title.trim() || oversized"
             :loading="uploading"
             icon="i-lucide-arrow-right"
             trailing
@@ -265,6 +277,15 @@ async function uploadAndContinue() {
             {{ formatMegabytes(uploader.state.sentBytes) }} / {{ formatMegabytes(uploader.state.totalBytes) }}
           </p>
         </div>
+
+        <UAlert
+          v-if="oversized"
+          color="warning"
+          variant="subtle"
+          icon="i-lucide-triangle-alert"
+          title="Recording is too long to transcribe"
+          :description="`This audio is ${formatMegabytes(state.outputBytes)}, over the ${formatMegabytes(MAX_AUDIO_BYTES)} limit. Split the recording and upload each part separately.`"
+        />
 
         <UAlert
           v-if="uploader.state.error"

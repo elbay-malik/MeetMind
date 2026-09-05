@@ -45,7 +45,9 @@ describe('rowToMeeting', () => {
   })
 
   it('coerces bigint columns arriving as strings', () => {
-    // PostgREST serialises bigint as a JSON string once values exceed 2^53.
+    // Defensive: source_bytes is a Postgres bigint, and drivers may hand back
+    // large integers as strings. Realistic file sizes are far below 2^53, so
+    // this guards the column type rather than a size we actually expect.
     const asString = { ...row, source_bytes: '1045800000' as unknown as number }
     expect(rowToMeeting(asString).sourceBytes).toBe(1_045_800_000)
   })

@@ -38,6 +38,37 @@ describe('createMeetingBodySchema', () => {
 })
 
 describe('meetingSchema', () => {
+  const stored = {
+    id: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+    createdAt: '2026-09-05T12:00:00.000Z',
+    updatedAt: '2026-09-05T12:00:00.000Z',
+    title: 'Weekly sync',
+    status: 'uploaded' as const,
+    sourceFileName: 'weekly-sync.mp4',
+    sourceBytes: 1,
+    sourceMime: null,
+    durationSec: null,
+    audioKey: 'meetings/9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d/audio.ogg',
+    audioBytes: 10,
+    audioMime: 'audio/ogg' as const,
+    uploadedAt: null,
+    errorMessage: null,
+  }
+
+  it('accepts the offset timestamps Postgres returns, not just Z', () => {
+    const r = meetingSchema.safeParse({
+      ...stored,
+      createdAt: '2026-09-05T12:00:00+00:00',
+      updatedAt: '2026-09-05T12:00:00.123456+00:00',
+      uploadedAt: '2026-09-05T12:05:00+02:00',
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('still rejects a timestamp with no zone at all', () => {
+    expect(meetingSchema.safeParse({ ...stored, createdAt: '2026-09-05T12:00:00' }).success).toBe(false)
+  })
+
   it('validates a stored meeting record', () => {
     const r = meetingSchema.safeParse({
       id: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',

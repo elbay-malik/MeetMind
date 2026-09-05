@@ -22,7 +22,7 @@ filesystem, per-request env). Two practical constraints shaped the design:
 ## Decision
 
 1. **Audio blobs go to Cloudflare R2 through its S3 API, uploaded directly by the
-   browser to a presigned PUT URL** minted by `POST /api/meetings` with
+   browser to a time-limited presigned PUT URL** minted by `POST /api/meetings` with
    [aws4fetch](https://github.com/mhart/aws4fetch) (SigV4 on Web Crypto — runs
    unchanged on Node and Workers; it is Cloudflare's own recommended client).
    Path-style endpoint `https://<account>.r2.cloudflarestorage.com/<bucket>/<key>`,
@@ -31,7 +31,10 @@ filesystem, per-request env). Two practical constraints shaped the design:
 
 2. **Three-step protocol with server-side verification.** The client registers the
    meeting (row `pending_upload`, declares the byte count), PUTs the blob, then calls
-   `POST /api/meetings/:id/complete`. The server HEADs the object and accepts it only
+   `POST /api/meetings/:id/complete`. The URL is time-limited, not single-use: like any
+   presigned URL it can be replayed until it expires, so the object can still be
+   replaced within that window, including after verification. Overwriting only ever
+   affects the uploader's own meeting, and the 15-minute lifetime bounds it. The server HEADs the object and accepts it only
    if its size equals the declared size (which the schema already bounds to 25 MiB);
    otherwise it deletes the object and marks the row `failed`. Completion is
    idempotent. Object keys are always `meetings/<uuid>/audio.ogg` with a server-minted
@@ -52,11 +55,16 @@ filesystem, per-request env). Two practical constraints shaped the design:
    gives us, enforced in our own route. This is what `pnpm dev`, the vitest e2e
    suite and `scripts/drive-upload.mjs` run against.
 
-5. **The privacy invariant is enforced, not assumed.** No route accepts video: the
-   only bodies the server takes are a small JSON payload and, on the local driver, a
-   PUT whose media type must be `audio/ogg` and whose length must match the grant.
-   On R2 the bucket's CORS policy allows `PUT` from the app origin only, and the
-   completion step deletes anything that is not the declared audio.
+5. **The privacy invariant is structural, and checked as far as it can be.** No
+   server route ever receives video: the only bodies the server takes are a small JSON
+   payload and, on the local driver, a PUT whose media type must be `audio/ogg` and
+   whose length must match the grant. On R2 the browser uploads to the bucket directly,
+   and the host-only signature means it could store any bytes under the granted key, so
+   the completion step verifies the object's size and reported media type and deletes
+   anything that fails. What it does **not** do is inspect the bytes: a client that
+   deliberately sent video labelled `audio/ogg` at exactly the declared length would
+   pass. That is a self-inflicted leak by the uploader rather than something the product
+   does behind the user's back, and transcoding would be the only real defence.
 
 ## Consequences
 
@@ -72,11 +80,15 @@ filesystem, per-request env). Two practical constraints shaped the design:
   deletes are free. Negligible against the 1M/10M monthly free allowances.
 - Abandoned `pending_upload` rows (browser closed mid-upload) accumulate; a sweep
   belongs with rate limiting in Phase 10.
-- R2 returns expired-URL errors without CORS headers, so the browser only sees an
-  opaque failure. The 15-minute lifetime is generous for a < 25 MB upload; the UI shows
-  a generic "storage rejected the upload" message and lets the user retry.
+- R2 returns expired-URL errors without CORS headers, so the browser cannot read the
+  status and the request surfaces as a network failure rather than an HTTP error. The
+  UI reports "Network error while uploading audio" and lets the user retry. The
+  15-minute lifetime is generous for a < 25 MB upload, so this should be rare.
 - The local drivers import `node:fs` lazily (dynamic `import()` of unstorage's fs
   driver) so the Cloudflare bundle never evaluates it; confirm in Phase 13.
+- A half-configured service is rejected at request time rather than falling back to the
+  local drivers, so a deployment missing one of the four R2 settings fails loudly
+  instead of quietly writing audio to a container filesystem.
 - The upload UI now hands off to `/meetings/:id/progress`, which reads the row and
   shows the pipeline stages — the seam for Phase 4 (transcription).
 

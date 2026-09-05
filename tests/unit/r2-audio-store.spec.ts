@@ -78,6 +78,17 @@ describe('head', () => {
     expect(await store.head(KEY)).toBeNull()
   })
 
+  it('throws rather than reporting zero bytes when the length header is missing', async () => {
+    // Reporting 0 would fail the size check and delete a good upload. Built by
+    // hand because `new Response` supplies a content-length of its own.
+    vi.stubGlobal('fetch', async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'audio/ogg' }),
+    }))
+    await expect(store.head(KEY)).rejects.toThrow(/content-length/)
+  })
+
   it('throws rather than reporting a zero-byte object on a server error', async () => {
     stubFetch([new Response(null, { status: 503 }), new Response(null, { status: 503 }), new Response(null, { status: 503 })])
     await expect(store.head(KEY)).rejects.toThrow(/503/)

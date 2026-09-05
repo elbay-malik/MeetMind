@@ -2,6 +2,7 @@ import type { H3Event } from 'h3'
 import type { MeetingRepository } from './meetings'
 import { createLocalMeetingRepository } from './local'
 import { createSupabaseMeetingRepository } from './supabase'
+import { requireAllOrNone } from '../storage'
 
 let announced = false
 function announce(kind: MeetingRepository['kind']) {
@@ -18,7 +19,11 @@ function announce(kind: MeetingRepository['kind']) {
  */
 export function useMeetingRepository(event: H3Event): MeetingRepository {
   const config = useRuntimeConfig(event)
-  const repo = config.supabaseUrl && config.supabaseServiceKey
+  const supabaseReady = requireAllOrNone('Supabase', {
+    NUXT_SUPABASE_URL: config.supabaseUrl,
+    NUXT_SUPABASE_SERVICE_KEY: config.supabaseServiceKey,
+  })
+  const repo = supabaseReady
     ? createSupabaseMeetingRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey })
     : createLocalMeetingRepository({ dataDir: config.dataDir })
   announce(repo.kind)

@@ -12,6 +12,20 @@ function localSecret(configured: string): string {
   return ephemeralSecret
 }
 
+/**
+ * True when every setting is present, false when none are. A half-configured
+ * service is a deployment mistake: falling back to the local driver would look
+ * like it worked while writing audio to a container filesystem.
+ */
+export function requireAllOrNone(service: string, settings: Record<string, string>): boolean {
+  const missing = Object.entries(settings).filter(([, value]) => !value).map(([name]) => name)
+  if (missing.length === 0) return true
+  if (missing.length === Object.keys(settings).length) return false
+  throw new Error(
+    `${service} is partially configured — set ${missing.join(', ')}, or none of them to use the local driver.`,
+  )
+}
+
 let announced = false
 function announce(kind: AudioStore['kind']) {
   if (announced) return
@@ -28,7 +42,12 @@ function announce(kind: AudioStore['kind']) {
  */
 export function useAudioStore(event: H3Event): R2AudioStore | LocalAudioStore {
   const config = useRuntimeConfig(event)
-  const r2Ready = config.r2AccountId && config.r2AccessKeyId && config.r2SecretAccessKey && config.r2Bucket
+  const r2Ready = requireAllOrNone('Cloudflare R2', {
+    NUXT_R2_ACCOUNT_ID: config.r2AccountId,
+    NUXT_R2_ACCESS_KEY_ID: config.r2AccessKeyId,
+    NUXT_R2_SECRET_ACCESS_KEY: config.r2SecretAccessKey,
+    NUXT_R2_BUCKET: config.r2Bucket,
+  })
   const store = r2Ready
     ? createR2AudioStore({
         accountId: config.r2AccountId,

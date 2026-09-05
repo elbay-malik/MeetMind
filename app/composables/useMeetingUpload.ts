@@ -109,9 +109,22 @@ export function useMeetingUpload() {
     xhr?.abort()
   }
 
+  /** Clear the outcome of a previous attempt. Refuses to discard a live one. */
+  function reset() {
+    if (busy.value) return
+    Object.assign(state, {
+      status: 'idle',
+      ratio: 0,
+      sentBytes: 0,
+      totalBytes: 0,
+      meeting: null,
+      error: null,
+    } satisfies Partial<UploadState>)
+  }
+
   onUnmounted(cancel)
 
-  return { state, busy, upload, cancel }
+  return { state, busy, upload, cancel, reset }
 }
 
 function describeError(err: unknown): string {

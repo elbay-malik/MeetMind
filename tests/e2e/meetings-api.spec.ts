@@ -129,6 +129,24 @@ describe('upload → complete', () => {
     expect(still.status).toBe('pending_upload')
   })
 
+  it('rejects a stored object of the wrong media type', async () => {
+    // The local upload route pins the media type, so plant the object directly
+    // to simulate R2, where the host-only signature lets the browser store any
+    // type under the key.
+    const { meeting } = await register()
+    const path = audioPath(meeting)
+    await mkdir(join(path, '..'), { recursive: true })
+    await writeFile(path, audio)
+    await writeFile(`${path}.meta`, JSON.stringify({ contentType: 'video/mp4', size: audio.byteLength }))
+
+    const res = await fetch(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
+    expect(res.status).toBe(409)
+    await expect(stat(path)).rejects.toThrow()
+    const { meeting: failed } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    expect(failed.status).toBe('failed')
+    expect(failed.errorMessage).toMatch(/video\/mp4/)
+  })
+
   it('deletes a stored object whose size differs from the declaration and fails the meeting', async () => {
     const { meeting } = await register()
     // Bypass the guarded upload route: plant an object of the wrong size.
