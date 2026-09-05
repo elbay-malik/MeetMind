@@ -95,6 +95,73 @@ describe('head', () => {
   })
 })
 
+describe('openRange', () => {
+  const body = () => new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1, 2, 3]))
+      controller.close()
+    },
+  })
+
+  it('asks R2 for exactly the window, and reports the size from Content-Range', async () => {
+    const calls = stubFetch([new Response(body(), {
+      status: 206,
+      headers: { 'content-range': 'bytes 100-199/5000', 'content-type': 'audio/ogg' },
+    })])
+
+    const opened = await store.openRange(KEY, { start: 100, end: 199 })
+
+    expect(calls[0]!.headers.get('range')).toBe('bytes=100-199')
+    // The object's true size, not the slice's length.
+    expect(opened).toMatchObject({ size: 5000, window: { start: 100, end: 199 }, contentType: 'audio/ogg' })
+  })
+
+  it('believes Content-Range over the window we asked for', async () => {
+    // A store may serve a different window than requested; the response is
+    // authoritative and the 206 we forward must describe what was actually sent.
+    stubFetch([new Response(body(), { status: 206, headers: { 'content-range': 'bytes 0-99/5000' } })])
+    const opened = await store.openRange(KEY, { start: 100, end: 199 })
+    expect(opened!.window).toEqual({ start: 0, end: 99 })
+  })
+
+  it('refuses a 206 with no usable Content-Range rather than mistaking the slice for the object', async () => {
+    // Falling back to Content-Length here would report the slice length as the
+    // whole object's size, and every later range would be computed against it.
+    for (const headers of [{}, { 'content-range': 'bytes */5000' }, { 'content-range': 'garbage' }]) {
+      stubFetch([new Response(body(), { status: 206, headers })])
+      await expect(store.openRange(KEY, { start: 0, end: 99 })).rejects.toThrow(/Content-Range/)
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rejects a Content-Range whose window falls outside the object', async () => {
+    stubFetch([new Response(body(), { status: 206, headers: { 'content-range': 'bytes 100-9999/5000' } })])
+    await expect(store.openRange(KEY, { start: 100, end: 9999 })).rejects.toThrow(/Content-Range/)
+  })
+
+  it('treats a 200 as the whole object, which is what an ignored range means', async () => {
+    stubFetch([new Response(body(), { status: 200, headers: { 'content-length': '5000' } })])
+    const opened = await store.openRange(KEY, { start: 100, end: 199 })
+    expect(opened).toMatchObject({ size: 5000, window: { start: 0, end: 4999 } })
+  })
+
+  it('sends no range header when asked for the whole object', async () => {
+    const calls = stubFetch([new Response(body(), { status: 200, headers: { 'content-length': '5000' } })])
+    await store.openRange(KEY, null)
+    expect(calls[0]!.headers.get('range')).toBeNull()
+  })
+
+  it('returns null for a missing object', async () => {
+    stubFetch([new Response(null, { status: 404 })])
+    expect(await store.openRange(KEY, null)).toBeNull()
+  })
+
+  it('throws on a server error rather than returning an empty stream', async () => {
+    stubFetch([new Response(null, { status: 503 }), new Response(null, { status: 503 }), new Response(null, { status: 503 })])
+    await expect(store.openRange(KEY, null)).rejects.toThrow(/503/)
+  })
+})
+
 describe('delete', () => {
   it('sends an authenticated DELETE', async () => {
     const calls = stubFetch([new Response(null, { status: 204 })])

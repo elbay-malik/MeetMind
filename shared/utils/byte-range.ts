@@ -12,7 +12,7 @@ export type ByteRangeResult
   = | { kind: 'full' }
     /** Answer 206 with exactly these bytes. */
     | { kind: 'partial', range: ByteRange }
-    /** Answer 416 with `Content-Range: bytes ~/<size>`. */
+    /** Answer 416, whose Content-Range reports only the size (RFC 9110 s14.4). */
     | { kind: 'unsatisfiable' }
 
 /**

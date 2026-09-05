@@ -42,9 +42,26 @@ export function findActiveSegment(segments: TranscriptSegment[], timeMs: number)
  * through silence reads better than the view freezing.
  */
 export function findFollowSegment(segments: TranscriptSegment[], timeMs: number): number {
+  if (segments.length === 0) return -1
   const active = findActiveSegment(segments, timeMs)
   if (active !== -1) return active
-  const next = segments.findIndex(s => s.startMs > timeMs)
+
+  // Binary search for the first segment starting after the time. A scan here
+  // would be O(n) on every update during silence, which is exactly the cost
+  // findActiveSegment exists to avoid.
+  let low = 0
+  let high = segments.length - 1
+  let next = -1
+  while (low <= high) {
+    const mid = (low + high) >> 1
+    if (segments[mid]!.startMs > timeMs) {
+      next = mid
+      high = mid - 1
+    }
+    else {
+      low = mid + 1
+    }
+  }
   // Past the last segment, stay on the last one.
   return next === -1 ? segments.length - 1 : next
 }

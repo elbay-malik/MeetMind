@@ -1,7 +1,4 @@
-import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Readable } from 'node:stream'
 import { createStorage, type Storage } from 'unstorage'
 import type {
   AudioStore,
@@ -126,6 +123,17 @@ export function createLocalAudioStore(options: { dataDir: string, secret: string
       // Straight to the file: unstorage has no streaming read, and buffering a
       // whole object per range request is what this method exists to avoid. The
       // fs driver stores a key at <base>/<key with slashes as directories>.
+      //
+      // node:fs and node:stream are imported here, not at module scope, for the
+      // same reason the fs driver is: server/utils/storage/index.ts imports this
+      // file unconditionally, so a top-level Node import would be evaluated on
+      // deploy targets that have no such modules even when R2 is the driver.
+      const [{ createReadStream }, { stat }, { Readable }] = await Promise.all([
+        import('node:fs'),
+        import('node:fs/promises'),
+        import('node:stream'),
+      ])
+
       const path = join(base, ...key.split('/'))
       const info = await stat(path).catch(() => null)
       if (!info?.isFile()) return null

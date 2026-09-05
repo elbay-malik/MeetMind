@@ -27,6 +27,17 @@ export interface R2AudioStore extends AudioStore {
   readonly kind: 'r2'
 }
 
+/** Parse `bytes <start>-<end>/<size>`; null for anything else, including `*`. */
+function parseContentRange(header: string | null): { start: number, end: number, size: number } | null {
+  const match = header && /^bytes\s+(\d+)-(\d+)\/(\d+)$/.exec(header.trim())
+  if (!match) return null
+  const start = Number(match[1])
+  const end = Number(match[2])
+  const size = Number(match[3])
+  if (end < start || end >= size) return null
+  return { start, end, size }
+}
+
 export function createR2AudioStore(options: R2Options): R2AudioStore {
   const client = new AwsClient({
     accessKeyId: options.accessKeyId,
@@ -109,19 +120,33 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
       if (!res.ok) throw new Error(`R2 GET ${key} failed with HTTP ${res.status}`)
       if (!res.body) throw new Error(`R2 GET ${key} returned no body`)
 
-      // A 206 reports the authoritative total in Content-Range. A 200 means the
-      // range was ignored and we are holding the whole object.
-      const contentRange = res.headers.get('content-range')
-      const total = contentRange
-        ? Number(contentRange.split('/').pop())
-        : Number(res.headers.get('content-length'))
+      // On a 206 the served window and the object's true size come from
+      // Content-Range, never from the window we asked for and never from
+      // Content-Length — which reports the slice, so trusting it here would
+      // announce the slice's length as the whole object's size.
+      if (res.status === 206) {
+        const parsed = parseContentRange(res.headers.get('content-range'))
+        if (!parsed) {
+          throw new Error(`R2 GET ${key} answered 206 without a usable Content-Range`)
+        }
+        return {
+          body: res.body,
+          size: parsed.size,
+          contentType: res.headers.get('content-type'),
+          window: { start: parsed.start, end: parsed.end },
+        }
+      }
+
+      // A 200 means the range was ignored and this is the whole object.
+      const total = Number(res.headers.get('content-length'))
       if (!Number.isFinite(total)) throw new Error(`R2 GET ${key} reported no usable length`)
 
-      const served: ByteWindow = res.status === 206 && window
-        ? window
-        : { start: 0, end: Math.max(0, total - 1) }
-
-      return { body: res.body, size: total, contentType: res.headers.get('content-type'), window: served }
+      return {
+        body: res.body,
+        size: total,
+        contentType: res.headers.get('content-type'),
+        window: { start: 0, end: Math.max(0, total - 1) },
+      }
     },
 
     async delete(key) {
