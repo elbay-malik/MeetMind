@@ -122,6 +122,31 @@ describe('list', () => {
   })
 })
 
+describe('claim', () => {
+  it('filters on the current status, which is what makes it atomic', async () => {
+    const calls = stubPostgrest([{ ...row, status: 'transcribing' }])
+    const claimed = await repo.claim(row.id, 'uploaded', { status: 'transcribing' })
+
+    expect(calls[0]!.method).toBe('PATCH')
+    // Without this second filter the database cannot pick a winner and every
+    // concurrent caller proceeds.
+    expect(calls[0]!.url.searchParams.get('id')).toBe(`eq.${row.id}`)
+    expect(calls[0]!.url.searchParams.get('status')).toBe('eq.uploaded')
+    expect(calls[0]!.body).toEqual({ status: 'transcribing' })
+    expect(claimed?.status).toBe('transcribing')
+  })
+
+  it('returns null when the row was in another state, so the caller knows it lost', async () => {
+    stubPostgrest([])
+    expect(await repo.claim(row.id, 'uploaded', { status: 'transcribing' })).toBeNull()
+  })
+
+  it('surfaces a database error rather than reporting a lost race', async () => {
+    stubPostgrest({ code: '42501', message: 'permission denied', details: '', hint: '' }, { status: 403 })
+    await expect(repo.claim(row.id, 'uploaded', { status: 'transcribing' })).rejects.toThrow(/42501/)
+  })
+})
+
 describe('update', () => {
   it('patches only the given columns for the given id', async () => {
     const calls = stubPostgrest([{ ...row, status: 'uploaded', uploaded_at: '2026-09-05T12:05:00.000Z' }])

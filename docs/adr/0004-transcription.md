@@ -118,6 +118,13 @@ new database constraint for no behavioural gain.
   cross-call transactions, so replacing a transcript is a delete followed by an
   insert, with a visible gap. That gap sits strictly inside the window where the
   meeting is claimed as `transcribing`.
+- The transcript is rendered in full, server-side. For a meeting near the size
+  cap that is roughly a megabyte of HTML, with the segments appearing twice —
+  once rendered, once in the hydration payload. Left as is deliberately: Phase 5
+  replaces this view with the waveform player and is where virtualisation
+  belongs, and a half-measure now (truncating, or moving the fetch client-side)
+  would either hide transcript or trade the payload for a hydration mismatch on
+  the empty-transcript case.
 - Transcription is invoked by a button. Nothing in this phase orchestrates it,
   because that is Phase 9, and a visible trigger is more honest than a background
   job that does not exist yet.

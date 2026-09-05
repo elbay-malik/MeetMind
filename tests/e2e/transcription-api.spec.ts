@@ -91,9 +91,11 @@ describe('POST /api/meetings/:id/transcribe', () => {
     const res = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
     expect(res.status).toBe(409)
 
-    // The meeting must not be left claimed as transcribing.
+    // Refused before any claim, so the status is untouched. This would have
+    // caught a route that claimed first and asked questions afterwards.
     const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('pending_upload')
+    expect(after.errorMessage).toBeNull()
   })
 
   it('404s for unknown and malformed ids', async () => {
@@ -127,15 +129,14 @@ describe('POST /api/meetings/:id/transcribe', () => {
     expect(segments.map(s => s.idx)).toEqual(segments.map((_, i) => i))
   })
 
-  it('refuses to start again while a transcription is in flight', async () => {
+  it('serves a finished meeting from storage instead of transcribing again', async () => {
     const meeting = await uploadedMeeting()
-    // Claim it the way the route does, then confirm the route will not proceed.
-    await $fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
-    const { meeting: done } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
-    expect(done.status).toBe('summarizing')
-    // A second call is served from storage rather than re-transcribed.
+    const first = await transcribe(meeting.id)
+    expect(first.meeting.status).toBe('summarizing')
+
     const again = await transcribe(meeting.id)
     expect(again.meeting.status).toBe('summarizing')
+    expect(again.segments).toEqual(first.segments)
   })
 })
 

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { AwsClient } from 'aws4fetch'
 import { createGroqTranscriber } from '../../server/utils/transcription/groq'
 import { meetingSchema, transcriptSegmentSchema } from '../../shared/schemas/meeting'
@@ -183,19 +183,32 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
 })
 
 // ----------------------------------------------------------------------- Groq
-describe.skipIf(!has('NUXT_GROQ_API_KEY'))('Groq Whisper', () => {
-  let audio: Uint8Array
-
-  beforeAll(() => {
-    // Real speech-shaped audio in exactly the format the browser produces.
+/**
+ * The probe needs a native ffmpeg and the committed fixture. Build it up front
+ * so a machine lacking either SKIPS this group rather than failing it — a red
+ * suite would say Groq is broken when the local toolchain is simply incomplete.
+ */
+function buildAudioProbe(): Uint8Array | null {
+  try {
     const source = fileURLToPath(new URL('../../fixtures/fixture-30s-720p.mp4', import.meta.url))
     const out = execFileSync('ffmpeg', [
       '-v', 'error', '-i', source, '-t', '5', '-vn', '-ac', '1', '-ar', '16000',
       '-c:a', 'libopus', '-b:a', '16k', '-f', 'ogg', 'pipe:1',
-    ], { maxBuffer: 32 * 1024 * 1024 })
-    audio = new Uint8Array(out)
-    expect(audio.byteLength).toBeGreaterThan(0)
-  })
+    ], { maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+    return out.byteLength > 0 ? new Uint8Array(out) : null
+  }
+  catch {
+    return null
+  }
+}
+
+const probe = has('NUXT_GROQ_API_KEY') ? buildAudioProbe() : null
+if (has('NUXT_GROQ_API_KEY') && !probe) {
+  console.info('[verify] Groq checks skipped: needs a native ffmpeg and fixtures/fixture-30s-720p.mp4')
+}
+
+describe.skipIf(!has('NUXT_GROQ_API_KEY') || !probe)('Groq Whisper', () => {
+  const audio = probe!
 
   it('accepts Ogg/Opus at 16 kHz mono and returns the envelope we parse', async () => {
     const form = new FormData()
