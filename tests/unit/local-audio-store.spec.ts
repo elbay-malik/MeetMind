@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createLocalAudioStore } from '../../server/utils/storage/local'
+import { signToken } from '../../server/utils/signed-token'
 
 let dataDir: string
 beforeAll(async () => {
@@ -36,6 +37,28 @@ describe('createLocalAudioStore', () => {
     expect(await store.verifyGrant(token, Date.now() + 61_000)).toBeNull()
     const other = createLocalAudioStore({ dataDir, secret: 'different' })
     expect(await other.verifyGrant(token)).toBeNull()
+  })
+
+  it('rejects a correctly signed grant whose payload is malformed', async () => {
+    // Signed by us, so the HMAC checks out — the shape must be validated too,
+    // which is what protects the route if the payload ever changes shape.
+    const store = createLocalAudioStore({ dataDir, secret: 's3cret' })
+    const exp = Math.floor(Date.now() / 1000) + 600
+    const valid = { v: 1, key: 'meetings/abc/audio.ogg', contentType: 'audio/ogg', contentLength: 42, exp }
+    expect(await store.verifyGrant(await signToken(valid, 's3cret'))).not.toBeNull()
+
+    for (const bad of [
+      { ...valid, v: 2 },
+      { ...valid, key: '' },
+      { ...valid, contentType: undefined },
+      { ...valid, contentLength: undefined },
+      { ...valid, contentLength: -1 },
+      { ...valid, contentLength: 1.5 },
+      { ...valid, exp: 'soon' },
+      'not-an-object',
+    ]) {
+      expect(await store.verifyGrant(await signToken(bad, 's3cret')), JSON.stringify(bad)).toBeNull()
+    }
   })
 
   it('writes, inspects and deletes objects under <dataDir>/audio', async () => {

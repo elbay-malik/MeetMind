@@ -72,7 +72,15 @@ export function createLocalAudioStore(options: { dataDir: string, secret: string
 
     async verifyGrant(token, nowMs = Date.now()) {
       const grant = await verifyToken<LocalUploadGrant>(token, options.secret)
-      if (!grant || grant.v !== 1 || typeof grant.key !== 'string' || typeof grant.exp !== 'number') return null
+      // The grant is the upload route's whole contract, so validate every field
+      // rather than trusting the signature to imply a well-formed payload: a
+      // token minted before a shape change would still verify.
+      if (!grant || typeof grant !== 'object') return null
+      if (grant.v !== 1) return null
+      if (typeof grant.key !== 'string' || !grant.key) return null
+      if (typeof grant.contentType !== 'string' || !grant.contentType) return null
+      if (!Number.isInteger(grant.contentLength) || grant.contentLength < 0) return null
+      if (typeof grant.exp !== 'number' || !Number.isFinite(grant.exp)) return null
       if (grant.exp * 1000 <= nowMs) return null
       return grant
     },
