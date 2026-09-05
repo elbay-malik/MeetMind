@@ -80,8 +80,14 @@ pnpm dev            # http://localhost:3000
 ```
 
 Without any credentials the app is fully usable: uploaded audio and meeting rows are
-kept under `.data/` by the local drivers. Set the variables below to switch to the
-production services (each pair is independent).
+kept under `.data/` by the local drivers, and a stub transcriber stands in for Groq.
+Set the variables below to switch to the production services (each group is
+independent).
+
+Once real keys are in place, `pnpm test:services` checks each one against the driver
+that uses it — presigned uploads and CORS on R2, the schema and triggers on Supabase,
+and whether Groq's response really has the shape the parser assumes. Those contracts
+are the one thing the offline tests cannot prove.
 
 ### Storage setup (Cloudflare R2)
 
@@ -129,6 +135,7 @@ quota; the UI reports it as such.
 | `pnpm typecheck` | `nuxt typecheck` (vue-tsc, strict) |
 | `pnpm test` / `pnpm test:watch` | Vitest unit + Nuxt-runtime tests |
 | `pnpm test:e2e` | Builds the app, then tests the Nitro routes against the local drivers |
+| `pnpm test:services` | Exercises the real R2, Supabase and Groq services; each is skipped unless its keys are set |
 | `node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: drop → extract → upload → progress page, then inspects storage |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
 

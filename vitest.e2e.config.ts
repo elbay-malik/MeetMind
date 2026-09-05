@@ -5,6 +5,10 @@ import { defineVitestConfig } from '@nuxt/test-utils/config'
 export default defineVitestConfig({
   test: {
     include: ['tests/e2e/**/*.spec.ts'],
+    // defineVitestConfig always adds a `nuxt` project matching `tests/nuxt/**`
+    // whatever `include` says, so exclude it explicitly or these runs also
+    // execute the component tests.
+    exclude: ['tests/nuxt/**', 'tests/unit/**'],
     testTimeout: 60_000,
     hookTimeout: 300_000,
   },

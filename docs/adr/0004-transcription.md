@@ -125,7 +125,9 @@ new database constraint for no behavioural gain.
 ## Follow-ups
 
 - Verify against a real Groq key: the response envelope, that Ogg/Opus is accepted,
-  and whether an at-cap file is refused or served.
+  and whether an at-cap file is refused or served. `pnpm test:services` covers the
+  first two by sending real Opus and asserting the production parser handles what
+  comes back; the at-cap question still needs a full-size file.
 - Measure whether building a 25 MB multipart body fits the Workers free-plan CPU
   budget; if not, the `url` path stops being an optimisation and becomes required.
 - Neither the R2 nor the Supabase driver has still ever run against a real service

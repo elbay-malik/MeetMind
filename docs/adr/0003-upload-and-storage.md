@@ -117,5 +117,6 @@ filesystem, per-request env). Two practical constraints shaped the design:
 
 - Run the flow once against a real R2 bucket and Supabase project (set the six
   `NUXT_*` variables, apply the migration, `pnpm dev`, upload the 30 s fixture) and
-  record the result here.
+  record the result here. `pnpm test:services` now checks the driver-level contracts
+  automatically, including the CORS rule that only fails inside a browser.
 - Sweep stale `pending_upload` rows and their (absent) objects — Phase 10.
