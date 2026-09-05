@@ -63,6 +63,9 @@ filesystem, per-request env). Two practical constraints shaped the design:
 - Development, CI and the headless acceptance script run with zero credentials. The
   price is that the R2 and Supabase drivers are exercised only where those settings
   exist — **verifying them against real accounts is an open follow-up** (see below).
+  Pointing `NUXT_SUPABASE_URL` at a dead endpoint does confirm driver *selection* and
+  the failure path (a clear server-side message, a generic 500 to the client that
+  leaks no endpoint), but says nothing about query correctness.
 - Two implementations sit behind each of two small interfaces (`AudioStore`,
   `MeetingRepository`); the routes are driver-agnostic.
 - Per meeting R2 costs one Class A op (the PUT) and one Class B op (the HEAD);

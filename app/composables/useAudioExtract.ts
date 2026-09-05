@@ -160,13 +160,9 @@ export function useAudioExtract() {
     return worker
   }
 
-  function extract(file: File, options: ExtractOptions) {
-    if (!import.meta.client || activeJobId) return
-    if (state.outputUrl) URL.revokeObjectURL(state.outputUrl)
-    Object.assign(state, {
-      status: 'loading-core',
-      fileName: file.name,
-      fileBytes: file.size,
+  /** The cleared shape shared by {@link reset} and the start of {@link extract}. */
+  function blankState(): Omit<ExtractState, 'status' | 'fileName' | 'fileBytes'> {
+    return {
       durationSec: null,
       ratio: 0,
       outTimeSec: 0,
@@ -178,6 +174,33 @@ export function useAudioExtract() {
       error: null,
       logs: [],
       jsHeapPeakMB: null,
+    }
+  }
+
+  /**
+   * Drop any extracted audio and return to idle. Callers must do this when the
+   * selected recording changes, so a stale blob can never be paired with a new
+   * file's metadata.
+   */
+  function reset() {
+    if (activeJobId) cancel()
+    if (state.outputUrl) URL.revokeObjectURL(state.outputUrl)
+    Object.assign(state, {
+      status: 'idle',
+      fileName: null,
+      fileBytes: 0,
+      ...blankState(),
+    } satisfies Partial<ExtractState>)
+  }
+
+  function extract(file: File, options: ExtractOptions) {
+    if (!import.meta.client || activeJobId) return
+    if (state.outputUrl) URL.revokeObjectURL(state.outputUrl)
+    Object.assign(state, {
+      status: 'loading-core',
+      fileName: file.name,
+      fileBytes: file.size,
+      ...blankState(),
     } satisfies Partial<ExtractState>)
 
     activeJobId = crypto.randomUUID()
@@ -210,5 +233,5 @@ export function useAudioExtract() {
     if (state.outputUrl) URL.revokeObjectURL(state.outputUrl)
   })
 
-  return { state, measurements, extract, cancel }
+  return { state, measurements, extract, cancel, reset }
 }

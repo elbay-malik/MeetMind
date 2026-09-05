@@ -3,7 +3,7 @@ import type { ExtractOptions } from '../workers/ffmpeg.protocol'
 
 useSeoMeta({ title: 'MeetMind — Upload' })
 
-const { state, extract, cancel } = useAudioExtract()
+const { state, extract, cancel, reset: resetExtraction } = useAudioExtract()
 const uploader = useMeetingUpload()
 
 const selectedFile = ref<File | null>(null)
@@ -44,6 +44,9 @@ const uploadLabel = computed(() => ({
 function selectFile(files: FileList | null) {
   const file = files?.[0]
   if (!file) return
+  // Discard any previously extracted audio: it belongs to the old recording,
+  // and pairing it with this file's metadata would store the wrong meeting.
+  resetExtraction()
   selectedFile.value = file
   title.value = titleFromFileName(file.name)
 }
@@ -57,7 +60,8 @@ function start() {
   if (selectedFile.value) extract(selectedFile.value, EXTRACT_OPTIONS)
 }
 
-function reset() {
+function clearSelection() {
+  resetExtraction()
   selectedFile.value = null
   title.value = ''
 }
@@ -143,7 +147,7 @@ async function uploadAndContinue() {
             v-else-if="selectedFile && !uploading"
             variant="ghost"
             color="neutral"
-            @click="reset"
+            @click="clearSelection"
           >
             Clear
           </UButton>

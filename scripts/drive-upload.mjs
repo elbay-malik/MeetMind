@@ -8,7 +8,8 @@
 // Requires a running server (pnpm dev / preview). BROWSER_CHANNEL=chrome|msedge
 // picks a system browser instead of Playwright's bundled Chromium.
 import { execFileSync } from 'node:child_process'
-import { readdirSync, statSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readdirSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 
@@ -38,6 +39,26 @@ try {
   await page.getByRole('button', { name: 'Extract audio' }).click()
   await page.getByRole('heading', { name: 'Audio ready to upload' }).waitFor({ timeout: 240_000 })
   console.log('extracted:', (await page.locator('p', { hasText: /Compressed to \d/ }).innerText()).replace(/\s+/g, ' '))
+
+  // Picking a DIFFERENT recording must discard the audio already extracted —
+  // otherwise the old blob would be stored under the new file's metadata.
+  // (Re-picking the same path is a no-op: browsers fire no change event.)
+  const readyCard = page.getByRole('heading', { name: 'Audio ready to upload' })
+  const decoy = join(mkdtempSync(join(tmpdir(), 'meetmind-drive-')), 'other-recording.mp4')
+  copyFileSync(fixturePath, decoy)
+  await page.locator('input[type=file]').setInputFiles(decoy)
+  try {
+    await readyCard.waitFor({ state: 'hidden', timeout: 5_000 })
+    console.log('switching recordings cleared the staged audio')
+  }
+  catch {
+    fail('selecting a different file left the previously extracted audio staged')
+  }
+
+  // Back to the real fixture, and extract it for the upload below.
+  await page.locator('input[type=file]').setInputFiles(fixturePath)
+  await page.getByRole('button', { name: 'Extract audio' }).click()
+  await readyCard.waitFor({ timeout: 240_000 })
 
   const title = page.getByRole('textbox', { name: 'Meeting title' })
   console.log('default title:', await title.inputValue())
