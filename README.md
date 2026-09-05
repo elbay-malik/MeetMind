@@ -34,7 +34,7 @@ uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
 │ gemini-embedding-001 (768d) ─► Supabase pgvector (HNSW)     │
 └───────────────┬──────────────────────────────────────────────┘
                 ▼
-   Transcript ↔ Wavesurfer.js player (click-to-seek both ways),
+   Transcript ↔ player over a byte-range route (click-to-seek both ways),
    semantic Q&A with clickable timestamp citations
 ```
 
@@ -48,6 +48,7 @@ The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 | [0002](docs/adr/0002-ffmpeg-spike-results.md) | FFmpeg WASM spike results (measured numbers) |
 | [0003](docs/adr/0003-upload-and-storage.md) | Upload & storage: direct-to-R2 presigned PUT, Supabase Postgres metadata, local drivers for dev/CI |
 | [0004](docs/adr/0004-transcription.md) | Transcription: one request per meeting, no chunking, stub provider for credential-free dev |
+| [0005](docs/adr/0005-audio-playback-and-transcript-sync.md) | Playback: same-origin byte-range route, native player before a waveform |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -137,15 +138,18 @@ quota; the UI reports it as such.
 | `pnpm test:e2e` | Builds the app, then tests the Nitro routes against the local drivers |
 | `pnpm test:services` | Exercises the real R2, Supabase and Groq services; each is skipped unless its keys are set |
 | `node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: drop → extract → upload → progress page, then inspects storage |
+| `node scripts/drive-player.mjs <url> <meetingId>` | Headless Chromium: click-to-seek, active-line highlight, transcript keyboard navigation |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
 
 ## Roadmap
 
-Phases 0-4 of the [playbook](docs/PLAYBOOK.md) are done: scaffold, FFmpeg spike,
-in-browser extraction, upload & storage, and transcription. Chunking was dropped after
-re-checking its premise — see [ADR-0004](docs/adr/0004-transcription.md). Next:
-transcript ↔ waveform sync, structured summaries, pgvector semantic Q&A, archive &
-cross-meeting search, rate limiting, deployment on Cloudflare Workers.
+Phases 0-5 of the [playbook](docs/PLAYBOOK.md) are done: scaffold, FFmpeg spike,
+in-browser extraction, upload & storage, transcription, and the transcript viewer with
+click-to-seek playback. Two playbook instructions were dropped after re-checking their
+premises: chunking ([ADR-0004](docs/adr/0004-transcription.md)) and, for now, the
+waveform library ([ADR-0005](docs/adr/0005-audio-playback-and-transcript-sync.md)).
+Next: waveform peaks computed during extraction, structured summaries, pgvector
+semantic Q&A, archive & cross-meeting search, rate limiting, Cloudflare Workers.
 
 ## License
 

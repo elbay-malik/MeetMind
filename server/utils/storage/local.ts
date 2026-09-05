@@ -1,6 +1,16 @@
+import { createReadStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { createStorage, type Storage } from 'unstorage'
-import type { AudioStore, PresignPutInput, StoredAudio, StoredObject } from './audio-store'
+import type {
+  AudioStore,
+  ByteWindow,
+  OpenedAudio,
+  PresignPutInput,
+  StoredAudio,
+  StoredObject,
+} from './audio-store'
 import { signToken, verifyToken } from '../signed-token'
 
 /** Payload of a local upload URL token — the moral equivalent of a presigned PUT. */
@@ -110,6 +120,26 @@ export function createLocalAudioStore(options: { dataDir: string, secret: string
       }
       const meta = await s.getItem<ObjectMeta>(metaKey(key))
       return { bytes, size: bytes.byteLength, contentType: meta?.contentType ?? null }
+    },
+
+    async openRange(key, window: ByteWindow | null): Promise<OpenedAudio | null> {
+      // Straight to the file: unstorage has no streaming read, and buffering a
+      // whole object per range request is what this method exists to avoid. The
+      // fs driver stores a key at <base>/<key with slashes as directories>.
+      const path = join(base, ...key.split('/'))
+      const info = await stat(path).catch(() => null)
+      if (!info?.isFile()) return null
+
+      const served: ByteWindow = window ?? { start: 0, end: Math.max(0, info.size - 1) }
+      const meta = await (await storage()).getItem<ObjectMeta>(metaKey(key))
+      const stream = createReadStream(path, { start: served.start, end: served.end })
+
+      return {
+        body: Readable.toWeb(stream) as ReadableStream<Uint8Array>,
+        size: info.size,
+        contentType: meta?.contentType ?? null,
+        window: served,
+      }
     },
 
     async delete(key) {

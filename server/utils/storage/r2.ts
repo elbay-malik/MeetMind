@@ -1,5 +1,12 @@
 import { AwsClient } from 'aws4fetch'
-import type { AudioStore, PresignPutInput, StoredAudio, StoredObject } from './audio-store'
+import type {
+  AudioStore,
+  ByteWindow,
+  OpenedAudio,
+  PresignPutInput,
+  StoredAudio,
+  StoredObject,
+} from './audio-store'
 
 export interface R2Options {
   accountId: string
@@ -92,6 +99,29 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
       // Trust the body over the header: the length we act on is the length we
       // actually received.
       return { bytes, size: bytes.byteLength, contentType: res.headers.get('content-type') }
+    },
+
+    async openRange(key, window: ByteWindow | null): Promise<OpenedAudio | null> {
+      // aws4fetch treats `range` as unsignable, so this needs no signing change.
+      const headers = window ? { range: `bytes=${window.start}-${window.end}` } : undefined
+      const res = await client.fetch(objectUrl(key).href, { method: 'GET', headers })
+      if (res.status === 404) return null
+      if (!res.ok) throw new Error(`R2 GET ${key} failed with HTTP ${res.status}`)
+      if (!res.body) throw new Error(`R2 GET ${key} returned no body`)
+
+      // A 206 reports the authoritative total in Content-Range. A 200 means the
+      // range was ignored and we are holding the whole object.
+      const contentRange = res.headers.get('content-range')
+      const total = contentRange
+        ? Number(contentRange.split('/').pop())
+        : Number(res.headers.get('content-length'))
+      if (!Number.isFinite(total)) throw new Error(`R2 GET ${key} reported no usable length`)
+
+      const served: ByteWindow = res.status === 206 && window
+        ? window
+        : { start: 0, end: Math.max(0, total - 1) }
+
+      return { body: res.body, size: total, contentType: res.headers.get('content-type'), window: served }
     },
 
     async delete(key) {

@@ -33,9 +33,34 @@ export interface AudioStore {
    * before the body is buffered where the driver can tell in advance.
    */
   get(key: string, maxBytes?: number): Promise<StoredAudio | null>
+  /**
+   * Stream a byte window without buffering it, or the whole object when
+   * `window` is null. Playback asks for ranges repeatedly and the isolate this
+   * runs in is small, so this path must never hold a whole file in memory.
+   * Returns `null` when the object is not there.
+   */
+  openRange(key: string, window: ByteWindow | null): Promise<OpenedAudio | null>
   delete(key: string): Promise<void>
 }
 
 export interface StoredAudio extends StoredObject {
   bytes: Uint8Array
+}
+
+/** An inclusive byte window, as it appears on the wire. */
+export interface ByteWindow {
+  start: number
+  end: number
+}
+
+/**
+ * A streamed slice of a stored object. `size` is the object's full length, not
+ * the slice's, because a 206 response has to report both.
+ */
+export interface OpenedAudio {
+  body: ReadableStream<Uint8Array>
+  size: number
+  contentType: string | null
+  /** The window actually served, which may be the whole object. */
+  window: ByteWindow
 }
