@@ -35,6 +35,13 @@ page.on('pageerror', e => consoleLines.push(`[pageerror] ${e.message}`))
 
 try {
   await page.goto(`${baseURL}/`, { waitUntil: 'networkidle' })
+
+  // The file input must be reachable by name, not just by CSS selector.
+  const namedInput = page.getByRole('button', { name: 'Choose a meeting recording' })
+    .or(page.getByLabel('Choose a meeting recording'))
+  if (await namedInput.count() === 0) fail('the recording file input has no accessible name')
+  else console.log('file input exposes an accessible name')
+
   await page.locator('input[type=file]').setInputFiles(fixturePath)
   await page.getByRole('button', { name: 'Extract audio' }).click()
   await page.getByRole('heading', { name: 'Audio ready to upload' }).waitFor({ timeout: 240_000 })

@@ -126,8 +126,10 @@ async function uploadAndContinue() {
             Drag a meeting video here, or choose a file
           </p>
           <input
+            id="recording-file"
             type="file"
             accept="video/*,audio/*"
+            aria-label="Choose a meeting recording"
             :disabled="busy"
             @change="selectFile(($event.target as HTMLInputElement).files)"
           >
@@ -167,6 +169,8 @@ async function uploadAndContinue() {
           <span
             v-if="statusLabel"
             class="text-sm text-muted"
+            role="status"
+            aria-live="polite"
           >{{ statusLabel }}</span>
         </div>
 
@@ -188,6 +192,7 @@ async function uploadAndContinue() {
 
         <UAlert
           v-if="state.error"
+          role="alert"
           color="error"
           variant="subtle"
           icon="i-lucide-triangle-alert"
@@ -263,6 +268,8 @@ async function uploadAndContinue() {
           <span
             v-if="uploadLabel"
             class="text-sm text-muted"
+            role="status"
+            aria-live="polite"
           >{{ uploadLabel }}</span>
         </div>
 
@@ -290,6 +297,7 @@ async function uploadAndContinue() {
 
         <UAlert
           v-if="uploader.state.error"
+          role="alert"
           color="error"
           variant="subtle"
           icon="i-lucide-triangle-alert"
