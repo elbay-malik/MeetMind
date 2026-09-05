@@ -1,0 +1,81 @@
+import { AwsClient } from 'aws4fetch'
+import type { AudioStore, PresignPutInput, StoredObject } from './audio-store'
+
+export interface R2Options {
+  accountId: string
+  accessKeyId: string
+  secretAccessKey: string
+  bucket: string
+}
+
+/**
+ * Cloudflare R2 through its S3-compatible API, signed with aws4fetch (SigV4
+ * on Web Crypto — runs on Node and Cloudflare Workers alike). The browser
+ * PUTs to a presigned URL; the server only ever HEADs or DELETEs objects.
+ *
+ * The bucket needs a CORS rule allowing PUT from the app origin with the
+ * `content-type` header (see README → Storage setup).
+ */
+export interface R2AudioStore extends AudioStore {
+  readonly kind: 'r2'
+}
+
+export function createR2AudioStore(options: R2Options): R2AudioStore {
+  const client = new AwsClient({
+    accessKeyId: options.accessKeyId,
+    secretAccessKey: options.secretAccessKey,
+    service: 's3',
+    region: 'auto',
+    retries: 2,
+  })
+  const endpoint = `https://${options.accountId}.r2.cloudflarestorage.com`
+
+  const objectUrl = (key: string) => {
+    const url = new URL(endpoint)
+    // Path-style addressing: /<bucket>/<key>, each key segment URL-encoded.
+    url.pathname = `/${options.bucket}/${key.split('/').map(encodeURIComponent).join('/')}`
+    return url
+  }
+
+  return {
+    kind: 'r2',
+
+    async presignPut(input: PresignPutInput) {
+      const url = objectUrl(input.key)
+      // Must be set before signing; aws4fetch otherwise defaults to 24 h.
+      url.searchParams.set('X-Amz-Expires', String(input.expiresInSec))
+      // Host-only signature (X-Amz-SignedHeaders=host), as in Cloudflare's own
+      // example: aws4fetch deliberately leaves content-type/content-length out
+      // of the signature, so neither can be pinned here. Size and type are
+      // verified after the upload by the completion route instead.
+      const signed = await client.sign(
+        new Request(url, { method: 'PUT' }),
+        { aws: { signQuery: true } },
+      )
+      return {
+        url: signed.url,
+        method: 'PUT' as const,
+        headers: { 'content-type': input.contentType },
+        expiresAt: new Date(Date.now() + input.expiresInSec * 1000).toISOString(),
+      }
+    },
+
+    async head(key): Promise<StoredObject | null> {
+      const res = await client.fetch(objectUrl(key).href, { method: 'HEAD' })
+      if (res.status === 404) return null
+      if (!res.ok) throw new Error(`R2 HEAD ${key} failed with HTTP ${res.status}`)
+      return {
+        size: Number(res.headers.get('content-length') ?? 0),
+        contentType: res.headers.get('content-type'),
+      }
+    },
+
+    async delete(key) {
+      const res = await client.fetch(objectUrl(key).href, { method: 'DELETE' })
+      // S3 semantics: 204 on success, and deleting a missing key is not an error.
+      if (!res.ok && res.status !== 404) {
+        throw new Error(`R2 DELETE ${key} failed with HTTP ${res.status}`)
+      }
+    },
+  }
+}

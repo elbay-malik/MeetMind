@@ -9,6 +9,15 @@ export default defineNuxtConfig({
     geminiApiKey: '', // NUXT_GEMINI_API_KEY
     supabaseUrl: '', // NUXT_SUPABASE_URL
     supabaseServiceKey: '', // NUXT_SUPABASE_SERVICE_KEY
+    // Cloudflare R2 (S3 API) for compressed audio. All four must be set to
+    // activate the R2 driver; otherwise the local filesystem driver is used.
+    r2AccountId: '', // NUXT_R2_ACCOUNT_ID
+    r2AccessKeyId: '', // NUXT_R2_ACCESS_KEY_ID
+    r2SecretAccessKey: '', // NUXT_R2_SECRET_ACCESS_KEY
+    r2Bucket: '', // NUXT_R2_BUCKET
+    // Local drivers only (dev/tests): HMAC secret for upload URLs and data root.
+    uploadTokenSecret: '', // NUXT_UPLOAD_TOKEN_SECRET (random per process when empty)
+    dataDir: '.data', // NUXT_DATA_DIR
     public: {},
   },
   routeRules: {

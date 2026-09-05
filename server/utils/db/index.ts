@@ -1,0 +1,26 @@
+import type { H3Event } from 'h3'
+import type { MeetingRepository } from './meetings'
+import { createLocalMeetingRepository } from './local'
+import { createSupabaseMeetingRepository } from './supabase'
+
+let announced = false
+function announce(kind: MeetingRepository['kind']) {
+  if (announced) return
+  announced = true
+  if (kind === 'local') {
+    console.info('[meetmind] meeting db: local JSON files (set NUXT_SUPABASE_URL/_SERVICE_KEY to use Supabase)')
+  }
+}
+
+/**
+ * Pick the meeting repository from runtime config: Supabase Postgres when the
+ * URL and service-role key are present, otherwise local JSON files (dev/tests).
+ */
+export function useMeetingRepository(event: H3Event): MeetingRepository {
+  const config = useRuntimeConfig(event)
+  const repo = config.supabaseUrl && config.supabaseServiceKey
+    ? createSupabaseMeetingRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey })
+    : createLocalMeetingRepository({ dataDir: config.dataDir })
+  announce(repo.kind)
+  return repo
+}

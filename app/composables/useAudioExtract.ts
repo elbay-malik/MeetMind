@@ -14,6 +14,8 @@ export interface ExtractState {
   elapsedMs: number
   outputBytes: number
   outputUrl: string | null
+  /** The compressed audio itself — what the upload step sends. */
+  outputBlob: Blob | null
   error: string | null
   logs: string[]
   jsHeapPeakMB: number | null
@@ -51,6 +53,7 @@ export function useAudioExtract() {
     elapsedMs: 0,
     outputBytes: 0,
     outputUrl: null,
+    outputBlob: null,
     error: null,
     logs: [],
     jsHeapPeakMB: null,
@@ -126,9 +129,8 @@ export function useAudioExtract() {
         state.elapsedMs = msg.elapsedMs
         state.outputBytes = msg.data.byteLength
         if (state.outputUrl) URL.revokeObjectURL(state.outputUrl)
-        state.outputUrl = URL.createObjectURL(
-          new Blob([msg.data], { type: 'audio/ogg; codecs=opus' }),
-        )
+        state.outputBlob = new Blob([msg.data], { type: AUDIO_MIME })
+        state.outputUrl = URL.createObjectURL(state.outputBlob)
         state.ratio = 1
         state.status = 'done'
         stopTimers()
@@ -172,6 +174,7 @@ export function useAudioExtract() {
       elapsedMs: 0,
       outputBytes: 0,
       outputUrl: null,
+      outputBlob: null,
       error: null,
       logs: [],
       jsHeapPeakMB: null,

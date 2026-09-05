@@ -12,14 +12,18 @@
     "lint:fix": "eslint . --fix",
     "typecheck": "nuxt typecheck",
     "test": "vitest run",
+    "test:e2e": "nuxt build && vitest run --config vitest.e2e.config.ts",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@ffmpeg/ffmpeg": "0.12.15",
     "@ffmpeg/util": "0.12.2",
     "@nuxt/ui": "^4.9.0",
+    "@supabase/supabase-js": "2.115.0",
+    "aws4fetch": "1.0.20",
     "nuxt": "^4.4.8",
     "tailwindcss": "^4.3.2",
+    "unstorage": "1.17.5",
     "vue": "^3.5.39",
     "vue-router": "^5.1.0",
     "zod": "^4.4.3"

@@ -4,9 +4,11 @@ import type { ExtractOptions } from '../workers/ffmpeg.protocol'
 useSeoMeta({ title: 'MeetMind — Upload' })
 
 const { state, extract, cancel } = useAudioExtract()
+const uploader = useMeetingUpload()
 
 const selectedFile = ref<File | null>(null)
 const dragOver = ref(false)
+const title = ref('')
 
 // Production path: always WORKERFS, no debug toggles (those live on /spike/ffmpeg).
 const EXTRACT_OPTIONS: ExtractOptions = {
@@ -15,8 +17,10 @@ const EXTRACT_OPTIONS: ExtractOptions = {
   voipTuning: false,
 }
 
-const busy = computed(() =>
+const extracting = computed(() =>
   ['loading-core', 'probing', 'extracting'].includes(state.status))
+const uploading = uploader.busy
+const busy = computed(() => extracting.value || uploading.value)
 
 const statusLabel = computed(() => ({
   'idle': '',
@@ -28,9 +32,20 @@ const statusLabel = computed(() => ({
   'cancelled': 'Cancelled',
 }[state.status]))
 
+const uploadLabel = computed(() => ({
+  idle: '',
+  registering: 'Registering meeting…',
+  uploading: 'Uploading audio…',
+  confirming: 'Confirming upload…',
+  done: 'Uploaded',
+  error: 'Upload failed',
+}[uploader.state.status]))
+
 function selectFile(files: FileList | null) {
   const file = files?.[0]
-  if (file) selectedFile.value = file
+  if (!file) return
+  selectedFile.value = file
+  title.value = titleFromFileName(file.name)
 }
 
 function onDrop(event: DragEvent) {
@@ -44,6 +59,24 @@ function start() {
 
 function reset() {
   selectedFile.value = null
+  title.value = ''
+}
+
+async function uploadAndContinue() {
+  const file = selectedFile.value
+  const audio = state.outputBlob
+  if (!file || !audio) return
+  const meeting = await uploader.upload({
+    audio,
+    meta: {
+      title: title.value.trim() || titleFromFileName(file.name),
+      sourceFileName: file.name,
+      sourceBytes: file.size,
+      sourceMime: file.type || null,
+      durationSec: state.durationSec,
+    },
+  })
+  if (meeting) await navigateTo(`/meetings/${meeting.id}/progress`)
 }
 </script>
 
@@ -99,7 +132,7 @@ function reset() {
             Extract audio
           </UButton>
           <UButton
-            v-if="busy"
+            v-if="extracting"
             color="error"
             variant="soft"
             @click="cancel"
@@ -107,7 +140,7 @@ function reset() {
             Cancel
           </UButton>
           <UButton
-            v-else-if="selectedFile && state.status !== 'extracting'"
+            v-else-if="selectedFile && !uploading"
             variant="ghost"
             color="neutral"
             @click="reset"
@@ -121,7 +154,7 @@ function reset() {
         </div>
 
         <div
-          v-if="busy"
+          v-if="extracting"
           class="space-y-1"
         >
           <UProgress
@@ -147,7 +180,7 @@ function reset() {
       </div>
     </UCard>
 
-    <UCard v-if="state.status === 'done' && state.outputUrl">
+    <UCard v-if="state.status === 'done' && state.outputBlob">
       <template #header>
         <div class="flex items-center gap-2">
           <UIcon
@@ -155,33 +188,54 @@ function reset() {
             class="size-5 text-success"
           />
           <h2 class="font-semibold">
-            Audio ready to transcribe
+            Audio ready to upload
           </h2>
         </div>
       </template>
       <div class="space-y-4">
         <p class="text-sm text-muted">
           Compressed to <strong class="text-default">{{ formatMegabytes(state.outputBytes) }}</strong>
-          of 16&nbsp;kHz mono Opus in {{ formatDuration(state.elapsedMs / 1000) }}
-          — ready for the transcription pipeline.
+          of 16&nbsp;kHz mono Opus in {{ formatDuration(state.elapsedMs / 1000) }}.
+          Only this audio is uploaded — never the video.
         </p>
         <audio
-          :src="state.outputUrl"
+          :src="state.outputUrl ?? undefined"
           controls
           class="w-full"
         />
-        <div class="flex items-center gap-3">
-          <UTooltip text="Upload & transcription arrives in the next build phase">
-            <UButton
-              disabled
-              icon="i-lucide-arrow-right"
-              trailing
-            >
-              Continue to transcription
-            </UButton>
-          </UTooltip>
+        <UFormField
+          label="Meeting title"
+          name="title"
+        >
+          <UInput
+            v-model="title"
+            :maxlength="MAX_TITLE_LENGTH"
+            :disabled="uploading"
+            class="w-full"
+            placeholder="e.g. Weekly product sync"
+          />
+        </UFormField>
+        <div class="flex flex-wrap items-center gap-3">
           <UButton
-            :to="state.outputUrl"
+            :disabled="uploading || !title.trim()"
+            :loading="uploading"
+            icon="i-lucide-arrow-right"
+            trailing
+            @click="uploadAndContinue"
+          >
+            Upload audio &amp; continue
+          </UButton>
+          <UButton
+            v-if="uploader.state.status === 'uploading'"
+            color="error"
+            variant="soft"
+            size="sm"
+            @click="uploader.cancel"
+          >
+            Cancel upload
+          </UButton>
+          <UButton
+            :to="state.outputUrl ?? undefined"
             download="meeting-audio.ogg"
             variant="soft"
             color="neutral"
@@ -189,7 +243,33 @@ function reset() {
           >
             Download audio
           </UButton>
+          <span
+            v-if="uploadLabel"
+            class="text-sm text-muted"
+          >{{ uploadLabel }}</span>
         </div>
+
+        <div
+          v-if="uploading"
+          class="space-y-1"
+        >
+          <UProgress
+            :model-value="uploader.state.ratio * 100"
+            :max="100"
+          />
+          <p class="text-xs text-muted">
+            {{ formatMegabytes(uploader.state.sentBytes) }} / {{ formatMegabytes(uploader.state.totalBytes) }}
+          </p>
+        </div>
+
+        <UAlert
+          v-if="uploader.state.error"
+          color="error"
+          variant="subtle"
+          icon="i-lucide-triangle-alert"
+          title="Upload failed"
+          :description="uploader.state.error"
+        />
       </div>
     </UCard>
   </UContainer>
