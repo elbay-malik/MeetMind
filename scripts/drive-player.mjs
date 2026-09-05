@@ -83,6 +83,53 @@ try {
   // the absence of a Range request would not prove anything either way.
   console.log('range headers seen (not asserted):', JSON.stringify(ranges.slice(0, 6)))
 
+  // Following must survive our own scrolling. The old implementation mistook
+  // its own smooth scroll for the user taking over and switched follow off.
+  const followedAfterAutoScroll = await page.evaluate(async () => {
+    const audio = document.querySelector('audio')
+    audio.currentTime = 0
+    await new Promise(r => setTimeout(r, 300))
+    // Nudge the playhead across several lines, as playback would.
+    for (const t of [5, 10, 15, 20]) {
+      audio.currentTime = t
+      await new Promise(r => setTimeout(r, 250))
+    }
+    // If following were still on, no "Follow playback" button is shown.
+    return !document.body.textContent.includes('Follow playback')
+  })
+  console.log('still following after auto-scroll:', followedAfterAutoScroll)
+  if (!followedAfterAutoScroll) fail('the page stopped following playback because of its own scrolling')
+
+  // A real user scroll must stop it, and the control must bring it back. The
+  // committed fixture yields a handful of short lines that never overflow the
+  // container, so shrink it first — otherwise there is nothing to scroll and
+  // the check would pass without exercising anything.
+  const stoppedThenResumed = await page.evaluate(async () => {
+    const container = document.querySelector('ol').parentElement
+    container.style.maxHeight = '80px'
+    await new Promise(r => setTimeout(r, 100))
+    if (container.scrollHeight <= container.clientHeight) {
+      return { scrollable: false, stopped: false, resumed: false }
+    }
+    container.scrollTop = container.scrollHeight - container.clientHeight
+    container.dispatchEvent(new Event('scroll'))
+    await new Promise(r => setTimeout(r, 150))
+    const stopped = document.body.textContent.includes('Follow playback')
+    const button = [...document.querySelectorAll('button')].find(b => b.textContent.includes('Follow playback'))
+    button?.click()
+    await new Promise(r => setTimeout(r, 250))
+    return { scrollable: true, stopped, resumed: !document.body.textContent.includes('Follow playback') }
+  })
+  if (!stoppedThenResumed.scrollable) fail('could not make the transcript scrollable, so follow behaviour went untested')
+  console.log('user scroll stopped following:', stoppedThenResumed.stopped, '| control resumed it:', stoppedThenResumed.resumed)
+  if (!stoppedThenResumed.stopped) fail('a user scroll did not stop the transcript following playback')
+  if (!stoppedThenResumed.resumed) fail('the Follow playback control did not resume following')
+
+  // The page must not scroll: the player has to stay visible.
+  const pageScrolled = await page.evaluate(() => window.scrollY)
+  console.log('window scrollY after following:', pageScrolled)
+  if (pageScrolled > 0) fail('following playback scrolled the page and pushed the player out of view')
+
   // The transcript must be one tab stop, not one per line.
   const tabbable = await page.locator('ol li button[tabindex="0"]').count()
   console.log(`transcript tab stops: ${tabbable}`)

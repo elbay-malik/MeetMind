@@ -38,11 +38,12 @@ It grants no more than `GET /api/meetings` already does.
 ### 2. Range support is the whole feature, and it fails silently.
 
 Without a valid 206 the browser reports no seekable ranges, and a seek does not
-error: it snaps to the start, or the scrubber never appears. Chromium marks a
-resource unseekable if `Accept-Ranges` is absent, whatever the status code.
-Firefox computes `seekable` as "not compressed and accepts ranges", so a single
-`Content-Encoding` anywhere disables seeking regardless of correct range
-handling — hence `no-transform` on the cache header.
+error: it snaps to the start, or the scrubber never appears. Chromium decides a
+resource is seekable from either an `Accept-Ranges: bytes` header or a 206 whose
+`Content-Range` parses, so the header is sent on every response rather than
+relied on alone. Firefox computes `seekable` as "not compressed and accepts
+ranges", so a single `Content-Encoding` anywhere disables seeking regardless of
+correct range handling — hence `no-transform` on the cache header.
 
 Parsing lives in a pure, separately tested function because every interesting
 case is an edge case: open-ended and suffix forms, ends past the object,
@@ -88,16 +89,22 @@ directly instead.
 - Playback costs several Class B operations per session rather than the one
   ADR-0003 counted, plus more when someone scrubs. Still far inside the free
   tier, but that record's cost line is now understated.
-- Auto-scroll stops the moment the user scrolls and resumes after a pause, with
-  an explicit control to resume immediately. Distinguishing our own scrolling
-  from theirs needs a flag, because scroll events do not say who caused them.
+- Auto-scroll stops when the user scrolls and offers an explicit control to
+  resume, which returns to where playback actually is rather than where the view
+  was left. Distinguishing our own scrolling from theirs is done by comparing
+  against the position we last set, not by timing: a first attempt used a
+  fixed window after a smooth scroll, and any scroll animation longer than that
+  window read as the user taking over, so the page stopped following itself.
+  Scrolling is also confined to the transcript container, since scrolling the
+  page would push the player out of view.
 - There is no waveform until peaks land. That is the visible cost of the split.
 - **The browser check cannot prove range support.** The committed fixture yields
-  about 70 KB of audio, which Chromium buffers whole and seeks within from
-  memory, so it seeks happily against a server that ignores Range entirely. This
-  was confirmed by breaking the route deliberately and watching the browser
-  script still pass while five HTTP-level tests failed. Range correctness is
-  guarded by `tests/e2e/audio-api.spec.ts` alone, and the scripts say so.
+  about 70 KB of audio. Chromium fetches that in one request and can then seek
+  within what it already holds, so it seeks happily against a server that
+  ignores Range entirely. Confirmed by breaking the route deliberately: the
+  browser script still passed while five HTTP-level tests failed. Range
+  correctness is guarded by `tests/e2e/audio-api.spec.ts` alone, and both
+  scripts say so.
 
 ## Alternatives considered
 
