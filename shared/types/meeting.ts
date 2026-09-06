@@ -49,6 +49,42 @@ export interface TranscriptSegment {
   text: string
 }
 
+/**
+ * Something the meeting settled, with the transcript line that says so.
+ *
+ * `quote` is the model's evidence and `segmentIdx` points at the segment it
+ * came from; both are checked against the real transcript before storage, so an
+ * item that survives is one the transcript actually supports.
+ */
+export interface Decision {
+  idx: number
+  decision: string
+  quote: string
+  segmentIdx: number
+  startMs: number
+}
+
+/** Something the meeting asked someone to do. */
+export interface ActionItem {
+  idx: number
+  task: string
+  /** Null means nobody was named, which is different from not being asked. */
+  assignee: string | null
+  /** The due date as spoken, unresolved: "next Friday" stays "next Friday". */
+  dueDateText: string | null
+  quote: string
+  segmentIdx: number
+  startMs: number
+}
+
+export interface MeetingSummary {
+  summary: string
+  decisions: Decision[]
+  actionItems: ActionItem[]
+  /** Which provider produced this, so a stub result is never mistaken for real. */
+  provider: 'groq' | 'stub'
+}
+
 /** Fields the client supplies when registering a meeting before uploading its audio. */
 export interface CreateMeetingInput {
   title: string

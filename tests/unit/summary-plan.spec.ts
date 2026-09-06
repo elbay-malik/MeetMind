@@ -1,0 +1,91 @@
+import { describe, expect, it } from 'vitest'
+import { estimateTokens, planChunks } from '../../server/utils/summary/plan'
+import type { TranscriptSegment } from '../../shared/types/meeting'
+
+const seg = (idx: number, words: number): TranscriptSegment => ({
+  idx, startMs: idx * 5000, endMs: idx * 5000 + 4000, text: Array.from({ length: words }, () => 'word').join(' '),
+})
+
+describe('estimateTokens', () => {
+  it('scales with word count', () => {
+    expect(estimateTokens('one two three')).toBeGreaterThan(estimateTokens('one'))
+  })
+
+  it('over-estimates rather than under, so a chunk that fits the estimate fits the budget', () => {
+    // English is roughly 1.35 tokens per word; anything below that risks a 429.
+    const words = 100
+    expect(estimateTokens(Array.from({ length: words }, () => 'word').join(' '))).toBeGreaterThan(words * 1.3)
+  })
+
+  it('handles empty and whitespace text', () => {
+    expect(estimateTokens('')).toBeGreaterThanOrEqual(0)
+    expect(estimateTokens('   ')).toBeGreaterThanOrEqual(0)
+  })
+})
+
+describe('planChunks', () => {
+  it('keeps a short transcript in one chunk', () => {
+    const chunks = planChunks([seg(0, 10), seg(1, 10)], 1000)
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0]!.segments).toHaveLength(2)
+  })
+
+  it('splits when the budget is exceeded', () => {
+    const chunks = planChunks(Array.from({ length: 20 }, (_, i) => seg(i, 50)), 200)
+    expect(chunks.length).toBeGreaterThan(1)
+  })
+
+  it('never splits inside a segment', () => {
+    const segments = Array.from({ length: 12 }, (_, i) => seg(i, 40))
+    const chunks = planChunks(segments, 150)
+    const seen = chunks.flatMap(c => c.segments.map(s => s.idx))
+    expect(seen).toEqual(segments.map(s => s.idx))
+  })
+
+  it('loses no segment and duplicates none', () => {
+    const segments = Array.from({ length: 57 }, (_, i) => seg(i, 30))
+    const chunks = planChunks(segments, 120)
+    const seen = chunks.flatMap(c => c.segments.map(s => s.idx))
+    expect(seen).toEqual(segments.map(s => s.idx))
+    expect(new Set(seen).size).toBe(segments.length)
+  })
+
+  it('keeps chunks in transcript order with contiguous spans', () => {
+    const chunks = planChunks(Array.from({ length: 30 }, (_, i) => seg(i, 40)), 200)
+    for (let i = 1; i < chunks.length; i++) {
+      expect(chunks[i]!.startMs).toBeGreaterThan(chunks[i - 1]!.startMs)
+      expect(chunks[i]!.segments[0]!.idx).toBe(chunks[i - 1]!.segments.at(-1)!.idx + 1)
+    }
+  })
+
+  it('gives an over-budget segment its own chunk rather than dropping transcript', () => {
+    const chunks = planChunks([seg(0, 5), seg(1, 5000), seg(2, 5)], 100)
+    const seen = chunks.flatMap(c => c.segments.map(s => s.idx))
+    expect(seen).toEqual([0, 1, 2])
+    expect(chunks.find(c => c.segments.some(s => s.idx === 1))!.segments).toHaveLength(1)
+  })
+
+  it('reports a span covering its segments', () => {
+    const chunks = planChunks([seg(0, 5), seg(1, 5)], 1000)
+    expect(chunks[0]!.startMs).toBe(0)
+    expect(chunks[0]!.endMs).toBe(9000)
+  })
+
+  it('returns nothing for an empty transcript', () => {
+    expect(planChunks([], 1000)).toEqual([])
+  })
+
+  it('refuses a nonsensical budget instead of looping', () => {
+    expect(() => planChunks([seg(0, 5)], 0)).toThrow(/positive/)
+    expect(() => planChunks([seg(0, 5)], Number.NaN)).toThrow(/positive/)
+  })
+
+  it('splits a one-hour transcript, which is why this exists', () => {
+    // About 8,400 words at 140 wpm — over the per-minute token allowance in a
+    // single request, and reachable with the repository's own 1-hour fixture.
+    const hour = Array.from({ length: 660 }, (_, i) => seg(i, 13))
+    const chunks = planChunks(hour, 6000)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const chunk of chunks) expect(chunk.estimatedTokens).toBeLessThanOrEqual(6000)
+  })
+})
