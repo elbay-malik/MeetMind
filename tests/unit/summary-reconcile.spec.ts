@@ -37,6 +37,33 @@ describe('attestQuote', () => {
       .toMatchObject({ segmentIdx: 2 })
   })
 
+  it('attests quotes in scripts other than Latin', () => {
+    // Transcription detects the language, so an ASCII-only normaliser silently
+    // dropped every item from a Japanese or Russian meeting.
+    const japanese = [seg(0, 0, '来週までに移行計画を作成します。')]
+    expect(attestQuote('来週までに移行計画を作成します', 0, japanese))
+      .toMatchObject({ segmentIdx: 0, startMs: 0 })
+
+    const russian = [seg(0, 0, 'Мы решили отправить изменения в пятницу.')]
+    expect(attestQuote('Мы решили отправить изменения', 0, russian))
+      .toMatchObject({ segmentIdx: 0 })
+  })
+
+  it('matches accented Latin on the accents actually written', () => {
+    // Documents the behaviour rather than guarding the regression: stripping
+    // accents mangles both quote and segment the same way, so this case passes
+    // either way. The empty-collapse test above is the one that fails against
+    // an ASCII-only normaliser.
+    const spanish = [seg(0, 0, 'Priya diría que sí, lo enviamos el viernes.')]
+    expect(attestQuote('Priya diría que sí', 0, spanish)).toMatchObject({ segmentIdx: 0 })
+    expect(attestQuote('Priya diria que si', 0, spanish)).toBeNull()
+  })
+
+  it('still rejects an invented quote in a non-Latin transcript', () => {
+    const japanese = [seg(0, 0, '来週までに移行計画を作成します。')]
+    expect(attestQuote('競合他社を買収することに合意しました', 0, japanese)).toBeNull()
+  })
+
   it('returns null for a quote nobody said', () => {
     // The case the whole mechanism exists for.
     expect(attestQuote('we decided to acquire a competitor', 1, segments)).toBeNull()

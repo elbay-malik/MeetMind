@@ -21,7 +21,7 @@ const { data: transcriptData, refresh: refreshTranscript }
 const segments = computed(() => transcriptData.value?.segments ?? [])
 
 const transcribing = ref(false)
-const transcribeError = ref<string | null>(null)
+const stepError = ref<{ step: string, message: string } | null>(null)
 const justFinished = ref(false)
 
 async function reloadAll() {
@@ -32,13 +32,12 @@ const summarizing = ref(false)
 
 async function startSummary() {
   summarizing.value = true
-  transcribeError.value = null
+  stepError.value = null
   try {
     await $fetch(`/api/meetings/${meetingId.value}/summarize`, { method: 'POST' })
   }
   catch (err) {
-    const data = (err as { data?: { message?: string } }).data
-    transcribeError.value = data?.message ?? (err instanceof Error ? err.message : String(err))
+    stepError.value = { step: 'Extraction failed', message: describeError(err) }
   }
   finally {
     summarizing.value = false
@@ -48,15 +47,14 @@ async function startSummary() {
 
 async function startTranscription() {
   transcribing.value = true
-  transcribeError.value = null
+  stepError.value = null
   justFinished.value = false
   try {
     await $fetch(`/api/meetings/${meetingId.value}/transcribe`, { method: 'POST' })
     justFinished.value = true
   }
   catch (err) {
-    const data = (err as { data?: { message?: string } }).data
-    transcribeError.value = data?.message ?? (err instanceof Error ? err.message : String(err))
+    stepError.value = { step: 'Transcription failed', message: describeError(err) }
   }
   finally {
     transcribing.value = false
@@ -77,6 +75,12 @@ onMounted(() => {
 onUnmounted(() => {
   if (poller) clearInterval(poller)
 })
+
+/** The server's message when it gave one, rather than a generic failure. */
+function describeError(err: unknown): string {
+  const data = (err as { data?: { message?: string } }).data
+  return data?.message ?? (err instanceof Error ? err.message : String(err))
+}
 
 interface Stage {
   key: string
@@ -241,13 +245,13 @@ const activityLabel = computed(() => {
     </UCard>
 
     <UAlert
-      v-if="transcribeError"
+      v-if="stepError"
       role="alert"
       color="error"
       variant="subtle"
       icon="i-lucide-triangle-alert"
-      title="Transcription failed"
-      :description="transcribeError"
+      :title="stepError.step"
+      :description="stepError.message"
     />
     <UAlert
       v-else-if="meeting.errorMessage"

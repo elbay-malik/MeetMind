@@ -4,15 +4,24 @@ import type { WireSummary } from '#shared/schemas/summary'
 /**
  * Compare loosely enough to survive punctuation and case, strictly enough that
  * unrelated text does not match.
+ *
+ * Letters and numbers in ANY script, not just ASCII. Transcription detects the
+ * language, so restricting this to a-z silently destroyed every non-Latin
+ * transcript: Japanese and Cyrillic collapsed to an empty string and were
+ * rejected outright, and accented Latin was mangled into a different phrase.
  */
 function normalise(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
 
 /** How far either side of the claimed segment to look before searching wider. */
 const NEARBY_SEGMENTS = 2
 
-/** Shortest quote worth attesting; below this, matches are accidental. */
+/**
+ * Shortest quote worth attesting; below this a match is likely accidental.
+ * Counted in characters, so for scripts written without spaces this is a longer
+ * phrase than it looks — which errs toward rejecting, the safe direction.
+ */
 const MIN_QUOTE_CHARS = 8
 
 export interface Attested {

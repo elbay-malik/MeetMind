@@ -32,7 +32,6 @@ uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
 │   (one request per meeting; segments in integer ms)         │
 │ Groq gpt-oss ─► decisions & action items, each citing a     │
 │   transcript segment that is verified before storage        │
-│ Groq Llama 3.3 70B + AI SDK v6 ─► summary/decisions/actions │
 │ gemini-embedding-001 (768d) ─► Supabase pgvector (HNSW)     │
 └───────────────┬──────────────────────────────────────────────┘
                 ▼
