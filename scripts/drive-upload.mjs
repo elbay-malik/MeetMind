@@ -134,7 +134,7 @@ try {
 
   // The stage list must not claim more or less than the truth. Scope to the
   // pipeline card: the transcript is also an ordered list.
-  const STAGES = ['Audio uploaded', 'Transcribed', 'Summarizing', 'Indexing']
+  const STAGES = ['Audio uploaded', 'Transcribed', 'Summarized', 'Indexing']
   const listText = await page.locator('ol li').allInnerTexts()
   const stages = STAGES.filter(label => listText.some(t => t.includes(label)))
   if (stages.length !== STAGES.length) {
@@ -156,6 +156,37 @@ try {
   // The first segment's timestamp must render in the transcript panel.
   const firstStamp = await page.locator('li span.font-mono').first().innerText()
   console.log('first transcript timestamp rendered as', firstStamp)
+
+  // Extraction: on demand until the pipeline is orchestrated in a later phase.
+  const summaryButton = page.getByRole('button', { name: /Extract decisions/ })
+  await summaryButton.waitFor({ timeout: 10_000 })
+  await summaryButton.click()
+  await page.waitForFunction(
+    () => !document.body.textContent.includes('Extracting decisions'),
+    { timeout: 120_000 },
+  )
+
+  const { summary } = await (await fetch(`${baseURL}/api/meetings/${meetingId}/summary`)).json()
+  if (!summary) fail('extraction produced no summary')
+  else {
+    console.log(`summary stored: ${summary.decisions.length} decisions, ${summary.actionItems.length} action items`)
+
+    // Every citation must point at a segment that exists and quote it.
+    const { segments: lines } = await (await fetch(`${baseURL}/api/meetings/${meetingId}/transcript`)).json()
+    const byIdx = new Map(lines.map(l => [l.idx, l]))
+    for (const item of [...summary.decisions, ...summary.actionItems]) {
+      const cited = byIdx.get(item.segmentIdx)
+      if (!cited) fail(`an item cites segment ${item.segmentIdx}, which does not exist`)
+      else if (!cited.text.toLowerCase().includes(item.quote.toLowerCase().slice(0, 20))) {
+        fail(`an item quotes text that segment ${item.segmentIdx} does not contain`)
+      }
+    }
+    console.log('every citation resolves to a real transcript segment')
+  }
+
+  const { meeting: summarized } = await (await fetch(`${baseURL}/api/meetings/${meetingId}`)).json()
+  console.log('status after extraction:', summarized.status)
+  if (summarized.status !== 'ready') fail(`expected status ready, saw ${summarized.status}`)
 
   // The archive lists the new meeting.
   await page.goto(`${baseURL}/meetings`, { waitUntil: 'networkidle' })

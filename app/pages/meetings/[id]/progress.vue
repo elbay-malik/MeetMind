@@ -28,6 +28,24 @@ async function reloadAll() {
   await Promise.all([refresh(), refreshTranscript()])
 }
 
+const summarizing = ref(false)
+
+async function startSummary() {
+  summarizing.value = true
+  transcribeError.value = null
+  try {
+    await $fetch(`/api/meetings/${meetingId.value}/summarize`, { method: 'POST' })
+  }
+  catch (err) {
+    const data = (err as { data?: { message?: string } }).data
+    transcribeError.value = data?.message ?? (err instanceof Error ? err.message : String(err))
+  }
+  finally {
+    summarizing.value = false
+    await reloadAll()
+  }
+}
+
 async function startTranscription() {
   transcribing.value = true
   transcribeError.value = null
@@ -85,7 +103,7 @@ const STAGES: Stage[] = [
     // transcription that produced nothing.
     reached: s => ['summarizing', 'indexing', 'ready'].includes(s) && segments.value.length > 0,
   },
-  { key: 'summarize', label: 'Summarizing', detail: 'Decisions and action items — next build phase.', reached: s => ['indexing', 'ready'].includes(s) },
+  { key: 'summarize', label: 'Summarized', detail: 'Decisions and action items extracted.', reached: s => ['indexing', 'ready'].includes(s) },
   { key: 'index', label: 'Indexing', detail: 'Semantic search across the transcript.', reached: s => s === 'ready' },
 ]
 
@@ -107,6 +125,8 @@ const transcribedButEmpty = computed(() =>
 const createdAt = computed(() => new Date(meeting.value.createdAt).toLocaleString())
 const canTranscribe = computed(() =>
   meeting.value.status === 'uploaded' || meeting.value.status === 'failed')
+const canSummarize = computed(() =>
+  meeting.value.status === 'summarizing' && segments.value.length > 0)
 
 /**
  * What the card is doing, as one string in one live region. Screen readers only
@@ -114,6 +134,7 @@ const canTranscribe = computed(() =>
  * in the same element the in-progress message did.
  */
 const activityLabel = computed(() => {
+  if (summarizing.value) return 'Extracting decisions and action items.'
   if (transcribing.value) return 'Transcribing. This can take a moment.'
   if (meeting.value.status === 'transcribing') return 'Transcription is running.'
   if (justFinished.value) return `Transcription finished with ${segments.value.length} segments.`
@@ -193,6 +214,15 @@ const activityLabel = computed(() => {
             @click="startTranscription"
           >
             {{ meeting.errorMessage ? 'Try transcription again' : 'Start transcription' }}
+          </UButton>
+          <UButton
+            v-else-if="canSummarize"
+            :loading="summarizing"
+            :disabled="summarizing"
+            icon="i-lucide-list-checks"
+            @click="startSummary"
+          >
+            Extract decisions &amp; action items
           </UButton>
           <UIcon
             v-else-if="meeting.status === 'transcribing'"
@@ -276,12 +306,12 @@ const activityLabel = computed(() => {
 
     <div class="flex gap-3">
       <UButton
-        to="/meetings"
+        :to="`/meetings/${meetingId}`"
         variant="ghost"
         color="neutral"
-        icon="i-lucide-arrow-left"
+        icon="i-lucide-file-text"
       >
-        All meetings
+        Transcript &amp; player
       </UButton>
       <UButton
         to="/"

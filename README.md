@@ -30,6 +30,8 @@ uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
 │ register meeting ─► Supabase Postgres row; verify upload    │
 │ Groq Whisper Large v3 Turbo ─► timestamped transcript       │
 │   (one request per meeting; segments in integer ms)         │
+│ Groq gpt-oss ─► decisions & action items, each citing a     │
+│   transcript segment that is verified before storage        │
 │ Groq Llama 3.3 70B + AI SDK v6 ─► summary/decisions/actions │
 │ gemini-embedding-001 (768d) ─► Supabase pgvector (HNSW)     │
 └───────────────┬──────────────────────────────────────────────┘
@@ -49,6 +51,7 @@ The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 | [0003](docs/adr/0003-upload-and-storage.md) | Upload & storage: direct-to-R2 presigned PUT, Supabase Postgres metadata, local drivers for dev/CI |
 | [0004](docs/adr/0004-transcription.md) | Transcription: one request per meeting, no chunking, stub provider for credential-free dev |
 | [0005](docs/adr/0005-audio-playback-and-transcript-sync.md) | Playback: same-origin byte-range route, native player before a waveform |
+| [0006](docs/adr/0006-structured-summaries.md) | Summaries: chunked extraction, citations checked against the transcript |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -143,13 +146,15 @@ quota; the UI reports it as such.
 
 ## Roadmap
 
-Phases 0-5 of the [playbook](docs/PLAYBOOK.md) are done: scaffold, FFmpeg spike,
-in-browser extraction, upload & storage, transcription, and the transcript viewer with
-click-to-seek playback. Two playbook instructions were dropped after re-checking their
-premises: chunking ([ADR-0004](docs/adr/0004-transcription.md)) and, for now, the
-waveform library ([ADR-0005](docs/adr/0005-audio-playback-and-transcript-sync.md)).
-Next: waveform peaks computed during extraction, structured summaries, pgvector
-semantic Q&A, archive & cross-meeting search, rate limiting, Cloudflare Workers.
+Phases 0-6 of the [playbook](docs/PLAYBOOK.md) are done: scaffold, FFmpeg spike,
+in-browser extraction, upload & storage, transcription, the transcript viewer with
+click-to-seek playback, and structured summaries with decisions and action items.
+Several playbook instructions were changed after re-checking their premises — see
+[ADR-0004](docs/adr/0004-transcription.md),
+[ADR-0005](docs/adr/0005-audio-playback-and-transcript-sync.md) and
+[ADR-0006](docs/adr/0006-structured-summaries.md). Next: waveform peaks computed
+during extraction, pgvector semantic Q&A, archive & cross-meeting search, rate
+limiting, Cloudflare Workers.
 
 ## License
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Meeting, TranscriptSegment } from '#shared/types/meeting'
+import type { Meeting, MeetingSummary, TranscriptSegment } from '#shared/types/meeting'
 
 const route = useRoute()
 const meetingId = computed(() => String(route.params.id))
@@ -18,6 +18,11 @@ const { data: transcriptData } = await useFetch<{ segments: TranscriptSegment[] 
   `/api/meetings/${meetingId.value}/transcript`,
 )
 const segments = computed(() => transcriptData.value?.segments ?? [])
+
+const { data: summaryData } = await useFetch<{ summary: MeetingSummary | null }>(
+  `/api/meetings/${meetingId.value}/summary`,
+)
+const summary = computed(() => summaryData.value?.summary ?? null)
 
 useSeoMeta({ title: () => `MeetMind — ${meeting.value.title}` })
 
@@ -115,6 +120,14 @@ function seekTo(segment: TranscriptSegment) {
 
 const focusIndex = ref(0)
 
+/** Jump to the moment a summary item cites. */
+function seekToCitation(startMs: number, segmentIdx: number) {
+  const segment = segments.value.find(s => s.idx === segmentIdx)
+  if (segment) return onSelect(segment, segments.value.indexOf(segment))
+  const audio = player.value
+  if (audio && Number.isFinite(audio.duration)) audio.currentTime = startMs / 1000
+}
+
 function onSelect(segment: TranscriptSegment, index: number) {
   focusIndex.value = index
   seekTo(segment)
@@ -158,7 +171,12 @@ function onKeydown(event: KeyboardEvent, index: number) {
     // Focusing scrolls the line into view; that is the user's own navigation,
     // so stop following rather than fighting them for the scroll position.
     followPlayback.value = false
-    void nextTick(() => lineAt(focusIndex.value)?.focus())
+    void nextTick(() => {
+      // preventScroll, then centre within the container ourselves: the default
+      // focus scroll moves the whole page, which pushes the player out of view.
+      lineAt(focusIndex.value)?.focus({ preventScroll: true })
+      centreOn(focusIndex.value)
+    })
   }
   if (event.key === 'ArrowDown') return move(index + 1)
   if (event.key === 'ArrowUp') return move(index - 1)
@@ -212,6 +230,90 @@ const hasAudio = computed(() => meeting.value.status !== 'pending_upload')
       <p class="mt-2 text-xs text-muted">
         Select any line to jump there. The transcript follows playback until you scroll away.
       </p>
+    </UCard>
+
+    <UCard v-if="summary">
+      <template #header>
+        <div class="flex items-center justify-between gap-3">
+          <h2 class="font-semibold">
+            Summary
+          </h2>
+          <UBadge
+            v-if="summary.provider === 'stub'"
+            color="warning"
+            variant="subtle"
+            size="sm"
+          >
+            placeholder
+          </UBadge>
+        </div>
+      </template>
+
+      <div class="space-y-5">
+        <p class="text-sm">
+          {{ summary.summary }}
+        </p>
+
+        <div v-if="summary.decisions.length">
+          <h3 class="mb-2 text-sm font-semibold">
+            Decisions
+          </h3>
+          <ul class="space-y-1">
+            <li
+              v-for="decision in summary.decisions"
+              :key="decision.idx"
+            >
+              <button
+                type="button"
+                class="flex w-full gap-3 rounded px-2 py-1 text-left text-sm hover:bg-elevated/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--ui-primary)"
+                @click="seekToCitation(decision.startMs, decision.segmentIdx)"
+              >
+                <span class="w-16 shrink-0 text-right font-mono text-xs text-muted tabular-nums">
+                  {{ formatDuration(decision.startMs / 1000) }}
+                </span>
+                <span>{{ decision.decision }}</span>
+              </button>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="summary.actionItems.length">
+          <h3 class="mb-2 text-sm font-semibold">
+            Action items
+          </h3>
+          <ul class="space-y-1">
+            <li
+              v-for="item in summary.actionItems"
+              :key="item.idx"
+            >
+              <button
+                type="button"
+                class="flex w-full gap-3 rounded px-2 py-1 text-left text-sm hover:bg-elevated/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--ui-primary)"
+                @click="seekToCitation(item.startMs, item.segmentIdx)"
+              >
+                <span class="w-16 shrink-0 text-right font-mono text-xs text-muted tabular-nums">
+                  {{ formatDuration(item.startMs / 1000) }}
+                </span>
+                <span>
+                  {{ item.task }}
+                  <!-- Absent, not unknown: the meeting simply did not say. -->
+                  <span class="text-muted">
+                    · {{ item.assignee ?? 'nobody named' }}
+                    <template v-if="item.dueDateText">· due {{ item.dueDateText }}</template>
+                  </span>
+                </span>
+              </button>
+            </li>
+          </ul>
+        </div>
+
+        <p
+          v-if="!summary.decisions.length && !summary.actionItems.length"
+          class="text-sm text-muted"
+        >
+          No decisions or action items were found in this meeting.
+        </p>
+      </div>
     </UCard>
 
     <UCard v-if="segments.length">

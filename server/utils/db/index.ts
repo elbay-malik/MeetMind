@@ -5,6 +5,9 @@ import { createSupabaseMeetingRepository } from './supabase'
 import { createLocalTranscriptRepository } from './transcripts-local'
 import { createSupabaseTranscriptRepository } from './transcripts-supabase'
 import type { TranscriptRepository } from './transcripts'
+import { createLocalSummaryRepository } from './summaries-local'
+import { createSupabaseSummaryRepository } from './summaries-supabase'
+import type { SummaryRepository } from './summaries'
 import { requireAllOrNone } from '../storage'
 
 let announced = false
@@ -43,4 +46,16 @@ export function useTranscriptRepository(event: H3Event): TranscriptRepository {
   return supabaseReady
     ? createSupabaseTranscriptRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey })
     : createLocalTranscriptRepository({ dataDir: config.dataDir })
+}
+
+/** The summary store, chosen the same way as the other repositories. */
+export function useSummaryRepository(event: H3Event): SummaryRepository {
+  const config = useRuntimeConfig(event)
+  const supabaseReady = requireAllOrNone('Supabase', {
+    NUXT_SUPABASE_URL: config.supabaseUrl,
+    NUXT_SUPABASE_SERVICE_KEY: config.supabaseServiceKey,
+  })
+  return supabaseReady
+    ? createSupabaseSummaryRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey })
+    : createLocalSummaryRepository({ dataDir: config.dataDir })
 }

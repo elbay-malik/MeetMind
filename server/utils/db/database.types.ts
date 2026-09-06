@@ -1,5 +1,6 @@
 import type { MeetingRow } from './meetings'
 import type { TranscriptSegmentRow } from './transcripts'
+import type { ActionItemRow, DecisionRow, SummaryRow } from './summaries'
 
 /**
  * Hand-written Supabase schema typing for the tables the server touches.
@@ -20,6 +21,25 @@ export interface Database {
         Row: TranscriptSegmentRow
         Insert: Omit<TranscriptSegmentRow, 'created_at'> & Partial<Pick<TranscriptSegmentRow, 'created_at'>>
         Update: Partial<TranscriptSegmentRow>
+        Relationships: []
+      }
+      meeting_summaries: {
+        Row: SummaryRow
+        Insert: Omit<SummaryRow, 'created_at' | 'updated_at'>
+          & Partial<Pick<SummaryRow, 'created_at' | 'updated_at'>>
+        Update: Partial<SummaryRow>
+        Relationships: []
+      }
+      meeting_decisions: {
+        Row: DecisionRow
+        Insert: Omit<DecisionRow, 'created_at'> & Partial<Pick<DecisionRow, 'created_at'>>
+        Update: Partial<DecisionRow>
+        Relationships: []
+      }
+      meeting_action_items: {
+        Row: ActionItemRow
+        Insert: Omit<ActionItemRow, 'created_at'> & Partial<Pick<ActionItemRow, 'created_at'>>
+        Update: Partial<ActionItemRow>
         Relationships: []
       }
     }

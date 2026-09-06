@@ -107,6 +107,44 @@ psql -q -c "delete from public.meetings where audio_key='lifecycle_ready';"
 check "deleting a meeting removes its transcript" \
   "select count(*)=0 from public.transcript_segments"
 
+check "a citation cannot point at a segment that does not exist" \
+  "select count(*)=2 from pg_constraint con
+   where con.contype='f' and array_length(con.conkey,1)=2
+     and con.conrelid in ('public.meeting_decisions'::regclass,
+                          'public.meeting_action_items'::regclass)"
+
+check "summaries, decisions and action items all have RLS on with no policies" \
+  "select bool_and(c.relrowsecurity)
+     and (select count(*) from pg_policies
+          where tablename in ('meeting_summaries','meeting_decisions','meeting_action_items'))=0
+   from pg_class c where c.relname in
+     ('meeting_summaries','meeting_decisions','meeting_action_items')"
+
+# Extraction rows must hang off a real segment and vanish with the meeting.
+psql -q -c "insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
+            select id, 0, 0, 1000, 'we agreed to ship' from public.meetings where audio_key='lifecycle_summarizing';"
+psql -q -c "insert into public.meeting_summaries (meeting_id, summary, provider)
+            select id, 'a summary', 'stub' from public.meetings where audio_key='lifecycle_summarizing';"
+psql -q -c "insert into public.meeting_decisions (meeting_id, idx, decision, quote, segment_idx, start_ms)
+            select id, 0, 'ship it', 'we agreed to ship', 0, 0 from public.meetings where audio_key='lifecycle_summarizing';"
+check "a decision citing a real segment is accepted" \
+  "select count(*)=1 from public.meeting_decisions"
+
+reject "a decision citing a segment that does not exist is refused" \
+  "insert into public.meeting_decisions (meeting_id, idx, decision, quote, segment_idx, start_ms)
+   select id, 1, 'invented', 'nobody said this', 99, 0 from public.meetings where audio_key='lifecycle_summarizing';" \
+  "violates foreign key"
+
+reject "an unknown provider is refused" \
+  "insert into public.meeting_summaries (meeting_id, summary, provider)
+   select id, 's', 'guesswork' from public.meetings where audio_key='lifecycle_pending_upload';" \
+  "violates check"
+
+psql -q -c "delete from public.meetings where audio_key='lifecycle_summarizing';"
+check "deleting a meeting removes its summary and decisions" \
+  "select (select count(*) from public.meeting_summaries)=0
+      and (select count(*) from public.meeting_decisions)=0"
+
 # updated_at must advance on update. now() is transaction-scoped, so the insert
 # and the update have to happen in separate transactions or this always passes.
 psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)

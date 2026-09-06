@@ -125,10 +125,36 @@ try {
   if (!stoppedThenResumed.stopped) fail('a user scroll did not stop the transcript following playback')
   if (!stoppedThenResumed.resumed) fail('the Follow playback control did not resume following')
 
-  // The page must not scroll: the player has to stay visible.
-  const pageScrolled = await page.evaluate(() => window.scrollY)
-  console.log('window scrollY after following:', pageScrolled)
-  if (pageScrolled > 0) fail('following playback scrolled the page and pushed the player out of view')
+  // Following playback must not move the page, or the player scrolls out of
+  // view. Measured as a delta so an earlier deliberate click is not counted.
+  const pageMovement = await page.evaluate(async () => {
+    window.scrollTo(0, 0)
+    await new Promise(r => setTimeout(r, 100))
+    const audio = document.querySelector('audio')
+    for (const t of [2, 8, 14, 20]) {
+      audio.currentTime = t
+      await new Promise(r => setTimeout(r, 200))
+    }
+    return window.scrollY
+  })
+  console.log('window scrollY caused by following:', pageMovement)
+  if (pageMovement > 0) fail('following playback scrolled the page and pushed the player out of view')
+
+  // Keyboard navigation must not move the page either.
+  const keyboardMovement = await page.evaluate(async () => {
+    window.scrollTo(0, 0)
+    const first = document.querySelector('ol li button')
+    first?.focus({ preventScroll: true })
+    for (let i = 0; i < 5; i++) {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+      )
+      await new Promise(r => setTimeout(r, 80))
+    }
+    return window.scrollY
+  })
+  console.log('window scrollY caused by keyboard navigation:', keyboardMovement)
+  if (keyboardMovement > 0) fail('keyboard navigation scrolled the page out from under the player')
 
   // The transcript must be one tab stop, not one per line.
   const tabbable = await page.locator('ol li button[tabindex="0"]').count()
