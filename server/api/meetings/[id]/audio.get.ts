@@ -18,6 +18,15 @@ import { notFound, requireMeetingId } from '../../../utils/http'
  * usable later. The route is unauthenticated, which matches the rest of the API
  * until an auth phase arrives.
  */
+/**
+ * Pass through a store's validator only if it is a well-formed entity tag.
+ * Stores are not trusted to produce header-safe values.
+ */
+function sanitiseEtag(etag: string | null): string | null {
+  if (!etag) return null
+  return /^(W\/)?"[\x21\x23-\x7e]*"$/.test(etag) ? etag : null
+}
+
 export default defineEventHandler(async (event) => {
   const id = requireMeetingId(event)
 
@@ -57,9 +66,11 @@ export default defineEventHandler(async (event) => {
     // range handling, so forbid transformation in transit.
     'cache-control': 'private, max-age=3600, no-transform',
     // The store's own validator when it has one, so a replacement of the same
-    // length is still a cache miss. Falling back to id and size would not
-    // distinguish that case.
-    'etag': probe.etag ?? `"${meeting.id}-${opened.size}-${probe.contentType ?? ''}"`,
+    // length is still a cache miss. The fallback is deliberately built only from
+    // values we control: the stored content type is attacker-influenced on R2,
+    // and putting it in a header would reflect untrusted text — quotes included
+    // — into the response.
+    'etag': sanitiseEtag(probe.etag) ?? `"${meeting.id}-${opened.size}"`,
   })
   if (partial) headers.set('content-range', contentRangeHeader(opened.window, opened.size))
 

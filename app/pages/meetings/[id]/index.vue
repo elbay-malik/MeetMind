@@ -39,6 +39,11 @@ function onAudioError() {
   audioError.value = 'The audio could not be loaded, so seeking is unavailable.'
 }
 
+/** Clear a previous complaint once the element proves it can play. */
+function onAudioReady() {
+  audioError.value = null
+}
+
 function lineAt(index: number) {
   return list.value?.querySelector<HTMLElement>(`[data-idx="${index}"]`) ?? null
 }
@@ -190,6 +195,9 @@ const hasAudio = computed(() => meeting.value.status !== 'pending_upload')
         @timeupdate="onTimeUpdate"
         @seeked="onTimeUpdate"
         @error="onAudioError"
+        @loadedmetadata="onAudioReady"
+        @canplay="onAudioReady"
+        @playing="onAudioReady"
       />
       <UAlert
         v-if="audioError"

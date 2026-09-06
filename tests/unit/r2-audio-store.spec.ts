@@ -71,8 +71,19 @@ describe('head', () => {
     expect(new URL(calls[0]!.url).pathname).toBe(`/meetmind-audio/${KEY}`)
     // Header-signed (not query-signed) for server-to-server calls.
     expect(calls[0]!.headers.get('authorization')).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE\//)
-    // The store's own validator is carried through rather than synthesised.
-    expect((await store.head(KEY).catch(() => null))?.etag ?? '"abc123"').toBeTruthy()
+  })
+
+  it('carries R2 own validator through, rather than synthesising one', async () => {
+    stubFetch([new Response(null, {
+      status: 200,
+      headers: { 'content-length': '10', 'etag': '"abc123"' },
+    })])
+    expect((await store.head(KEY))!.etag).toBe('"abc123"')
+  })
+
+  it('reports no validator when the store did not send one', async () => {
+    stubFetch([new Response(null, { status: 200, headers: { 'content-length': '10' } })])
+    expect((await store.head(KEY))!.etag).toBeNull()
   })
 
   it('returns null when the object is absent', async () => {

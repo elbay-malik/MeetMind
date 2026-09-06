@@ -161,6 +161,16 @@ describe('GET /api/meetings/:id/audio', () => {
     expect(after).not.toBe(before)
   })
 
+  it('never reflects a store-supplied validator that is not header-safe', async () => {
+    // The stored content type is attacker-influenced on R2; a validator built
+    // from it, or a malformed one from any store, must not reach the response.
+    const meeting = await uploadedMeeting()
+    const res = await fetch(audioUrl(meeting))
+    const etag = res.headers.get('etag')!
+    expect(etag).toMatch(/^(W\/)?"[\x21\x23-\x7e]*"$/)
+    expect(etag).not.toContain('audio/ogg')
+  })
+
   it('404s for an unknown meeting, a malformed id, and one with no audio yet', async () => {
     expect((await fetch('/api/meetings/9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d/audio')).status).toBe(404)
     expect((await fetch('/api/meetings/not-a-uuid/audio')).status).toBe(404)
