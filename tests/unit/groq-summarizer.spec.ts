@@ -1,12 +1,24 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createGroqSummarizer } from '../../server/utils/summary/groq'
-import { SummarizationError } from '../../server/utils/summary/summarizer'
+import type { SummarizationError } from '../../server/utils/summary/summarizer'
 import type { TranscriptSegment } from '../../shared/types/meeting'
 
 const segments: TranscriptSegment[] = [
   { idx: 0, startMs: 0, endMs: 4000, text: 'We agreed to ship the billing change on Friday.' },
   { idx: 1, startMs: 5000, endMs: 9000, text: 'Priya will draft the migration plan by next week.' },
 ]
+
+/** Only what these tests read back off the wire. */
+interface GroqRequest {
+  model: string
+  temperature: number
+  stream?: unknown
+  messages: { role: string, content: string }[]
+  response_format: {
+    type: string
+    json_schema: { strict: boolean, schema: Record<string, unknown> }
+  }
+}
 
 const summarizer = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 2 })
 
@@ -42,7 +54,7 @@ describe('request', () => {
     const calls = stubFetch([reply(goodPayload)])
     await summarizer.summarize({ segments })
 
-    const body = await calls[0]!.json() as Record<string, any>
+    const body = await calls[0]!.json() as GroqRequest
     // The playbook's llama model is still current but cannot do structured
     // outputs; only the gpt-oss models can.
     expect(body.model).toBe('openai/gpt-oss-120b')
@@ -56,11 +68,12 @@ describe('request', () => {
   it('sends a schema in the shape strict mode requires', async () => {
     const calls = stubFetch([reply(goodPayload)])
     await summarizer.summarize({ segments })
-    const schema = (await calls[0]!.json() as any).response_format.json_schema.schema
+    const schema = (await calls[0]!.json() as GroqRequest).response_format.json_schema.schema
 
     expect(schema.additionalProperties).toBe(false)
     expect(schema.required).toEqual(['summary', 'decisions', 'actionItems'])
-    const item = schema.properties.actionItems.items
+    const properties = schema.properties as Record<string, { items?: Record<string, unknown> }>
+    const item = properties.actionItems!.items!
     expect(item.additionalProperties).toBe(false)
     // Every property required; an optional field is a union with null.
     expect(item.required).toEqual(['quote', 'segmentIdx', 'task', 'assignee', 'dueDateText'])
@@ -72,7 +85,7 @@ describe('request', () => {
   it('numbers transcript lines so the model can cite one', async () => {
     const calls = stubFetch([reply(goodPayload)])
     await summarizer.summarize({ segments })
-    const content = (await calls[0]!.json() as any).messages[1].content
+    const content = (await calls[0]!.json() as GroqRequest).messages[1]!.content
     expect(content).toContain('0| We agreed')
     expect(content).toContain('1| Priya will')
   })
