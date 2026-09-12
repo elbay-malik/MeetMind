@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { createStorage, type Storage } from 'unstorage'
 import type { MeetingSummary } from '#shared/types/meeting'
+import { serialize } from './local'
 import type { SummaryRepository } from './summaries'
 
 const storages = new Map<string, Promise<Storage>>()
@@ -26,12 +27,20 @@ export function createLocalSummaryRepository(options: { dataDir: string }): Summ
 
     async replaceForMeeting(meetingId, summary) {
       // One file per meeting, so replacing is atomic here in a way the
-      // PostgREST driver cannot be.
-      await (await storageFor(base)).setItem<MeetingSummary>(summaryKey(meetingId), summary)
+      // PostgREST driver cannot be. Still queued behind the shared per-id
+      // chain: a summary is potentially dozens of decisions and action items,
+      // each carrying a full verbatim quote — exactly the payload size that
+      // makes the truncating write in `serialize`'s own docstring observable,
+      // and this repository shares meeting ids with the one that documents it.
+      await serialize(meetingId, async () => {
+        await (await storageFor(base)).setItem<MeetingSummary>(summaryKey(meetingId), summary)
+      })
     },
 
     async getForMeeting(meetingId) {
-      return (await (await storageFor(base)).getItem<MeetingSummary>(summaryKey(meetingId))) ?? null
+      return serialize(meetingId, async () => {
+        return (await (await storageFor(base)).getItem<MeetingSummary>(summaryKey(meetingId))) ?? null
+      })
     },
   }
 }

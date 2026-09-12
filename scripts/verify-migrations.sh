@@ -74,6 +74,23 @@ reject "audio_bytes above the cap is refused" \
 reject "an unknown status is refused" \
   "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes) values (gen_random_uuid(),'x','nope','a.mp4',1,'badstatus',10);" \
   "violates check"
+
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+            values (gen_random_uuid(),'x','uploaded','a.mp4',1,'stage_null',10);"
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
+            values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_transcription',10,'transcription');"
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
+            values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_summarization',10,'summarization');"
+check "failed_stage accepts null and both real stages" \
+  "select bool_and(ok) from (
+     select failed_stage is null as ok from public.meetings where audio_key='stage_null'
+     union all select failed_stage='transcription' from public.meetings where audio_key='stage_transcription'
+     union all select failed_stage='summarization' from public.meetings where audio_key='stage_summarization'
+   ) t"
+reject "failed_stage outside the two real stages is refused" \
+  "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
+   values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_bad',10,'indexing');" \
+  "violates check"
 reject "a duplicate audio_key is refused" \
   "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes) values (gen_random_uuid(),'x','uploaded','a.mp4',1,'lifecycle_ready',10);" \
   "duplicate key"
@@ -107,11 +124,16 @@ psql -q -c "delete from public.meetings where audio_key='lifecycle_ready';"
 check "deleting a meeting removes its transcript" \
   "select count(*)=0 from public.transcript_segments"
 
-check "a citation cannot point at a segment that does not exist" \
-  "select count(*)=2 from pg_constraint con
-   where con.contype='f' and array_length(con.conkey,1)=2
-     and con.conrelid in ('public.meeting_decisions'::regclass,
-                          'public.meeting_action_items'::regclass)"
+for t in meeting_decisions meeting_action_items; do
+  check "$t's citation FK actually references transcript_segments, not just some table" \
+    "select exists (
+       select 1 from pg_constraint con
+       where con.conrelid='public.$t'::regclass and con.contype='f'
+         and array_length(con.conkey,1)=2
+         and con.confrelid='public.transcript_segments'::regclass
+         and pg_get_constraintdef(con.oid) ilike '%on delete cascade%'
+     )"
+done
 
 check "summaries, decisions and action items all have RLS on with no policies" \
   "select bool_and(c.relrowsecurity)
@@ -127,11 +149,20 @@ psql -q -c "insert into public.meeting_summaries (meeting_id, summary, provider)
             select id, 'a summary', 'stub' from public.meetings where audio_key='lifecycle_summarizing';"
 psql -q -c "insert into public.meeting_decisions (meeting_id, idx, decision, quote, segment_idx, start_ms)
             select id, 0, 'ship it', 'we agreed to ship', 0, 0 from public.meetings where audio_key='lifecycle_summarizing';"
+psql -q -c "insert into public.meeting_action_items (meeting_id, idx, task, quote, segment_idx, start_ms)
+            select id, 0, 'ship it', 'we agreed to ship', 0, 0 from public.meetings where audio_key='lifecycle_summarizing';"
 check "a decision citing a real segment is accepted" \
   "select count(*)=1 from public.meeting_decisions"
+check "an action item citing a real segment is accepted" \
+  "select count(*)=1 from public.meeting_action_items"
 
 reject "a decision citing a segment that does not exist is refused" \
   "insert into public.meeting_decisions (meeting_id, idx, decision, quote, segment_idx, start_ms)
+   select id, 1, 'invented', 'nobody said this', 99, 0 from public.meetings where audio_key='lifecycle_summarizing';" \
+  "violates foreign key"
+
+reject "an action item citing a segment that does not exist is refused" \
+  "insert into public.meeting_action_items (meeting_id, idx, task, quote, segment_idx, start_ms)
    select id, 1, 'invented', 'nobody said this', 99, 0 from public.meetings where audio_key='lifecycle_summarizing';" \
   "violates foreign key"
 
@@ -140,10 +171,26 @@ reject "an unknown provider is refused" \
    select id, 's', 'guesswork' from public.meetings where audio_key='lifecycle_pending_upload';" \
   "violates check"
 
+# Re-transcription shape: replaceForMeeting deletes and re-inserts segments for
+# the SAME meeting, without touching the meeting row itself. The migration's
+# own header comment claims this cannot leave items citing a segment that is
+# gone — assert that directly rather than only proving cascade-on-meeting-delete.
+psql -q -c "delete from public.transcript_segments
+            where meeting_id=(select id from public.meetings where audio_key='lifecycle_summarizing')
+              and idx=0;"
+check "re-transcription cascades a stale citation away without deleting the summary" \
+  "select (select count(*) from public.meeting_decisions
+           where meeting_id=(select id from public.meetings where audio_key='lifecycle_summarizing'))=0
+      and (select count(*) from public.meeting_action_items
+           where meeting_id=(select id from public.meetings where audio_key='lifecycle_summarizing'))=0
+      and exists (select 1 from public.meeting_summaries
+                  where meeting_id=(select id from public.meetings where audio_key='lifecycle_summarizing'))"
+
 psql -q -c "delete from public.meetings where audio_key='lifecycle_summarizing';"
-check "deleting a meeting removes its summary and decisions" \
+check "deleting a meeting removes its summary, decisions and action items" \
   "select (select count(*) from public.meeting_summaries)=0
-      and (select count(*) from public.meeting_decisions)=0"
+      and (select count(*) from public.meeting_decisions)=0
+      and (select count(*) from public.meeting_action_items)=0"
 
 # updated_at must advance on update. now() is transaction-scoped, so the insert
 # and the update have to happen in separate transactions or this always passes.

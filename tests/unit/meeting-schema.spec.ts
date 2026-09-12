@@ -53,6 +53,7 @@ describe('meetingSchema', () => {
     audioMime: 'audio/ogg' as const,
     uploadedAt: null,
     errorMessage: null,
+    failedStage: null,
   }
 
   it('accepts the offset timestamps Postgres returns, not just Z', () => {
@@ -85,7 +86,17 @@ describe('meetingSchema', () => {
       audioMime: 'audio/ogg',
       uploadedAt: null,
       errorMessage: null,
+      failedStage: null,
     })
     expect(r.success).toBe(true)
+  })
+
+  it('accepts a stored failure with its stage recorded', () => {
+    const r = meetingSchema.safeParse({ ...stored, status: 'failed', failedStage: 'summarization' })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejects a failedStage outside the two real stages', () => {
+    expect(meetingSchema.safeParse({ ...stored, failedStage: 'indexing' }).success).toBe(false)
   })
 })

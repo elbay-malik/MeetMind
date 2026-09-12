@@ -13,7 +13,15 @@ await setup({
   rootDir,
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
-  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret' },
+  env: {
+    NUXT_DATA_DIR: dataDir,
+    NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
+    // Makes the stub also emit one unsupported citation, so this suite can
+    // prove reconciliation drops it over the real route rather than only in
+    // reconcile()'s own unit tests. The stub's normal quotes are all real, so
+    // without this nothing here ever exercises the drop path end to end.
+    NUXT_SUMMARY_STUB_CANARY: 'true',
+  },
 })
 
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
@@ -70,6 +78,17 @@ describe('POST /api/meetings/:id/summarize', () => {
       expect(item.startMs).toBe(cited!.startMs)
       expect(cited!.text.toLowerCase()).toContain(item.quote.toLowerCase().slice(0, 20))
     }
+  })
+
+  it('drops a fabricated citation that does not occur in the transcript', async () => {
+    // The stub (with the canary env on) always includes one item whose quote
+    // is guaranteed absent from the transcript. If reconciliation's rejection
+    // were ever disabled, this is what would catch it — over the real HTTP
+    // route, not just inside reconcile()'s own unit tests.
+    const meeting = await transcribedMeeting()
+    const { summary } = await summarize(meeting.id)
+    const texts = [...summary.decisions.map(d => d.decision), ...summary.actionItems.map(a => a.task)]
+    expect(texts.some(t => t.includes('[canary]'))).toBe(false)
   })
 
   it('numbers items gaplessly and in time order', async () => {

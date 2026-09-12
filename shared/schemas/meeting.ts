@@ -49,6 +49,7 @@ export const meetingSchema = z.object({
   audioMime: z.literal(AUDIO_MIME),
   uploadedAt: z.iso.datetime({ offset: true }).nullable(),
   errorMessage: z.string().nullable(),
+  failedStage: z.enum(['transcription', 'summarization']).nullable(),
 }) satisfies z.ZodType<Meeting>
 
 /** A single transcript segment as stored and returned by the API. */

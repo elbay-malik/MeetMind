@@ -21,6 +21,20 @@ describe('estimateTokens', () => {
     expect(estimateTokens('')).toBeGreaterThanOrEqual(0)
     expect(estimateTokens('   ')).toBeGreaterThanOrEqual(0)
   })
+
+  it('scales with character count for scripts with no whitespace between words', () => {
+    // Japanese has no spaces between words. Splitting on whitespace alone
+    // collapses a long utterance into a single "word" and costs it a
+    // handful of tokens no matter how long it really is — a 200-character
+    // sentence would price out at Math.ceil(1 * 1.4) + 4 = 6 tokens, the same
+    // as a single character. A character-based estimate must scale instead.
+    const long = 'あ'.repeat(200)
+    expect(estimateTokens(long)).toBeGreaterThan(100)
+  })
+
+  it('does not let a long CJK segment cost the same as a short one', () => {
+    expect(estimateTokens('あ'.repeat(200))).toBeGreaterThan(estimateTokens('あ') * 10)
+  })
 })
 
 describe('planChunks', () => {
@@ -87,5 +101,16 @@ describe('planChunks', () => {
     const chunks = planChunks(hour, 6000)
     expect(chunks.length).toBeGreaterThan(1)
     for (const chunk of chunks) expect(chunk.estimatedTokens).toBeLessThanOrEqual(6000)
+  })
+
+  it('splits a long CJK transcript instead of treating every segment as ~6 tokens', () => {
+    // No spaces between words, so a whitespace-only estimator would cost every
+    // segment here about 6 tokens flat and never split at all — silently
+    // defeating the budget for exactly the languages this exists to cover.
+    const segments = Array.from({ length: 50 }, (_, i) => ({
+      idx: i, startMs: i * 5000, endMs: i * 5000 + 4000, text: 'あ'.repeat(100),
+    }))
+    const chunks = planChunks(segments, 500)
+    expect(chunks.length).toBeGreaterThan(1)
   })
 })

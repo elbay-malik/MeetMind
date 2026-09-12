@@ -18,7 +18,13 @@ const storages = new Map<string, Promise<Storage>>()
  */
 const chains = new Map<string, Promise<unknown>>()
 
-function serialize<T>(id: string, work: () => Promise<T>): Promise<T> {
+/**
+ * Exported so every local JSON-file driver keyed by meeting id can share the
+ * one queue per id — summaries-local.ts stores exactly the payload this
+ * comment warns about (potentially dozens of decisions and action items, each
+ * carrying a full verbatim quote) and needs the same protection.
+ */
+export function serialize<T>(id: string, work: () => Promise<T>): Promise<T> {
   const next = (chains.get(id) ?? Promise.resolve()).then(work, work)
   chains.set(id, next.catch(() => undefined))
   return next

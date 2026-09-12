@@ -38,7 +38,11 @@ export const wireSummarySchema = z.object({
 
 export type WireSummary = z.output<typeof wireSummarySchema>
 
-/** What we accept after reconciling the model's answer against the transcript. */
+/**
+ * What we accept after reconciling the model's answer against the transcript.
+ * Enforced by `reconcile()` (server/utils/summary/reconcile.ts) as a defensive
+ * assertion on its own output, not requested from the model.
+ */
 export const decisionSchema = z.object({
   idx: z.int().nonnegative(),
   decision: z.string().min(1),
@@ -57,6 +61,12 @@ export const actionItemSchema = z.object({
   startMs: z.int().nonnegative(),
 }) satisfies z.ZodType<ActionItem>
 
+/**
+ * The full contract, for documentation and for tests/services once a real key
+ * exists (mirroring how meetingSchema is used there for meetings). Its two
+ * item schemas are independently enforced at runtime by `reconcile()`; this
+ * one additionally covers `summary` and `provider`.
+ */
 export const meetingSummarySchema = z.object({
   summary: z.string(),
   decisions: z.array(decisionSchema),

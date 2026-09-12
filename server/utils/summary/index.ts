@@ -22,7 +22,8 @@ export function useSummarizer(event: H3Event): Summarizer {
   const groqReady = requireAllOrNone('Groq', { NUXT_GROQ_API_KEY: config.groqApiKey })
   const summarizer = groqReady
     ? createGroqSummarizer({ apiKey: config.groqApiKey })
-    : createStubSummarizer()
+    // Truthy, not === true: destr parses '1' to the number 1, not a boolean.
+    : createStubSummarizer({ injectCanary: !!config.summaryStubCanary })
   announce(summarizer.kind)
   return summarizer
 }

@@ -57,6 +57,7 @@ export default defineEventHandler(async (event): Promise<CreateMeetingResponse> 
     audioMime: AUDIO_MIME,
     uploadedAt: null,
     errorMessage: null,
+    failedStage: null,
   })
 
   setResponseStatus(event, 201)

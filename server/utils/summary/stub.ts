@@ -3,6 +3,22 @@ import { reconcile } from './reconcile'
 import type { SummarizeInput, Summarizer } from './summarizer'
 
 /**
+ * A quote that cannot occur in any real transcript: `attestQuote`'s search is
+ * substring-based, and no meeting says this. Used only when the canary option
+ * is on, to prove reconciliation actually rejects an unsupported citation
+ * through the real HTTP path — the stub's own quotes are always real, since
+ * they are lifted verbatim from the transcript, so without this there is
+ * nothing in the credential-free test tiers that ever exercises the drop path
+ * end to end.
+ */
+const CANARY_QUOTE = 'zzz-unsupported-canary-citation-that-nobody-said-zzz'
+
+export interface StubSummarizerOptions {
+  /** Test-only: see CANARY_QUOTE. Never set outside tests. */
+  injectCanary?: boolean
+}
+
+/**
  * Stands in when no API key is configured, so development, CI and the browser
  * driver exercise the whole path without credentials.
  *
@@ -11,7 +27,7 @@ import type { SummarizeInput, Summarizer } from './summarizer'
  * answer and exercises the citation-to-player link end to end. Its wording says
  * plainly that it is not a real summary.
  */
-export function createStubSummarizer(): Summarizer {
+export function createStubSummarizer(options: StubSummarizerOptions = {}): Summarizer {
   return {
     kind: 'stub',
 
@@ -29,11 +45,16 @@ export function createStubSummarizer(): Summarizer {
         summary:
           `No summarization provider is configured, so this placeholder stands in for a summary of `
           + `${segments.length} transcript segments.`,
-        decisions: picked.slice(0, 2).map(s => ({
-          quote: s.text,
-          segmentIdx: s.idx,
-          decision: `[stub] Placeholder decision drawn from segment ${s.idx}`,
-        })),
+        decisions: [
+          ...picked.slice(0, 2).map(s => ({
+            quote: s.text,
+            segmentIdx: s.idx,
+            decision: `[stub] Placeholder decision drawn from segment ${s.idx}`,
+          })),
+          ...(options.injectCanary
+            ? [{ quote: CANARY_QUOTE, segmentIdx: 0, decision: '[canary] should be dropped by reconciliation' }]
+            : []),
+        ],
         actionItems: picked.slice(0, 2).map(s => ({
           quote: s.text,
           segmentIdx: s.idx,

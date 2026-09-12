@@ -7,9 +7,28 @@ import type { TranscriptSegment } from '#shared/types/meeting'
  * split a transcript would cost more than being slightly conservative. English
  * runs about 1.35 tokens per word; this rounds up so a chunk that fits the
  * estimate fits the real budget too.
+ *
+ * Splitting on whitespace assumes the script actually uses spaces between
+ * words. Japanese, Chinese and Thai do not, so a long utterance in one of them
+ * collapses to a single whitespace-delimited "word" no matter how long it
+ * really is — silently defeating the budget this function exists to enforce,
+ * for exactly the languages transcription already supports (it takes an
+ * optional language hint, not an English-only assumption). A ratio-based
+ * check on the whitespace split cannot tell this apart from ordinary English:
+ * a script with no spaces at all still produces exactly one "word" (the whole
+ * string), so its chars-per-word ratio scales with text length rather than
+ * signalling anything. Detecting the script directly is the only reliable
+ * test, so any text containing Hiragana, Katakana, CJK ideographs or Thai
+ * characters is costed per character instead: those tokenizers run close to
+ * one token per character.
  */
+const NO_SPACE_SCRIPT = /[฀-๿぀-ヿ㐀-䶿一-鿿豈-﫿]/
+
 export function estimateTokens(text: string): number {
-  const words = text.trim().split(/\s+/).filter(Boolean).length
+  const trimmed = text.trim()
+  if (!trimmed) return 0
+  if (NO_SPACE_SCRIPT.test(trimmed)) return [...trimmed].length + 4
+  const words = trimmed.split(/\s+/).filter(Boolean).length
   return Math.ceil(words * 1.4) + 4
 }
 
@@ -30,8 +49,9 @@ export interface Chunk {
  *
  * Chunking is not optional at the sizes this app accepts. The provider's
  * per-minute token allowance is the binding limit, and a one-hour meeting
- * exceeds it in a single request — the repository's own one-hour fixture
- * reaches that, so it is not a hypothetical.
+ * exceeds it in a single request — a local one-hour recording reaches that
+ * (see ADR-0002; the fixture itself is gitignored, not committed), so it is
+ * not a hypothetical.
  */
 export function planChunks(segments: TranscriptSegment[], budgetTokens: number): Chunk[] {
   if (!Number.isFinite(budgetTokens) || budgetTokens <= 0) {

@@ -43,6 +43,9 @@ export async function failMeetingUpload(
     const detail = err instanceof Error ? err.message : String(err)
     errorMessage = `${reason}; object could not be deleted and needs sweeping (${detail})`
   }
-  await repo.update(meeting.id, { status: 'failed', errorMessage })
+  // Retrying this lands in transcribe.post.ts, which re-checks the audio
+  // against storage — the closest available recovery for an upload that
+  // failed before transcription ever ran.
+  await repo.update(meeting.id, { status: 'failed', errorMessage, failedStage: 'transcription' })
   return errorMessage
 }

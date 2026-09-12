@@ -4,7 +4,7 @@ import type { Meeting, MeetingStatus } from '#shared/types/meeting'
 export type NewMeeting = Omit<Meeting, 'createdAt' | 'updatedAt'>
 
 /** Columns the pipeline is allowed to change after creation. */
-export type MeetingPatch = Partial<Pick<Meeting, 'status' | 'uploadedAt' | 'errorMessage' | 'title'>>
+export type MeetingPatch = Partial<Pick<Meeting, 'status' | 'uploadedAt' | 'errorMessage' | 'failedStage' | 'title'>>
 
 export interface MeetingRepository {
   readonly kind: 'supabase' | 'local'
@@ -43,6 +43,7 @@ export type MeetingRow = {
   audio_mime: string
   uploaded_at: string | null
   error_message: string | null
+  failed_stage: 'transcription' | 'summarization' | null
 }
 
 export function rowToMeeting(row: MeetingRow): Meeting {
@@ -61,6 +62,7 @@ export function rowToMeeting(row: MeetingRow): Meeting {
     audioMime: row.audio_mime,
     uploadedAt: row.uploaded_at,
     errorMessage: row.error_message,
+    failedStage: row.failed_stage,
   }
 }
 
@@ -78,14 +80,18 @@ export function newMeetingToRow(meeting: NewMeeting): Omit<MeetingRow, 'created_
     audio_mime: meeting.audioMime,
     uploaded_at: meeting.uploadedAt,
     error_message: meeting.errorMessage,
+    failed_stage: meeting.failedStage,
   }
 }
 
-export function patchToRow(patch: MeetingPatch): Partial<Pick<MeetingRow, 'status' | 'uploaded_at' | 'error_message' | 'title'>> {
-  const row: Partial<Pick<MeetingRow, 'status' | 'uploaded_at' | 'error_message' | 'title'>> = {}
+export function patchToRow(
+  patch: MeetingPatch,
+): Partial<Pick<MeetingRow, 'status' | 'uploaded_at' | 'error_message' | 'failed_stage' | 'title'>> {
+  const row: Partial<Pick<MeetingRow, 'status' | 'uploaded_at' | 'error_message' | 'failed_stage' | 'title'>> = {}
   if (patch.status !== undefined) row.status = patch.status
   if (patch.uploadedAt !== undefined) row.uploaded_at = patch.uploadedAt
   if (patch.errorMessage !== undefined) row.error_message = patch.errorMessage
+  if (patch.failedStage !== undefined) row.failed_stage = patch.failedStage
   if (patch.title !== undefined) row.title = patch.title
   return row
 }

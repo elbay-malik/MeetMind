@@ -3,10 +3,27 @@ import type { Meeting, MeetingSummary } from '#shared/types/meeting'
 import { useMeetingRepository, useSummaryRepository, useTranscriptRepository } from '../../../utils/db'
 import { conflict, notFound, requireMeetingId } from '../../../utils/http'
 import { useSummarizer } from '../../../utils/summary'
+import { CHUNK_BUDGET_TOKENS } from '../../../utils/summary/groq'
+import { planChunks } from '../../../utils/summary/plan'
 import { SummarizationError } from '../../../utils/summary/summarizer'
 
 /** How long a claim is honoured before another caller may take it over. */
 const CLAIM_LEASE_MS = 15 * 60_000
+
+/**
+ * How long a failure must sit before it can be retried. Extraction is several
+ * sequential provider requests, not one, so an instant retry after a failure
+ * re-hammers the provider with the whole run again immediately.
+ */
+const RETRY_COOLDOWN_MS = 30_000
+
+/**
+ * A transcript needing more sequential requests than this is rejected before
+ * any of them are sent. Nothing bounds chunk count otherwise: a meeting long
+ * enough to need dozens of requests would tie up a request handler for
+ * minutes and spend the provider's quota on a single caller.
+ */
+const MAX_CHUNKS = 40
 
 /** Statuses that mean extraction has already happened. */
 const PAST_SUMMARY = ['indexing', 'ready']
@@ -41,6 +58,15 @@ export default defineEventHandler(async (event): Promise<{
     throw conflict('This meeting has no transcript to summarise yet')
   }
 
+  const chunkCount = planChunks(segments, CHUNK_BUDGET_TOKENS).length
+  if (chunkCount > MAX_CHUNKS) {
+    throw createError({
+      statusCode: 413,
+      statusMessage: 'Transcript too long',
+      message: `This transcript would need ${chunkCount} sequential requests, over the ${MAX_CHUNKS} limit.`,
+    })
+  }
+
   const claimed = await claim(repo, meeting)
   if (!claimed) {
     const current = await repo.get(id)
@@ -56,13 +82,25 @@ export default defineEventHandler(async (event): Promise<{
     const summary = await useSummarizer(event).summarize({ segments })
     await summaries.replaceForMeeting(id, summary)
 
-    const updated = await repo.update(id, { status: 'ready', errorMessage: null })
-    return { meeting: updated ?? { ...claimed, status: 'ready' }, summary }
+    // Claim-gated, not a plain update: a straggler from a stale-lease reclaim
+    // (see claim() below) must not overwrite a meeting another caller already
+    // finished. Only a write that lands while the row still shows `indexing`
+    // — the state THIS invocation itself claimed — takes effect.
+    const updated = await repo.claim(id, 'indexing', { status: 'ready', errorMessage: null, failedStage: null })
+    if (updated) return { meeting: updated, summary }
+
+    // Lost the race: someone else's write landed first. Their result, not
+    // ours, is authoritative — the summary this call computed is discarded
+    // rather than persisted over theirs.
+    const current = await repo.get(id)
+    const stored = current ? await summaries.getForMeeting(id) : null
+    if (current && stored) return { meeting: current, summary: stored }
+    return { meeting: { ...claimed, status: 'ready', failedStage: null }, summary }
   }
   catch (err) {
     // An h3 error already says what it means; do not rewrite it.
     if (isError(err)) {
-      await repo.update(id, { status: 'summarizing', errorMessage: null })
+      await repo.claim(id, 'indexing', { status: 'summarizing', errorMessage: null, failedStage: null })
       throw err
     }
 
@@ -71,9 +109,13 @@ export default defineEventHandler(async (event): Promise<{
     // Default to retryable. Parking a meeting whose transcript is intact on a
     // terminal status is the worse mistake.
     const retryable = failure ? failure.retryable : true
-    await repo.update(id, {
+    // Claim-gated for the same reason as the success path: if another caller
+    // already finished (or is itself retrying) while this one was failing,
+    // this write must not regress what they did.
+    await repo.claim(id, 'indexing', {
       status: retryable ? 'summarizing' : 'failed',
       errorMessage: message,
+      failedStage: retryable ? null : 'summarization',
     })
     throw createError({
       statusCode: failure?.statusCode ?? 500,
@@ -92,15 +134,20 @@ async function claim(
   repo: ReturnType<typeof useMeetingRepository>,
   meeting: Meeting,
 ): Promise<Meeting | null> {
-  const patch = { status: 'indexing' as const, errorMessage: null }
+  const patch = { status: 'indexing' as const, errorMessage: null, failedStage: null }
   if (meeting.status === 'summarizing') return repo.claim(meeting.id, 'summarizing', patch)
 
   const staleSince = Date.now() - CLAIM_LEASE_MS
   if (meeting.status === 'indexing' && new Date(meeting.updatedAt).getTime() < staleSince) {
     return repo.claim(meeting.id, 'indexing', patch)
   }
-  // `failed` is recoverable: the transcript is still there and asking again is
-  // exactly the retry the status was recorded for.
-  if (meeting.status === 'failed') return repo.claim(meeting.id, 'failed', patch)
+  // `failed` is recoverable, but only a failure THIS route caused (a
+  // summarisation failure leaves the transcript intact; retrying is exactly
+  // what the status was recorded for), and not before a short cooldown — a
+  // multi-chunk run failing partway should not be instantly re-hammered.
+  const cooledDown = Date.now() - new Date(meeting.updatedAt).getTime() >= RETRY_COOLDOWN_MS
+  if (meeting.status === 'failed' && meeting.failedStage === 'summarization' && cooledDown) {
+    return repo.claim(meeting.id, 'failed', patch)
+  }
   return null
 }

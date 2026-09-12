@@ -1,5 +1,6 @@
+import { z } from 'zod'
 import type { ActionItem, Decision, TranscriptSegment } from '#shared/types/meeting'
-import type { WireSummary } from '#shared/schemas/summary'
+import { actionItemSchema, decisionSchema, type WireSummary } from '#shared/schemas/summary'
 
 /**
  * Compare loosely enough to survive punctuation and case, strictly enough that
@@ -14,20 +15,31 @@ function normalise(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
 
-/** How far either side of the claimed segment to look before searching wider. */
-const NEARBY_SEGMENTS = 2
-
 /**
- * Shortest quote worth attesting; below this a match is likely accidental.
- * Counted in characters, so for scripts written without spaces this is a longer
- * phrase than it looks — which errs toward rejecting, the safe direction.
+ * Shortest FRAGMENT worth attesting; below this a match is likely accidental
+ * and, more to the point, proves too little to back a specific claim — a short
+ * generic phrase ("the vendor", "next week") occurs constantly and can be
+ * paired with a decision it has nothing to do with. Counted in characters, so
+ * for scripts written without spaces this is a longer phrase than it looks.
+ *
+ * A quote that is the cited segment's ENTIRE text is exempted down to
+ * {@link MIN_FULL_SEGMENT_QUOTE_CHARS}: there is no larger context it could be
+ * cherry-picked from, so a short whole utterance ("Agreed.") is exactly as
+ * trustworthy as a long one.
  */
-const MIN_QUOTE_CHARS = 8
+const MIN_QUOTE_CHARS = 20
+const MIN_FULL_SEGMENT_QUOTE_CHARS = 2
 
 export interface Attested {
   segmentIdx: number
   startMs: number
   quote: string
+}
+
+interface Candidate {
+  segment: TranscriptSegment
+  distance: number
+  /** Whether the quote is this segment's entire text, not merely a fragment of it. */ full: boolean
 }
 
 /**
@@ -38,9 +50,19 @@ export interface Attested {
  * said. Checking is cheap and the alternative is a summary that reads as
  * authoritative while pointing at nothing.
  *
- * Searches the claimed segment first, then its neighbours, then the whole
- * transcript — a model that gets the words right and the index slightly wrong
- * is far more common than one that invents both.
+ * Among everywhere it occurs, prefers a full-segment match over a fragment
+ * match, then the occurrence nearest the model's claimed index — a model that
+ * gets the words right and the index slightly wrong is far more common than
+ * one that invents both, and repeated short phrases ("sounds good", "let's
+ * move on") occur throughout an ordinary meeting, so picking the first
+ * occurrence in transcript order (rather than the nearest) would routinely
+ * attribute a citation to the wrong moment.
+ *
+ * This proves the quoted words were said; it does not prove the model's claim
+ * about them is accurate. A short but real quote can still be paired with an
+ * unrelated decision — closing that needs a semantic check against a judge
+ * model, which would spend the same scarce quota this design protects, and is
+ * deferred (see ADR-0006).
  */
 export function attestQuote(
   quote: string,
@@ -48,29 +70,23 @@ export function attestQuote(
   segments: TranscriptSegment[],
 ): Attested | null {
   const needle = normalise(quote)
-  if (needle.length < MIN_QUOTE_CHARS) return null
+  if (!needle) return null
 
-  const at = (idx: number) => segments.find(s => s.idx === idx)
-  const matches = (segment: TranscriptSegment | undefined) =>
-    segment !== undefined && normalise(segment.text).includes(needle)
-
-  const claimed = at(claimedIdx)
-  if (matches(claimed)) {
-    return { segmentIdx: claimed!.idx, startMs: claimed!.startMs, quote: quote.trim() }
+  const candidates: Candidate[] = []
+  for (const segment of segments) {
+    const segmentText = normalise(segment.text)
+    const full = segmentText === needle
+    if (!full && !segmentText.includes(needle)) continue
+    candidates.push({ segment, distance: Math.abs(segment.idx - claimedIdx), full })
   }
 
-  for (let offset = 1; offset <= NEARBY_SEGMENTS; offset++) {
-    for (const candidate of [at(claimedIdx - offset), at(claimedIdx + offset)]) {
-      if (matches(candidate)) {
-        return { segmentIdx: candidate!.idx, startMs: candidate!.startMs, quote: quote.trim() }
-      }
-    }
-  }
+  const usable = candidates.filter(c =>
+    needle.length >= (c.full ? MIN_FULL_SEGMENT_QUOTE_CHARS : MIN_QUOTE_CHARS))
+  if (usable.length === 0) return null
 
-  const anywhere = segments.find(s => normalise(s.text).includes(needle))
-  return anywhere
-    ? { segmentIdx: anywhere.idx, startMs: anywhere.startMs, quote: quote.trim() }
-    : null
+  usable.sort((a, b) => (a.full === b.full ? a.distance - b.distance : Number(b.full) - Number(a.full)))
+  const best = usable[0]!.segment
+  return { segmentIdx: best.idx, startMs: best.startMs, quote: quote.trim() }
 }
 
 export interface Reconciled {
@@ -132,9 +148,19 @@ export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Re
     })
   }
 
+  const finalDecisions = renumber(decisions.sort(byTime))
+  const finalActionItems = renumber(actionItems.sort(byTime))
+
+  // decisionSchema/actionItemSchema are not asked of the model (see the wire
+  // schema's docstring) — they describe what THIS function is supposed to
+  // produce. Asserting the shape here turns a future bug in this function into
+  // a loud failure instead of a malformed row silently reaching storage.
+  z.array(decisionSchema).parse(finalDecisions)
+  z.array(actionItemSchema).parse(finalActionItems)
+
   return {
-    decisions: renumber(decisions.sort(byTime)),
-    actionItems: renumber(actionItems.sort(byTime)),
+    decisions: finalDecisions,
+    actionItems: finalActionItems,
     droppedDecisions,
     droppedActionItems,
   }

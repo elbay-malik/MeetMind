@@ -70,7 +70,7 @@ export default defineEventHandler(async (event): Promise<{
 
     await transcripts.replaceForMeeting(id, result.segments)
 
-    const updated = await repo.update(id, { status: 'summarizing', errorMessage: null })
+    const updated = await repo.update(id, { status: 'summarizing', errorMessage: null, failedStage: null })
     // The transcript is stored either way; a missing row here is not a reason to
     // discard it.
     return { meeting: updated ?? { ...claimed, status: 'summarizing' }, segments: result.segments }
@@ -80,7 +80,7 @@ export default defineEventHandler(async (event): Promise<{
     // record it as a transcription failure. h3 marks these with a static on the
     // class, so its own predicate is the only correct test.
     if (isError(err)) {
-      await repo.update(id, { status: 'uploaded', errorMessage: null })
+      await repo.update(id, { status: 'uploaded', errorMessage: null, failedStage: null })
       throw err
     }
 
@@ -93,6 +93,7 @@ export default defineEventHandler(async (event): Promise<{
     await repo.update(id, {
       status: retryable ? 'uploaded' : 'failed',
       errorMessage: message,
+      failedStage: retryable ? null : 'transcription',
     })
     throw createError({
       statusCode: transcription?.statusCode ?? 500,
@@ -118,8 +119,12 @@ async function claim(
   if (meeting.status === 'transcribing' && new Date(meeting.updatedAt).getTime() < staleSince) {
     return repo.claim(meeting.id, 'transcribing', patch)
   }
-  // `failed` is recoverable: the audio is still there, and the user asking again
-  // is exactly the retry the status was recorded for.
-  if (meeting.status === 'failed') return repo.claim(meeting.id, 'failed', patch)
+  // `failed` is recoverable, but only when THIS route caused it: the audio is
+  // still there, and asking again is exactly the retry it was recorded for. A
+  // failure from summarize.post.ts leaves a valid transcript behind — routing
+  // its retry through here would re-run transcription and overwrite it.
+  if (meeting.status === 'failed' && meeting.failedStage === 'transcription') {
+    return repo.claim(meeting.id, 'failed', patch)
+  }
   return null
 }

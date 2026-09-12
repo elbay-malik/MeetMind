@@ -70,6 +70,7 @@ let poller: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   poller = setInterval(() => {
     if (meeting.value.status === 'transcribing' && !transcribing.value) void reloadAll()
+    if (meeting.value.status === 'indexing' && !summarizing.value) void reloadAll()
   }, POLL_MS)
 })
 onUnmounted(() => {
@@ -107,8 +108,21 @@ const STAGES: Stage[] = [
     // transcription that produced nothing.
     reached: s => ['summarizing', 'indexing', 'ready'].includes(s) && segments.value.length > 0,
   },
-  { key: 'summarize', label: 'Summarized', detail: 'Decisions and action items extracted.', reached: s => ['indexing', 'ready'].includes(s) },
-  { key: 'index', label: 'Indexing', detail: 'Semantic search across the transcript.', reached: s => s === 'ready' },
+  {
+    key: 'summarize',
+    label: 'Summarized',
+    detail: 'Decisions and action items extracted.',
+    // `ready` only: `indexing` is the in-flight claim summarize.post.ts sets
+    // the instant it starts, exactly as `transcribing` means "not done yet"
+    // for the stage above. Including it here showed a green tick for an
+    // extraction that had not actually produced anything.
+    reached: s => s === 'ready',
+  },
+  // No "Indexing" stage: nothing in this codebase indexes anything yet — that
+  // is Phase 9 (see docs/adr/0006-structured-summaries.md). `indexing` is only
+  // ever an in-flight marker set by summarize.post.ts's own claim(), not a
+  // real pipeline step, and showing a stage for it would claim semantic search
+  // ran the moment extraction finished.
 ]
 
 const statusColor = computed(() => ({
@@ -128,9 +142,11 @@ const transcribedButEmpty = computed(() =>
   ['summarizing', 'indexing', 'ready'].includes(meeting.value.status) && segments.value.length === 0)
 const createdAt = computed(() => new Date(meeting.value.createdAt).toLocaleString())
 const canTranscribe = computed(() =>
-  meeting.value.status === 'uploaded' || meeting.value.status === 'failed')
+  meeting.value.status === 'uploaded'
+  || (meeting.value.status === 'failed' && meeting.value.failedStage === 'transcription'))
 const canSummarize = computed(() =>
-  meeting.value.status === 'summarizing' && segments.value.length > 0)
+  (meeting.value.status === 'summarizing' && segments.value.length > 0)
+  || (meeting.value.status === 'failed' && meeting.value.failedStage === 'summarization'))
 
 /**
  * What the card is doing, as one string in one live region. Screen readers only
@@ -141,6 +157,9 @@ const activityLabel = computed(() => {
   if (summarizing.value) return 'Extracting decisions and action items.'
   if (transcribing.value) return 'Transcribing. This can take a moment.'
   if (meeting.value.status === 'transcribing') return 'Transcription is running.'
+  // Another tab, or a request that outlived its page, can leave a meeting
+  // claimed here with nothing visibly running on THIS page.
+  if (meeting.value.status === 'indexing') return 'Extraction is running.'
   if (justFinished.value) return `Transcription finished with ${segments.value.length} segments.`
   if (canTranscribe.value) return 'Transcription runs on demand until the pipeline is automated.'
   return ''
@@ -226,10 +245,10 @@ const activityLabel = computed(() => {
             icon="i-lucide-list-checks"
             @click="startSummary"
           >
-            Extract decisions &amp; action items
+            {{ meeting.errorMessage ? 'Try extraction again' : 'Extract decisions & action items' }}
           </UButton>
           <UIcon
-            v-else-if="meeting.status === 'transcribing'"
+            v-else-if="meeting.status === 'transcribing' || meeting.status === 'indexing'"
             name="i-lucide-loader-circle"
             class="size-5 shrink-0 animate-spin text-primary"
           />

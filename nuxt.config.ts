@@ -18,6 +18,11 @@ export default defineNuxtConfig({
     // Local drivers only (dev/tests): HMAC secret for upload URLs and data root.
     uploadTokenSecret: '', // NUXT_UPLOAD_TOKEN_SECRET (random per process when empty)
     dataDir: '.data', // NUXT_DATA_DIR
+    // Test-only: makes the stub summarizer emit one item whose quote does not
+    // occur in the transcript, so tests can prove reconciliation actually
+    // drops it over the real HTTP path rather than only in a unit test that
+    // calls reconcile() directly. Never set outside tests.
+    summaryStubCanary: false, // NUXT_SUMMARY_STUB_CANARY
     public: {},
   },
   routeRules: {

@@ -134,13 +134,18 @@ try {
 
   // The stage list must not claim more or less than the truth. Scope to the
   // pipeline card: the transcript is also an ordered list.
-  const STAGES = ['Audio uploaded', 'Transcribed', 'Summarized', 'Indexing']
+  const STAGES = ['Audio uploaded', 'Transcribed', 'Summarized']
   const listText = await page.locator('ol li').allInnerTexts()
   const stages = STAGES.filter(label => listText.some(t => t.includes(label)))
   if (stages.length !== STAGES.length) {
     fail(`pipeline is missing stages: ${STAGES.filter(l => !stages.includes(l)).join(', ')}`)
   }
   console.log(`pipeline stages rendered: ${stages.length}/${STAGES.length}`)
+  // Nothing indexes anything yet (that is Phase 9) — the pipeline must not
+  // claim a stage that does not exist.
+  if (listText.some(t => t.includes('Indexing'))) {
+    fail('pipeline shows an "Indexing" stage, but nothing indexes anything yet')
+  }
 
   // Completion has to be announced somewhere that stays mounted.
   const announced = await page.locator('[role=status]').allInnerTexts()

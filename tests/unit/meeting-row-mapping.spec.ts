@@ -22,6 +22,7 @@ const row: MeetingRow = {
   audio_mime: 'audio/ogg',
   uploaded_at: '2026-09-05T12:05:00.000Z',
   error_message: null,
+  failed_stage: null,
 }
 
 describe('rowToMeeting', () => {
@@ -41,6 +42,7 @@ describe('rowToMeeting', () => {
       audioMime: 'audio/ogg',
       uploadedAt: row.uploaded_at,
       errorMessage: null,
+      failedStage: null,
     })
   })
 
@@ -76,6 +78,7 @@ describe('newMeetingToRow', () => {
     audioMime: 'audio/ogg',
     uploadedAt: null,
     errorMessage: null,
+    failedStage: null,
   }
 
   it('produces the insert row without touching the timestamp columns', () => {
@@ -93,6 +96,7 @@ describe('newMeetingToRow', () => {
       audio_mime: 'audio/ogg',
       uploaded_at: null,
       error_message: null,
+      failed_stage: null,
     })
     // created_at/updated_at are the database's to set.
     expect(inserted).not.toHaveProperty('created_at')
@@ -116,13 +120,16 @@ describe('patchToRow', () => {
   it('passes explicit nulls through so a value can be cleared', () => {
     expect(patchToRow({ errorMessage: null })).toEqual({ error_message: null })
     expect(patchToRow({ uploadedAt: null })).toEqual({ uploaded_at: null })
+    expect(patchToRow({ failedStage: null })).toEqual({ failed_stage: null })
   })
 
   it('maps a full patch', () => {
     expect(patchToRow({
-      status: 'failed', uploadedAt: '2026-09-05T12:05:00.000Z', errorMessage: 'size mismatch', title: 'x',
+      status: 'failed', uploadedAt: '2026-09-05T12:05:00.000Z', errorMessage: 'size mismatch',
+      failedStage: 'summarization', title: 'x',
     })).toEqual({
-      status: 'failed', uploaded_at: '2026-09-05T12:05:00.000Z', error_message: 'size mismatch', title: 'x',
+      status: 'failed', uploaded_at: '2026-09-05T12:05:00.000Z', error_message: 'size mismatch',
+      failed_stage: 'summarization', title: 'x',
     })
   })
 })

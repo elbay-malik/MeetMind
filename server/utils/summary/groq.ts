@@ -16,9 +16,11 @@ const MODEL = 'openai/gpt-oss-120b'
 
 /**
  * Transcript tokens allowed per request, leaving room inside the per-minute
- * allowance for the instructions and the reply.
+ * allowance for the instructions and the reply. Exported so the route can plan
+ * the same chunking to enforce a chunk-count ceiling before spending a single
+ * provider call.
  */
-const CHUNK_BUDGET_TOKENS = 5000
+export const CHUNK_BUDGET_TOKENS = 5000
 
 /**
  * JSON Schema for the provider's strict mode, which is narrower than JSON

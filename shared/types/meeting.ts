@@ -35,6 +35,14 @@ export interface Meeting {
   audioMime: string
   uploadedAt: string | null
   errorMessage: string | null
+  /**
+   * Which stage produced the current `errorMessage`, when status is `failed`.
+   * `'failed'` used to mean one thing; once summarisation could also fail it
+   * meant two, and neither the retry route nor the UI could tell them apart —
+   * retrying transcription on a summarisation failure re-ran transcription and
+   * overwrote a perfectly good transcript. Null outside `failed`.
+   */
+  failedStage: 'transcription' | 'summarization' | null
 }
 
 /**

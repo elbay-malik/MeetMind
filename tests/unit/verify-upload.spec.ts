@@ -44,7 +44,9 @@ describe('failMeetingUpload', () => {
 
     expect(store.delete).toHaveBeenCalledWith(meeting.audioKey)
     expect(message).toBe('size mismatch; object deleted')
-    expect(repo.update).toHaveBeenCalledWith('m1', { status: 'failed', errorMessage: message })
+    expect(repo.update).toHaveBeenCalledWith('m1', {
+      status: 'failed', errorMessage: message, failedStage: 'transcription',
+    })
   })
 
   it('still marks the meeting failed when deletion throws', async () => {
@@ -55,7 +57,9 @@ describe('failMeetingUpload', () => {
 
     const message = await failMeetingUpload(store, repo, meeting, 'size mismatch')
 
-    expect(repo.update).toHaveBeenCalledWith('m1', { status: 'failed', errorMessage: message })
+    expect(repo.update).toHaveBeenCalledWith('m1', {
+      status: 'failed', errorMessage: message, failedStage: 'transcription',
+    })
     expect(message).toMatch(/could not be deleted and needs sweeping \(R2 unavailable\)/)
     expect(message).not.toMatch(/object deleted/)
   })

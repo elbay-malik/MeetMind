@@ -22,6 +22,7 @@ const row: MeetingRow = {
   audio_mime: 'audio/ogg',
   uploaded_at: null,
   error_message: null,
+  failed_stage: null,
 }
 
 interface Call { url: URL, method: string, headers: Headers, body: unknown }
@@ -64,6 +65,7 @@ describe('create', () => {
       audioMime: 'audio/ogg',
       uploadedAt: null,
       errorMessage: null,
+      failedStage: null,
     })
 
     expect(calls).toHaveLength(1)
@@ -87,7 +89,7 @@ describe('create', () => {
     await expect(repo.create({
       id: row.id, title: 't', status: 'pending_upload', sourceFileName: 'a.mp4', sourceBytes: 1,
       sourceMime: null, durationSec: null, audioKey: row.audio_key, audioBytes: 1,
-      audioMime: 'audio/ogg', uploadedAt: null, errorMessage: null,
+      audioMime: 'audio/ogg', uploadedAt: null, errorMessage: null, failedStage: null,
     })).rejects.toThrow(/23505.*duplicate key/)
   })
 })
