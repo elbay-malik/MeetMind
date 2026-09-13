@@ -144,14 +144,19 @@ describe('failures and retries', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('explains quota exhaustion in the user\'s terms', async () => {
-    stubFetch([
+  it('explains quota exhaustion in the user\'s terms, and does not instantly retry it', async () => {
+    // withRetries has no backoff, so retrying a 429 immediately would just
+    // hit the same throttle again. Only one request should go out; the
+    // 30s cooldown before a failed meeting can be retried (summarize.post.ts)
+    // is where the actual backoff lives.
+    const calls = stubFetch([
       new Response('rate limited', { status: 429, headers: { 'retry-after': '60' } }),
       new Response('rate limited', { status: 429, headers: { 'retry-after': '60' } }),
     ])
     const err = await summarizer.summarize({ segments }).catch((e: SummarizationError) => e)
     expect(err.message).toMatch(/quota is exhausted.*60s/s)
-    expect(err.retryable).toBe(true)
+    expect(err.retryable).toBe(false)
+    expect(calls).toHaveLength(1)
   })
 
   it('turns a network error into a retryable failure', async () => {

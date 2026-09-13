@@ -20,8 +20,17 @@ export interface MeetingRepository {
    *
    * A plain read-then-update cannot do this: both callers read `uploaded`, both
    * write `transcribing`, and both go on to spend the transcription quota.
+   *
+   * `expectedUpdatedAt`, when given, is an extra fencing condition: the write
+   * only lands if `updated_at` still matches. `from` alone is not enough once a
+   * status can be reclaimed into itself — a stale-lease reclaim moves
+   * `indexing` to `indexing`, so a straggler whose own claim predates the
+   * reclaim would otherwise still match `from` and could write over the new
+   * claimant's result. Passing the `updatedAt` this caller observed when IT
+   * claimed the row closes that gap: a reclaim in between changes it, so the
+   * straggler's own later write correctly fails instead of landing.
    */
-  claim(id: string, from: MeetingStatus, patch: MeetingPatch): Promise<Meeting | null>
+  claim(id: string, from: MeetingStatus, patch: MeetingPatch, expectedUpdatedAt?: string): Promise<Meeting | null>
 }
 
 /**

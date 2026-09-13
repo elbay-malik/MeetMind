@@ -7,8 +7,16 @@ import { CHUNK_BUDGET_TOKENS } from '../../../utils/summary/groq'
 import { planChunks } from '../../../utils/summary/plan'
 import { SummarizationError } from '../../../utils/summary/summarizer'
 
-/** How long a claim is honoured before another caller may take it over. */
-const CLAIM_LEASE_MS = 15 * 60_000
+/**
+ * How long a claim is honoured before another caller may take it over. Sized
+ * to the worst case this route can actually take, not a guess: MAX_CHUNKS
+ * sequential requests, each retried once (createGroqSummarizer's default
+ * maxAttempts), each bounded by its 90s request timeout — 40 * 2 * 90s = 2
+ * hours, plus margin. A shorter lease could reclaim a caller that is still
+ * legitimately running, and the compare-and-swap below only protects against
+ * that up to the fencing check; it cannot undo provider spend already made.
+ */
+const CLAIM_LEASE_MS = 3 * 60 * 60_000
 
 /**
  * How long a failure must sit before it can be retried. Extraction is several
@@ -78,6 +86,13 @@ export default defineEventHandler(async (event): Promise<{
       : `Meeting is ${current.status}; it has no transcript ready to summarise`)
   }
 
+  // Fences every write below against a later stale-lease reclaim of THIS same
+  // meeting: reclaiming `indexing` writes `indexing` again, which changes
+  // `updatedAt` without changing `status`. A plain `from`-only compare-and-swap
+  // cannot tell "still mine" from "reclaimed out from under me" in that case;
+  // requiring `updatedAt` to still match the value observed right here can.
+  const fence = claimed.updatedAt
+
   try {
     const summary = await useSummarizer(event).summarize({ segments })
     await summaries.replaceForMeeting(id, summary)
@@ -85,13 +100,16 @@ export default defineEventHandler(async (event): Promise<{
     // Claim-gated, not a plain update: a straggler from a stale-lease reclaim
     // (see claim() below) must not overwrite a meeting another caller already
     // finished. Only a write that lands while the row still shows `indexing`
-    // — the state THIS invocation itself claimed — takes effect.
-    const updated = await repo.claim(id, 'indexing', { status: 'ready', errorMessage: null, failedStage: null })
+    // — the state THIS invocation itself claimed, and has not been reclaimed
+    // since — takes effect.
+    const updated = await repo.claim(
+      id, 'indexing', { status: 'ready', errorMessage: null, failedStage: null }, fence,
+    )
     if (updated) return { meeting: updated, summary }
 
-    // Lost the race: someone else's write landed first. Their result, not
-    // ours, is authoritative — the summary this call computed is discarded
-    // rather than persisted over theirs.
+    // Lost the race: someone else's write landed first (or reclaimed the
+    // meeting since). Their result, not ours, is authoritative — the summary
+    // this call computed is discarded rather than persisted over theirs.
     const current = await repo.get(id)
     const stored = current ? await summaries.getForMeeting(id) : null
     if (current && stored) return { meeting: current, summary: stored }
@@ -100,7 +118,7 @@ export default defineEventHandler(async (event): Promise<{
   catch (err) {
     // An h3 error already says what it means; do not rewrite it.
     if (isError(err)) {
-      await repo.claim(id, 'indexing', { status: 'summarizing', errorMessage: null, failedStage: null })
+      await repo.claim(id, 'indexing', { status: 'summarizing', errorMessage: null, failedStage: null }, fence)
       throw err
     }
 
@@ -116,7 +134,7 @@ export default defineEventHandler(async (event): Promise<{
       status: retryable ? 'summarizing' : 'failed',
       errorMessage: message,
       failedStage: retryable ? null : 'summarization',
-    })
+    }, fence)
     throw createError({
       statusCode: failure?.statusCode ?? 500,
       statusMessage: 'Summarisation failed',

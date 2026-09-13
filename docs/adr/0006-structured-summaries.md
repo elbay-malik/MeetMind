@@ -134,7 +134,31 @@ success-or-failure write must not regress whatever the meeting has since become
 this call claimed will not. The same reasoning gives the `failed` reclaim itself
 a short cooldown: extraction is several sequential requests, not one, so an
 instant retry after a failure immediately re-hammers the provider with the
-whole run again.
+whole run again. `transcribe.post.ts` carries both of these too, for the same
+reason: its final writes were still plain, unconditional updates, and its
+`failed` reclaim had no cooldown at all.
+
+Status alone is not quite enough of a compare-and-swap, once a status can be
+reclaimed into itself: a stale-lease reclaim of `indexing` writes `indexing`
+again, changing `updatedAt` without changing `status`. A caller whose own
+claim predates that reclaim still matches a `from`-only condition, so its own
+later write can land after it has already been superseded. `claim()` takes an
+optional `updatedAt` fence for this — the caller passes back the value it
+observed when it first claimed the row, and the write only lands if that value
+still holds. The claim lease itself is also now sized to the actual worst case
+(`MAX_CHUNKS` sequential requests, each retried once, each bounded by the
+provider's own request timeout — about two hours) rather than a round number
+that a legitimately slow run could exceed.
+
+A local JSON row written before `failedStage` existed has no such property,
+which `unstorage` hands back as `undefined`. Both retry routes compare it
+against a specific stage string, which `undefined` matches neither — an old
+`failed` meeting would satisfy no retry condition and stay stuck. The local
+driver now normalises a missing field to `null` on every read.
+
+A 429 from Groq is no longer retried within a chunk. `withRetries` has no
+backoff, so retrying a rate limit immediately just hits it again; the actual
+backoff is the cooldown above, on the caller's next manual retry.
 
 `GET /api/meetings/:id/summary` is gated on `status === 'ready'` rather than
 returning whatever the summary tables hold. `replaceForMeeting` is five
@@ -145,6 +169,26 @@ The meeting only reaches `ready` once every step has completed, so trusting
 that status is what keeps a reader from ever observing a mid-write state; it is
 the smaller fix the finding that raised this allowed for, short of wrapping the
 five calls in a real transaction.
+
+**Honest limit of the fencing token above:** it protects the meeting row's own
+status column, not `replaceForMeeting`'s writes to the summary tables, which
+are still unconditional. A superseded worker that finishes anyway can still
+overwrite the reclaimer's summary data before its own status write correctly
+fails; the reader would then see a `ready` meeting whose stored summary is the
+superseded worker's, not the reclaimer's. Closing that fully needs the same
+real transaction the five-write sequence above is already missing, for the
+same PostgREST reason. What the lease-length fix above actually buys is
+narrowing when this can happen at all to "the original worker did not crash
+but somehow ran past a lease sized to its own worst case" — which, if the
+worst-case bound is right, should not happen in normal operation.
+
+The `failed_stage` column's check constraint also asserts, not just names in a
+comment, that the column is non-null exactly when `status = 'failed'` — every
+write in this codebase already keeps that invariant, so enforcing it catches a
+future write that does not. And the migration verifier's own FK-shape check
+now compares actual column names, not just column count and target table: a
+composite FK can be the right shape (two columns, right target table, right
+cascade) while still being wired from the wrong two source columns.
 
 ## Consequences
 

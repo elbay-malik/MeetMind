@@ -43,6 +43,19 @@ function storageFor(base: string): Promise<Storage> {
 const meetingKey = (id: string) => `meetings/${id}`
 
 /**
+ * A row written before `failedStage` existed has no such property at all, so
+ * `unstorage` hands it back `undefined` rather than `null`. The type declares
+ * the field always present, and both retry routes compare it against a
+ * specific stage string — `undefined` matches neither, so an old `failed`
+ * meeting would satisfy no retry condition and get stuck forever. Coercing on
+ * read treats "never had the field" the same as "explicitly null", which is
+ * what it actually means.
+ */
+function normalize(meeting: Meeting): Meeting {
+  return { ...meeting, failedStage: meeting.failedStage ?? null }
+}
+
+/**
  * JSON-file repository under `<dataDir>/db/` for development and tests.
  * Not safe for concurrent writers — that is what Postgres is for.
  */
@@ -64,7 +77,8 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
 
     async get(id) {
       return serialize(id, async () => {
-        return (await (await storage()).getItem<Meeting>(meetingKey(id))) ?? null
+        const found = await (await storage()).getItem<Meeting>(meetingKey(id))
+        return found ? normalize(found) : null
       })
     },
 
@@ -75,6 +89,7 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
       return items
         .map(i => i.value)
         .filter((m): m is Meeting => !!m)
+        .map(normalize)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
         .slice(0, limit)
     },
@@ -82,20 +97,21 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
     async update(id, patch: MeetingPatch) {
       return serialize(id, async () => {
         const s = await storage()
-        const current = await s.getItem<Meeting>(meetingKey(id))
-        if (!current) return null
-        const next: Meeting = { ...current, ...patch, updatedAt: new Date().toISOString() }
+        const found = await s.getItem<Meeting>(meetingKey(id))
+        if (!found) return null
+        const next: Meeting = { ...normalize(found), ...patch, updatedAt: new Date().toISOString() }
         await s.setItem<Meeting>(meetingKey(id), next)
         return next
       })
     },
 
-    async claim(id, from, patch: MeetingPatch) {
+    async claim(id, from, patch: MeetingPatch, expectedUpdatedAt) {
       return serialize(id, async () => {
         const s = await storage()
-        const current = await s.getItem<Meeting>(meetingKey(id))
-        if (!current || current.status !== from) return null
-        const next: Meeting = { ...current, ...patch, updatedAt: new Date().toISOString() }
+        const found = await s.getItem<Meeting>(meetingKey(id))
+        if (!found || found.status !== from) return null
+        if (expectedUpdatedAt !== undefined && found.updatedAt !== expectedUpdatedAt) return null
+        const next: Meeting = { ...normalize(found), ...patch, updatedAt: new Date().toISOString() }
         await s.setItem<Meeting>(meetingKey(id), next)
         return next
       })

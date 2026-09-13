@@ -147,6 +147,20 @@ describe('claim', () => {
     stubPostgrest({ code: '42501', message: 'permission denied', details: '', hint: '' }, { status: 403 })
     await expect(repo.claim(row.id, 'uploaded', { status: 'transcribing' })).rejects.toThrow(/42501/)
   })
+
+  it('adds an updated_at fence when a caller supplies one', async () => {
+    // Without this, a status match alone lets a straggler from a stale-lease
+    // reclaim (same status in, same status out) still win a later write.
+    const calls = stubPostgrest([{ ...row, status: 'ready' }])
+    await repo.claim(row.id, 'indexing', { status: 'ready' }, row.updated_at)
+    expect(calls[0]!.url.searchParams.get('updated_at')).toBe(`eq.${row.updated_at}`)
+  })
+
+  it('omits the updated_at fence when no caller supplies one', async () => {
+    const calls = stubPostgrest([{ ...row, status: 'transcribing' }])
+    await repo.claim(row.id, 'uploaded', { status: 'transcribing' })
+    expect(calls[0]!.url.searchParams.has('updated_at')).toBe(false)
+  })
 })
 
 describe('update', () => {

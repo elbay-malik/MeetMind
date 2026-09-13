@@ -49,13 +49,14 @@ check "row-level security is on with no policies" \
   "select relrowsecurity and (select count(*) from pg_policies where tablename='meetings')=0
    from pg_class where relname='meetings'"
 
-# Every status in the TypeScript union must be insertable.
+# Every status in the TypeScript union must be insertable. `failed` also needs
+# a failed_stage, now that the column requires one exactly when status='failed'.
 psql -q -c "do \$\$
 declare s text;
 begin
   foreach s in array array['pending_upload','uploaded','transcribing','summarizing','indexing','ready','failed'] loop
-    insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
-    values (gen_random_uuid(), s, s, 'a.mp4', 1, 'lifecycle_'||s, 10);
+    insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
+    values (gen_random_uuid(), s, s, 'a.mp4', 1, 'lifecycle_'||s, 10, case when s = 'failed' then 'transcription' end);
   end loop;
 end \$\$;"
 check "every MeetingStatus value is accepted" \
@@ -91,6 +92,14 @@ reject "failed_stage outside the two real stages is refused" \
   "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
    values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_bad',10,'indexing');" \
   "violates check"
+reject "a non-failed meeting cannot carry a failed_stage" \
+  "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
+   values (gen_random_uuid(),'x','ready','a.mp4',1,'stage_mismatch_a',10,'transcription');" \
+  "violates check"
+reject "a failed meeting must carry a failed_stage" \
+  "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+   values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_mismatch_b',10);" \
+  "violates check"
 reject "a duplicate audio_key is refused" \
   "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes) values (gen_random_uuid(),'x','uploaded','a.mp4',1,'lifecycle_ready',10);" \
   "duplicate key"
@@ -125,13 +134,26 @@ check "deleting a meeting removes its transcript" \
   "select count(*)=0 from public.transcript_segments"
 
 for t in meeting_decisions meeting_action_items; do
-  check "$t's citation FK actually references transcript_segments, not just some table" \
+  # A 2-column FK to transcript_segments is not enough on its own: it could be
+  # shaped from the wrong source columns onto the wrong two columns of the
+  # target and still match a check that only counts columns and tables.
+  # Compare the actual source and referenced column names, in order, instead.
+  check "$t's citation FK is (meeting_id, segment_idx) -> transcript_segments(meeting_id, idx)" \
     "select exists (
        select 1 from pg_constraint con
        where con.conrelid='public.$t'::regclass and con.contype='f'
-         and array_length(con.conkey,1)=2
          and con.confrelid='public.transcript_segments'::regclass
          and pg_get_constraintdef(con.oid) ilike '%on delete cascade%'
+         and (
+           select array_agg(att.attname::text order by k.ord)
+           from unnest(con.conkey) with ordinality as k(attnum, ord)
+           join pg_attribute att on att.attrelid = con.conrelid and att.attnum = k.attnum
+         ) = array['meeting_id', 'segment_idx']
+         and (
+           select array_agg(att.attname::text order by k.ord)
+           from unnest(con.confkey) with ordinality as k(attnum, ord)
+           join pg_attribute att on att.attrelid = con.confrelid and att.attnum = k.attnum
+         ) = array['meeting_id', 'idx']
      )"
 done
 

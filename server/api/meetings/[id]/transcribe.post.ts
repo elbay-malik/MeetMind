@@ -14,6 +14,13 @@ import { TranscriptionError } from '../../../utils/transcription/transcriber'
  */
 const CLAIM_LEASE_MS = 15 * 60_000
 
+/**
+ * How long a failure must sit before it can be retried. Matches
+ * summarize.post.ts's reasoning: an instant retry after a failure re-hammers
+ * whatever just failed (the provider, or storage) immediately again.
+ */
+const RETRY_COOLDOWN_MS = 30_000
+
 /** Statuses that mean transcription has already happened. */
 const PAST_TRANSCRIPTION = ['summarizing', 'indexing', 'ready']
 
@@ -51,6 +58,12 @@ export default defineEventHandler(async (event): Promise<{
       : `Meeting is ${current.status}; it has no audio ready to transcribe`)
   }
 
+  // Fences the writes below against a later stale-lease reclaim of THIS same
+  // meeting, the same way summarize.post.ts fences its own final writes: a
+  // reclaim writes `transcribing` again, changing `updatedAt` without
+  // changing `status`, which a `from`-only compare-and-swap cannot see.
+  const fence = claimed.updatedAt
+
   try {
     const audio = await useAudioStore(event).get(meeting.audioKey, MAX_AUDIO_BYTES)
     if (!audio) {
@@ -70,9 +83,14 @@ export default defineEventHandler(async (event): Promise<{
 
     await transcripts.replaceForMeeting(id, result.segments)
 
-    const updated = await repo.update(id, { status: 'summarizing', errorMessage: null, failedStage: null })
-    // The transcript is stored either way; a missing row here is not a reason to
-    // discard it.
+    // Claim-gated, not a plain update: a straggler from a stale-lease reclaim
+    // must not overwrite a meeting another caller already finished or is
+    // itself now retrying.
+    const updated = await repo.claim(
+      id, 'transcribing', { status: 'summarizing', errorMessage: null, failedStage: null }, fence,
+    )
+    // The transcript is stored either way; losing the status race here is not
+    // a reason to discard it.
     return { meeting: updated ?? { ...claimed, status: 'summarizing' }, segments: result.segments }
   }
   catch (err) {
@@ -80,7 +98,7 @@ export default defineEventHandler(async (event): Promise<{
     // record it as a transcription failure. h3 marks these with a static on the
     // class, so its own predicate is the only correct test.
     if (isError(err)) {
-      await repo.update(id, { status: 'uploaded', errorMessage: null, failedStage: null })
+      await repo.claim(id, 'transcribing', { status: 'uploaded', errorMessage: null, failedStage: null }, fence)
       throw err
     }
 
@@ -90,11 +108,11 @@ export default defineEventHandler(async (event): Promise<{
     // worse mistake is parking a perfectly good meeting on `failed`, which
     // nothing can move again.
     const retryable = transcription ? transcription.retryable : true
-    await repo.update(id, {
+    await repo.claim(id, 'transcribing', {
       status: retryable ? 'uploaded' : 'failed',
       errorMessage: message,
       failedStage: retryable ? null : 'transcription',
-    })
+    }, fence)
     throw createError({
       statusCode: transcription?.statusCode ?? 500,
       statusMessage: 'Transcription failed',
@@ -112,7 +130,11 @@ async function claim(
   repo: ReturnType<typeof useMeetingRepository>,
   meeting: Meeting,
 ): Promise<Meeting | null> {
-  const patch = { status: 'transcribing' as const, errorMessage: null }
+  // Also clears failedStage: the field means null outside `failed`, and this
+  // patch is what takes a meeting out of `failed` on every branch below.
+  // Leaving the old stage in place here would show a stale reason for a
+  // meeting that is once again actively retrying.
+  const patch = { status: 'transcribing' as const, errorMessage: null, failedStage: null }
   if (meeting.status === 'uploaded') return repo.claim(meeting.id, 'uploaded', patch)
 
   const staleSince = Date.now() - CLAIM_LEASE_MS
@@ -122,8 +144,11 @@ async function claim(
   // `failed` is recoverable, but only when THIS route caused it: the audio is
   // still there, and asking again is exactly the retry it was recorded for. A
   // failure from summarize.post.ts leaves a valid transcript behind — routing
-  // its retry through here would re-run transcription and overwrite it.
-  if (meeting.status === 'failed' && meeting.failedStage === 'transcription') {
+  // its retry through here would re-run transcription and overwrite it. Also
+  // only after a cooldown — an instant retry would re-hammer the same storage
+  // or provider call that just failed.
+  const cooledDown = Date.now() - new Date(meeting.updatedAt).getTime() >= RETRY_COOLDOWN_MS
+  if (meeting.status === 'failed' && meeting.failedStage === 'transcription' && cooledDown) {
     return repo.claim(meeting.id, 'failed', patch)
   }
   return null

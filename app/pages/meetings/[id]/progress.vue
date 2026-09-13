@@ -105,8 +105,12 @@ const STAGES: Stage[] = [
     label: 'Transcribed',
     detail: 'Speech turned into timestamped segments.',
     // Requires actual segments: a status alone would show a green tick for a
-    // transcription that produced nothing.
-    reached: s => ['summarizing', 'indexing', 'ready'].includes(s) && segments.value.length > 0,
+    // transcription that produced nothing. A `failed` meeting still counts
+    // when the failure is summarize.post.ts's: that route only ever runs
+    // against a transcript that already exists, so the transcript stage is
+    // done regardless of how extraction went.
+    reached: s => (['summarizing', 'indexing', 'ready'].includes(s)
+      || (s === 'failed' && meeting.value.failedStage === 'summarization')) && segments.value.length > 0,
   },
   {
     key: 'summarize',

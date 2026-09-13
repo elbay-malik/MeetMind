@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { createStorage } from 'unstorage'
+import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting, TranscriptSegment } from '../../shared/types/meeting'
 
@@ -41,6 +43,19 @@ async function uploadedMeeting(): Promise<Meeting> {
 
 const transcribe = (id: string) =>
   $fetch<{ meeting: Meeting, segments: TranscriptSegment[] }>(`/api/meetings/${id}/transcribe`, { method: 'POST' })
+
+/**
+ * Simulate the retry cooldown having elapsed, without a real 30s wait in the
+ * suite. Goes around the repository's own `update`/`claim`, which always
+ * stamp `updatedAt` with the current time — exactly the field this has to
+ * override.
+ */
+async function backdateUpdatedAt(id: string, msAgo: number): Promise<void> {
+  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+  const meeting = await storage.getItem<Meeting>(`meetings/${id}`)
+  if (!meeting) throw new Error(`no local meeting row for ${id}`)
+  await storage.setItem(`meetings/${id}`, { ...meeting, updatedAt: new Date(Date.now() - msAgo).toISOString() })
+}
 
 describe('POST /api/meetings/:id/transcribe', () => {
   it('transcribes uploaded audio and advances the meeting', async () => {
@@ -156,12 +171,38 @@ describe('recovery', () => {
     expect(broken.errorMessage).toMatch(/missing from storage/)
 
     // Put it back: asking again must work rather than being refused forever.
+    // (Past the retry cooldown — that is a separate concern, tested below.)
     await writeFile(path, audioBytes)
     await writeFile(`${path}.meta`, meta)
+    await backdateUpdatedAt(meeting.id, 31_000)
     const { meeting: recovered, segments } = await transcribe(meeting.id)
     expect(recovered.status).toBe('summarizing')
     expect(recovered.errorMessage).toBeNull()
     expect(segments.length).toBeGreaterThan(0)
+  })
+
+  it('refuses to retry a failure until the cooldown has passed', async () => {
+    const meeting = await uploadedMeeting()
+    const path = join(dataDir, 'audio', ...meeting.audioKey.split('/'))
+    const audioBytes = await readFile(path)
+    const meta = await readFile(`${path}.meta`)
+
+    await rm(path)
+    await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    await writeFile(path, audioBytes)
+    await writeFile(`${path}.meta`, meta)
+
+    // The cause is already fixed; an instant retry must still be refused —
+    // otherwise a client that retries in a loop re-hammers storage/the
+    // provider immediately after every failure.
+    const tooSoon = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    expect(tooSoon.status).toBe(409)
+    const { meeting: stillFailed } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    expect(stillFailed.status).toBe('failed')
+
+    await backdateUpdatedAt(meeting.id, 31_000)
+    const { meeting: recovered } = await transcribe(meeting.id)
+    expect(recovered.status).toBe('summarizing')
   })
 
   it('refuses when the stored audio no longer matches what was verified', async () => {

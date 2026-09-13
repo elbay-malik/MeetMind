@@ -194,11 +194,16 @@ async function describeFailure(response: Response): Promise<SummarizationError> 
   const detail = (await response.text().catch(() => '')).slice(0, 300)
 
   if (response.status === 429) {
+    // Not retryable here: withRetries has no backoff, so an immediate retry
+    // would hit the same throttle again and double the quota pressure that
+    // triggered it. The chunk-level failure surfaces to summarize.post.ts,
+    // whose own 30s cooldown before a `failed` meeting can be retried is the
+    // backoff — instant retries are exactly what that cooldown exists to stop.
     const retryAfter = response.headers.get('retry-after')
     return new SummarizationError(
       `Summarization quota is exhausted for now.${retryAfter ? ` Try again in ${retryAfter}s.` : ''}`,
       429,
-      true,
+      false,
     )
   }
   if (response.status === 401 || response.status === 403) {
