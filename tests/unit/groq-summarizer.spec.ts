@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createGroqSummarizer } from '../../server/utils/summary/groq'
+import { createGroqSummarizer, createRequestPacer } from '../../server/utils/summary/groq'
 import type { SummarizationError } from '../../server/utils/summary/summarizer'
 import type { TranscriptSegment } from '../../shared/types/meeting'
 
@@ -160,6 +160,27 @@ describe('response', () => {
     await paced.summarize({ segments })
 
     expect(calls).toHaveLength(2)
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180)
+  })
+
+  it('paces across summarizer instances that share a pacer, since the rate limit is per account', async () => {
+    // useSummarizer builds a fresh Summarizer per HTTP request, so two
+    // instances stand in for two concurrent extractions of DIFFERENT
+    // meetings. Each is internally paced on its own either way; a shared
+    // pacer is what keeps them from together exceeding the same
+    // per-account rolling-minute allowance neither alone would hit.
+    const sharedPacer = createRequestPacer(200)
+    const meetingA = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: sharedPacer })
+    const meetingB = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: sharedPacer })
+    stubFetch([
+      reply({ summary: '', decisions: [], actionItems: [] }),
+      reply({ summary: '', decisions: [], actionItems: [] }),
+    ])
+
+    const startedAt = Date.now()
+    await meetingA.summarize({ segments })
+    await meetingB.summarize({ segments })
+
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180)
   })
 

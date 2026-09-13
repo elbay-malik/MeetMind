@@ -153,8 +153,10 @@ that a legitimately slow run could exceed.
 A local JSON row written before `failedStage` existed has no such property,
 which `unstorage` hands back as `undefined`. Both retry routes compare it
 against a specific stage string, which `undefined` matches neither — an old
-`failed` meeting would satisfy no retry condition and stay stuck. The local
-driver now normalises a missing field to `null` on every read.
+`failed` meeting would satisfy no retry condition and stay stuck. `null`
+alone does not fix that (it matches neither stage string either); the local
+driver now normalises a legacy row that is actually `failed` to
+`'transcription'` on every read, and to `null` otherwise.
 
 A 429 from Groq is no longer retried within a chunk. `withRetries` has no
 backoff, so retrying a rate limit immediately just hits it again; the actual
@@ -199,10 +201,10 @@ The `failed_stage` column's check constraint also asserts, not just names in a
 comment, that the column is non-null exactly when `status = 'failed'` — every
 write in this codebase already keeps that invariant, so enforcing it catches a
 future write that does not. Adding a CHECK validates every existing row
-immediately, so the migration backfills `failed_stage = 'transcription'` for
-any row already `failed` before the column existed — summarisation, and so a
-summarisation failure, did not exist before this migration, so that backfill
-value is not a guess. And the migration verifier's own FK-shape check now
+immediately, so the migration backfills a value for any row already `failed`
+before the column existed, rather than leaving it null and failing the CHECK
+outright — see below for what that value actually is and why a single
+constant is wrong. And the migration verifier's own FK-shape check now
 compares actual column names, not just column count and target table: a
 composite FK can be the right shape (two columns, right target table, right
 cascade) while still being wired from the wrong two source columns.
@@ -364,6 +366,31 @@ citation search ("tries the claimed segment, then its neighbours, then the
 whole transcript") described an earlier version of the algorithm superseded
 above (every occurrence is considered, not a search radiating from the
 claimed index).
+
+Pacing (above) was still scoped to one `summarize()` call, but
+`useSummarizer` builds a fresh `Summarizer` per HTTP request — Groq's rate
+limit is per ACCOUNT, not per meeting, so two concurrent extractions for
+different meetings would each pace correctly against their own requests and
+could still together exceed the same aggregate limit neither alone would hit.
+`createGroqSummarizer` now accepts a `pacer` it will share instead of
+building its own; `useSummarizer` constructs exactly one, module-level, and
+passes it to every Groq summarizer it builds. This is a single-process fix:
+multiple server instances (genuinely concurrent Workers, say) would need a
+real distributed limiter, which is deferred with the same reasoning as the
+rest of what Phase 9's orchestrator is for.
+
+`GET /api/meetings/:id/summary`'s `ready` gate was still a single check, and
+the `ready`-with-no-summary repair above gave a NEW way for the row to change
+between that check and the summary read within the same request: the
+repair's own claim (`ready` → `indexing`) and five-write sequence can start
+while this handler's `getForMeeting` is already in flight, so a `ready` read
+moments earlier could stand for a summary actually read mid-repair. The
+status is checked again after the summary read; a mismatch returns `null`
+rather than the read. This narrows the exposed window rather than closing it
+outright (there is always some gap between a last check and a response being
+sent without a real transaction) — verified by reading the code rather than
+by an automated test, since reproducing the exact interleaving deterministically
+would need mocking this codebase's test setup does not have.
 
 ## Consequences
 

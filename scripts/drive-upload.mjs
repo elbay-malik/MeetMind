@@ -24,11 +24,24 @@ const fail = (msg) => {
   process.exitCode = 1
 }
 
-// Same normalization server/utils/summary/reconcile.ts's `normalise` uses —
-// letters/numbers in any script, case-insensitive. Duplicated here (kept in
-// sync by hand) since this is a plain Node script, not a place that can
-// import a TypeScript server module.
+// Same normalization + citation-matching contract
+// server/utils/summary/reconcile.ts uses (normalise, occurs, and the
+// no-space-script handling both depend on). Duplicated here (kept in sync by
+// hand) since this is a plain Node script, not a place that can import a
+// TypeScript server module. A weaker approximation here (a raw
+// normalise().includes(), say) would both accept a mid-word fabrication and
+// reject a legitimate no-space-script citation that differs from the
+// transcript only by punctuation — reintroducing, in this smoke check, the
+// exact two bugs reconciliation itself exists to avoid.
 const normalise = text => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+const NO_SPACE_SCRIPT = /\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Thai}/u
+const compactIfNoSpaceScript = text => (NO_SPACE_SCRIPT.test(text) ? text.replace(/\s+/gu, '') : text)
+function occurs(haystack, needle) {
+  if (NO_SPACE_SCRIPT.test(needle)) {
+    return compactIfNoSpaceScript(haystack).includes(compactIfNoSpaceScript(needle))
+  }
+  return ` ${haystack} `.includes(` ${needle} `)
+}
 
 /** Poll the meeting's real status via the API instead of a transient UI label. */
 async function waitForMeetingStatus(meetingId, predicate, timeoutMs) {
@@ -199,20 +212,17 @@ try {
   else {
     console.log(`summary stored: ${summary.decisions.length} decisions, ${summary.actionItems.length} action items`)
 
-    // Every citation must point at a segment that exists and quote it. Same
-    // normalization reconciliation itself checks against (letters/numbers in
-    // any script, case-insensitive) — a raw substring check would reject a
-    // validly-stored citation that only differs from the segment by
-    // punctuation.
+    // Every citation must point at a segment that exists and quote it, using
+    // the same contract reconciliation itself checks against — see occurs()
+    // above.
     const { segments: lines } = await (await fetch(`${baseURL}/api/meetings/${meetingId}/transcript`)).json()
     const byIdx = new Map(lines.map(l => [l.idx, l]))
     for (const item of [...summary.decisions, ...summary.actionItems]) {
       const cited = byIdx.get(item.segmentIdx)
       if (!cited) fail(`an item cites segment ${item.segmentIdx}, which does not exist`)
-      // The COMPLETE quote, not just a prefix: checking only the first 20
-      // characters would pass a quote whose spoken opening is real but whose
-      // remaining words are fabricated.
-      else if (!normalise(cited.text).includes(normalise(item.quote))) {
+      // The COMPLETE quote (not just a prefix) via the same rules
+      // reconciliation itself checks against.
+      else if (!occurs(normalise(cited.text), normalise(item.quote))) {
         fail(`an item quotes text that segment ${item.segmentIdx} does not contain`)
       }
     }

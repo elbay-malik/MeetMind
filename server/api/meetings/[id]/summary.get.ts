@@ -13,11 +13,28 @@ import { notFound, requireMeetingId } from '../../../utils/http'
  * wrong record, for instance the old summary paired with empty items. The
  * meeting only reaches `ready` once every step has completed, so trusting that
  * status is what keeps a reader from ever observing a mid-write state.
+ *
+ * Checked again after the read, not just before it: a `ready` meeting whose
+ * summary row is missing (a broken invariant nothing in this app causes
+ * today) is reclaimable back to `indexing` as a repair (see
+ * summarize.post.ts), and that reclaim's own five-write sequence can start
+ * while THIS request's `getForMeeting` is already in flight. The first check
+ * alone would let a `ready` read moments earlier stand for a summary actually
+ * read mid-repair; re-reading the status right after closes that window down
+ * to whatever is left between this second read and the response being sent,
+ * which is not literally zero but is no longer application logic.
  */
 export default defineEventHandler(async (event): Promise<{ summary: MeetingSummary | null }> => {
   const id = requireMeetingId(event)
-  const meeting = await useMeetingRepository(event).get(id)
+  const repo = useMeetingRepository(event)
+  const meeting = await repo.get(id)
   if (!meeting) throw notFound('Meeting not found')
   if (meeting.status !== 'ready') return { summary: null }
-  return { summary: await useSummaryRepository(event).getForMeeting(id) }
+
+  const summary = await useSummaryRepository(event).getForMeeting(id)
+
+  const after = await repo.get(id)
+  if (after?.status !== 'ready') return { summary: null }
+
+  return { summary }
 })

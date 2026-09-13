@@ -53,8 +53,16 @@ function compactIfNoSpaceScript(text: string): string {
  * an ENTIRELY LATIN quote just because the segment it is being checked
  * against happens to also contain an unrelated CJK character elsewhere —
  * reintroducing the exact mid-word fabrication this function exists to catch.
+ *
+ * Exported for the same reason `normalise` is: the e2e citation assertions
+ * need the identical contract, not an approximation of it. A plain
+ * `normalise().includes()` (what those checks used before) both accepts a
+ * mid-word fabrication and rejects a legitimate no-space-script citation
+ * that differs from the transcript only by punctuation — the exact two bugs
+ * this function exists to avoid, reintroduced one layer up in whatever
+ * verifies its output.
  */
-function occurs(haystack: string, needle: string): boolean {
+export function occurs(haystack: string, needle: string): boolean {
   if (NO_SPACE_SCRIPT.test(needle)) {
     return compactIfNoSpaceScript(haystack).includes(compactIfNoSpaceScript(needle))
   }

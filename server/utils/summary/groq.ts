@@ -89,20 +89,49 @@ export interface GroqSummarizerOptions {
    * inside the SAME rolling-minute window and still exceed the provider's
    * ~8,000-token aggregate allowance, even though each fits comfortably
    * under the per-request budget on its own — and a chunk's own retry is
-   * exactly as capable of that collision as a new chunk is. Defaults to 60s,
-   * matching that rolling window; overridable so tests are not forced to
-   * actually wait it out.
+   * exactly as capable of that collision as a new chunk is. Only used to
+   * build the default pacer when `pacer` is not given; ignored otherwise.
    */
   minRequestIntervalMs?: number
+  /**
+   * Share pacing across summarizer instances. `useSummarizer` builds a fresh
+   * Summarizer per HTTP request, but the provider's rate limit is per
+   * ACCOUNT, not per meeting — two different meetings extracting at once
+   * would otherwise each pace only against their own requests and could
+   * together still exceed the aggregate limit. Production passes one shared
+   * pacer (module-level in server/utils/summary/index.ts); a test that
+   * constructs a summarizer directly gets an isolated one by default, which
+   * is what keeps unrelated tests from waiting on each other.
+   */
+  pacer?: RequestPacer
+}
+
+export interface RequestPacer {
+  /** Resolves once at least `minIntervalMs` has passed since the previous
+   * call's own resolution — immediately, the first time. */
+  wait(): Promise<void>
 }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
+export function createRequestPacer(minIntervalMs: number): RequestPacer {
+  let previousStartedAt = 0
+  return {
+    async wait() {
+      if (previousStartedAt) {
+        const remaining = minIntervalMs - (Date.now() - previousStartedAt)
+        if (remaining > 0) await sleep(remaining)
+      }
+      previousStartedAt = Date.now()
+    },
+  }
+}
 
 export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer {
   const endpoint = options.endpoint ?? ENDPOINT
   const timeoutMs = options.timeoutMs ?? 90_000
   const maxAttempts = options.maxAttempts ?? 2
-  const minRequestIntervalMs = options.minRequestIntervalMs ?? 60_000
+  const pacer = options.pacer ?? createRequestPacer(options.minRequestIntervalMs ?? 60_000)
   const jsonSchema = toStrictJsonSchema(wireSummarySchema)
 
   async function askOnce(transcript: string): Promise<WireSummary> {
@@ -176,17 +205,11 @@ export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer
       // limit, and firing chunks in parallel is the fastest way to exhaust it.
       // Sequential alone is not the same as PACED, though: two requests sent
       // back to back — whether two different chunks, or one chunk's first
-      // attempt immediately followed by its own retry — can both land in the
-      // same rolling minute. Paces every actual request against the previous
-      // one, whichever kind it is. Scoped to this call (not the summarizer
-      // instance): unrelated summarize() calls must never wait on each other.
-      let previousRequestStartedAt = 0
+      // attempt immediately followed by its own retry, or (via `pacer`) a
+      // concurrent call for an entirely different meeting — can both land in
+      // the same rolling minute and exceed the provider's per-ACCOUNT limit.
       async function pacedAskOnce(transcript: string): Promise<WireSummary> {
-        if (previousRequestStartedAt) {
-          const remaining = minRequestIntervalMs - (Date.now() - previousRequestStartedAt)
-          if (remaining > 0) await sleep(remaining)
-        }
-        previousRequestStartedAt = Date.now()
+        await pacer.wait()
         return askOnce(transcript)
       }
 

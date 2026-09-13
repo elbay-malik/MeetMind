@@ -7,7 +7,7 @@ import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
-import { normalise } from '../../server/utils/summary/reconcile'
+import { normalise, occurs } from '../../server/utils/summary/reconcile'
 import type { CreateMeetingResponse, Meeting, MeetingSummary } from '../../shared/types/meeting'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
@@ -95,13 +95,13 @@ describe('POST /api/meetings/:id/summarize', () => {
       const cited = byIdx.get(item.segmentIdx)
       expect(cited, `cited segment ${item.segmentIdx} does not exist`).toBeDefined()
       expect(item.startMs).toBe(cited!.startMs)
-      // Same rule reconciliation itself checks against — a raw substring
-      // check would reject a validly-stored quote that only differs from the
-      // segment by punctuation (reconciliation normalizes both sides first).
-      // The COMPLETE quote, not a prefix: only checking the first 20
-      // characters would pass a citation whose spoken opening is real but
-      // whose remaining words were fabricated.
-      expect(normalise(cited!.text)).toContain(normalise(item.quote))
+      // The IDENTICAL contract reconciliation itself checks against, not an
+      // approximation of it: a plain normalise().includes() both accepts a
+      // mid-word fabrication ("approved" inside "disapproved") and rejects a
+      // legitimate no-space-script citation that differs from the transcript
+      // only by punctuation — the two bugs occurs() exists to avoid,
+      // reintroduced here if this check does not share its exact rules.
+      expect(occurs(normalise(cited!.text), normalise(item.quote))).toBe(true)
     }
   })
 
