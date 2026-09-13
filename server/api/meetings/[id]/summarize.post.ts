@@ -10,13 +10,15 @@ import { SummarizationError } from '../../../utils/summary/summarizer'
 /**
  * How long a claim is honoured before another caller may take it over. Sized
  * to the worst case this route can actually take, not a guess: MAX_CHUNKS
- * sequential requests, each retried once (createGroqSummarizer's default
- * maxAttempts), each bounded by its 90s request timeout — 40 * 2 * 90s = 2
- * hours, plus margin. A shorter lease could reclaim a caller that is still
- * legitimately running, and the compare-and-swap below only protects against
- * that up to the fencing check; it cannot undo provider spend already made.
+ * requests, each retried once (createGroqSummarizer's default maxAttempts),
+ * each bounded by its 90s request timeout, PLUS the pacing wait before every
+ * chunk after the first (createGroqSummarizer's default minRequestIntervalMs)
+ * — 40 * 2 * 90s + 39 * 60s = a little over 2h39m, plus margin. A shorter
+ * lease could reclaim a caller that is still legitimately running, and the
+ * compare-and-swap below only protects against that up to the fencing check;
+ * it cannot undo provider spend already made.
  */
-const CLAIM_LEASE_MS = 3 * 60 * 60_000
+const CLAIM_LEASE_MS = 4 * 60 * 60_000
 
 /**
  * How long a failure must sit before it can be retried. Extraction is several
@@ -198,9 +200,15 @@ async function claim(
   // against it; this is a repair, not a race to arbitrate.
   if (meeting.status === 'ready') return repo.claim(meeting.id, 'ready', patch)
 
+  // Fenced on the observed updatedAt: reclaiming `indexing` writes `indexing`
+  // again, so a plain status-only compare-and-swap never "uses up" — two
+  // callers who both see the same stale lease could otherwise BOTH succeed at
+  // reclaiming it (status stays 'indexing' either way) and both go on to
+  // spend the provider's quota. Requiring the exact updatedAt they both
+  // observed means only the first of them can still match after either wins.
   const staleSince = Date.now() - CLAIM_LEASE_MS
   if (meeting.status === 'indexing' && new Date(meeting.updatedAt).getTime() < staleSince) {
-    return repo.claim(meeting.id, 'indexing', patch)
+    return repo.claim(meeting.id, 'indexing', patch, meeting.updatedAt)
   }
   // `failed` is recoverable, but only a failure THIS route caused (a
   // summarisation failure leaves the transcript intact; retrying is exactly

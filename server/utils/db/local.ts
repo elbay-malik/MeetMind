@@ -46,13 +46,17 @@ const meetingKey = (id: string) => `meetings/${id}`
  * A row written before `failedStage` existed has no such property at all, so
  * `unstorage` hands it back `undefined` rather than `null`. The type declares
  * the field always present, and both retry routes compare it against a
- * specific stage string — `undefined` matches neither, so an old `failed`
- * meeting would satisfy no retry condition and get stuck forever. Coercing on
- * read treats "never had the field" the same as "explicitly null", which is
- * what it actually means.
+ * specific stage string — coercing a missing field straight to `null` still
+ * matches neither string, so a legacy `failed` row would satisfy no retry
+ * condition and get stuck forever either way. `null` is only correct outside
+ * `failed`; a legacy failed row defaults to `transcription` instead (matching
+ * the Supabase migration's own backfill for the common case — summarisation
+ * did not exist when the very oldest such rows could have been written), so
+ * it is actually recoverable rather than merely type-consistent.
  */
 function normalize(meeting: Meeting): Meeting {
-  return { ...meeting, failedStage: meeting.failedStage ?? null }
+  if (meeting.failedStage !== undefined) return meeting
+  return { ...meeting, failedStage: meeting.status === 'failed' ? 'transcription' : null }
 }
 
 /**

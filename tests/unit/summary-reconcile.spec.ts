@@ -70,6 +70,17 @@ describe('attestQuote', () => {
     expect(attestQuote('we decided to acquire a competitor', 1, segments)).toBeNull()
   })
 
+  it('does not match a fabrication that lands mid-word, even meaning the opposite', () => {
+    // "approved by everyone" is a literal substring of "disapproved by
+    // everyone" — the exact words, starting three characters in. A raw
+    // substring check accepts that as attested; the transcript actually
+    // says the opposite of what the fabricated quote claims.
+    const disagreed = [seg(0, 0, 'The proposal was disapproved by everyone in the room.')]
+    expect(attestQuote('approved by everyone', 0, disagreed)).toBeNull()
+    // The real words, respecting the actual word boundary, still match.
+    expect(attestQuote('disapproved by everyone', 0, disagreed)).toMatchObject({ segmentIdx: 0 })
+  })
+
   it('refuses quotes too short to match anything but by accident', () => {
     expect(attestQuote('the', 0, segments)).toBeNull()
     expect(attestQuote('', 0, segments)).toBeNull()

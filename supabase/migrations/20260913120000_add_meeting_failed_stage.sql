@@ -11,12 +11,24 @@ alter table public.meetings
 -- Backfill existing rows before the status-aware check below can be attached:
 -- adding a CHECK validates every existing row immediately, and any meeting
 -- already sitting at status='failed' from before this column existed would
--- otherwise have failed_stage=NULL and fail that check outright. Summarisation
--- (and so a summarisation failure) did not exist before this migration, so
--- every failure that predates it was necessarily a transcription failure.
-update public.meetings
-  set failed_stage = 'transcription'
-  where status = 'failed' and failed_stage is null;
+-- otherwise have failed_stage=NULL and fail that check outright.
+--
+-- Blanket-assigning 'transcription' would be wrong: meeting_summaries and
+-- summarize.post.ts shipped with Phase 6, before this column, so a failed row
+-- from that window can already be a genuine summarisation failure -- exactly
+-- the ambiguity this column exists to resolve, reintroduced by the backfill
+-- meant to fix it. summarize.post.ts only ever runs once transcript_segments
+-- exist for a meeting, and no route re-transcribes an already-transcribed one
+-- (that is Phase 9), so a failed meeting WITH segments already stored can only
+-- have failed at summarisation; one with none can only have failed before
+-- reaching it, at transcription.
+update public.meetings m
+  set failed_stage = case
+    when exists (select 1 from public.transcript_segments s where s.meeting_id = m.id)
+      then 'summarization'
+    else 'transcription'
+  end
+  where m.status = 'failed' and m.failed_stage is null;
 
 -- The column comment below says failed_stage is null outside `failed`. Every
 -- write in the app actually keeps that (both retry routes clear it the

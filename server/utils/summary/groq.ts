@@ -81,12 +81,25 @@ export interface GroqSummarizerOptions {
   timeoutMs?: number
   /** Attempts per chunk when the reply is unusable. One retry is usually enough. */
   maxAttempts?: number
+  /**
+   * Minimum time between the start of one chunk request and the next.
+   * Sequential alone does not pace anything: two 5,000-token chunks (a full
+   * CHUNK_BUDGET_TOKENS each) can both land inside the SAME rolling-minute
+   * window and still exceed the provider's ~8,000-token aggregate allowance,
+   * even though each fits comfortably under the per-request budget on its
+   * own. Defaults to 60s, matching that rolling window; overridable so tests
+   * are not forced to actually wait it out.
+   */
+  minRequestIntervalMs?: number
 }
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer {
   const endpoint = options.endpoint ?? ENDPOINT
   const timeoutMs = options.timeoutMs ?? 90_000
   const maxAttempts = options.maxAttempts ?? 2
+  const minRequestIntervalMs = options.minRequestIntervalMs ?? 60_000
   const jsonSchema = toStrictJsonSchema(wireSummarySchema)
 
   async function askOnce(transcript: string): Promise<WireSummary> {
@@ -156,9 +169,22 @@ export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer
       const chunks = planChunks(segments, CHUNK_BUDGET_TOKENS)
       const parts: WireSummary[] = []
 
+      // Sequential on purpose: the per-minute token allowance is the binding
+      // limit, and firing chunks in parallel is the fastest way to exhaust it.
+      // Sequential alone is not the same as PACED, though: two chunks sent
+      // back to back can both land in the same rolling minute. Waiting out
+      // the rest of the previous chunk's window before sending the next one
+      // keeps each request inside its own window instead of exhausting the
+      // aggregate limit partway through a multi-chunk run. (A within-chunk
+      // retry from withRetries below is not separately paced against this —
+      // a narrower, related gap left as-is here.)
+      let previousChunkStartedAt = 0
       for (const chunk of chunks) {
-        // Sequential on purpose: the per-minute token allowance is the binding
-        // limit, and firing chunks in parallel is the fastest way to exhaust it.
+        if (previousChunkStartedAt) {
+          const remaining = minRequestIntervalMs - (Date.now() - previousChunkStartedAt)
+          if (remaining > 0) await sleep(remaining)
+        }
+        previousChunkStartedAt = Date.now()
         parts.push(await withRetries(() => askOnce(renderTranscript(chunk.segments)), maxAttempts))
       }
 

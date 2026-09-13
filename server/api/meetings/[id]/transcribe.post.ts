@@ -104,13 +104,16 @@ export default defineEventHandler(async (event): Promise<{
     )
     if (updated) return { meeting: updated, segments: result.segments }
 
-    // Lost the race between the renewal above and this write. The transcript
-    // this call wrote is real either way, but the meeting's status is not
-    // ours to report — read back whatever is authoritative instead of
-    // guessing at one.
+    // Lost the race between the renewal above and this write. Neither the
+    // status NOR the segments this call has in memory are ours to report any
+    // more: whoever reclaimed the meeting could have replaced the transcript
+    // with their own by now, so pairing their meeting row with THIS call's
+    // in-memory result.segments could show a status and a transcript that
+    // never actually coexisted. Re-read both from storage instead of
+    // returning anything this call itself produced.
     const current = await repo.get(id)
     if (!current) throw notFound('Meeting not found')
-    return { meeting: current, segments: result.segments }
+    return { meeting: current, segments: await transcripts.listForMeeting(id) }
   }
   catch (err) {
     // An h3 error already says what it means; do not rewrite it as a 500 or
@@ -164,9 +167,13 @@ async function claim(
   const patch = { status: 'transcribing' as const, errorMessage: null, failedStage: null }
   if (meeting.status === 'uploaded') return repo.claim(meeting.id, 'uploaded', patch)
 
+  // Fenced on the observed updatedAt: reclaiming `transcribing` writes
+  // `transcribing` again, so a plain status-only compare-and-swap never "uses
+  // up" — two callers who both see the same stale lease could otherwise BOTH
+  // succeed at reclaiming it and both spend a transcription request.
   const staleSince = Date.now() - CLAIM_LEASE_MS
   if (meeting.status === 'transcribing' && new Date(meeting.updatedAt).getTime() < staleSince) {
-    return repo.claim(meeting.id, 'transcribing', patch)
+    return repo.claim(meeting.id, 'transcribing', patch, meeting.updatedAt)
   }
   // `failed` is recoverable, but only when THIS route caused it: the audio is
   // still there, and asking again is exactly the retry it was recorded for. A

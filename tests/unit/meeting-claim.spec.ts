@@ -84,6 +84,18 @@ describe('claim', () => {
     expect(await repo.claim('a5', 'uploaded', { status: 'transcribing' })).toMatchObject({ failedStage: null })
   })
 
+  it('defaults a legacy FAILED row with no failedStage field to transcription, not null', async () => {
+    // null would still leave it stuck: both retry routes compare failedStage
+    // against a specific stage string ('transcription'/'summarization'), and
+    // null matches neither — coercing missing-to-null only fixes the type,
+    // not the actual "can this ever be retried" question. Summarisation did
+    // not exist when the oldest such rows could have been written, matching
+    // the Supabase migration's own backfill for this same shape.
+    const repo = createLocalMeetingRepository({ dataDir })
+    await repo.create({ ...newMeeting('a7'), status: 'failed', errorMessage: 'boom' } as NewMeeting)
+    expect(await repo.get('a7')).toMatchObject({ failedStage: 'transcription' })
+  })
+
   it('refuses a write whose fencing token no longer matches the row, even though status still does', async () => {
     // The exact shape a stale-lease reclaim produces: status goes back to the
     // same value it already had, but updatedAt moves. A caller whose own

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { ActionItem, Decision, TranscriptSegment } from '#shared/types/meeting'
 import { actionItemSchema, decisionSchema, type WireSummary } from '#shared/schemas/summary'
+import { NO_SPACE_SCRIPT } from './plan'
 
 /**
  * Compare loosely enough to survive punctuation and case, strictly enough that
@@ -19,6 +20,21 @@ import { actionItemSchema, decisionSchema, type WireSummary } from '#shared/sche
  */
 export function normalise(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+}
+
+/**
+ * Whether `needle` occurs in `haystack` on token boundaries, for scripts that
+ * actually separate words with whitespace. A raw substring check accepts a
+ * quote that starts or ends mid-word: "approved by everyone" is a literal
+ * substring of "disapproved by everyone", the opposite of what it claims to
+ * quote, and at 20+ characters it clears the fragment floor below outright.
+ * Scripts with no whitespace between words (CJK, Thai) have no such boundary
+ * to require — a real substring there is a legitimate sub-phrase, not a
+ * mid-word accident, so those keep plain substring matching.
+ */
+function occurs(haystack: string, needle: string): boolean {
+  if (NO_SPACE_SCRIPT.test(haystack) || NO_SPACE_SCRIPT.test(needle)) return haystack.includes(needle)
+  return ` ${haystack} `.includes(` ${needle} `)
 }
 
 /**
@@ -82,7 +98,7 @@ export function attestQuote(
   for (const segment of segments) {
     const segmentText = normalise(segment.text)
     const full = segmentText === needle
-    if (!full && !segmentText.includes(needle)) continue
+    if (!full && !occurs(segmentText, needle)) continue
     candidates.push({ segment, distance: Math.abs(segment.idx - claimedIdx), full })
   }
 

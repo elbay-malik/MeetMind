@@ -244,11 +244,82 @@ comfortably covers a per-minute throttle window resetting; closing the gap
 completely needs a persisted per-failure deadline, which is more machinery
 than this fixed cooldown for a bounded, worst-case-one-extra-retry problem.
 
+The fencing token had a gap of its own: it only starts protecting a claim
+once the ORIGINAL `claim()` call has already returned one. The stale-lease
+reclaim inside `claim()` — the moment a new claim is actually established
+over an expired one — was still a plain status-only compare-and-swap.
+Reclaiming `indexing`/`transcribing` writes the same status back, so that
+CAS never "uses up": two callers who both observe the same stale lease could
+both successfully reclaim it and both go on to spend a full run's worth of
+provider requests before either noticed. Fenced on the `updatedAt` both
+callers actually observed, the same way every later write already was.
+
+transcribe.post.ts's "lost the race" fallback had the same "stale in-memory
+result" problem the summary route's did, just for segments instead of a
+summary: once this worker's own fenced write has failed, a reclaimed worker
+may have already replaced the transcript with a different one of its own.
+Returning this worker's `result.segments` alongside the OTHER worker's
+current meeting row could pair a status with a transcript that never
+actually coexisted. Re-reads the transcript from storage instead, the same
+way it already re-read the meeting.
+
+`attestQuote`'s fragment matching used a raw substring check, which accepts a
+quote that starts or ends inside a word — `"approved by everyone"` is a
+literal substring of `"disapproved by everyone"`, the opposite of what it
+claims to quote, and at 21 characters it clears the fragment floor outright.
+Matching now requires token boundaries for scripts that actually separate
+words with whitespace (`" ${haystack} ".includes(" ${needle} ")`), while
+scripts with no whitespace between words (CJK, Thai) keep plain substring
+matching — there is no reliable word boundary to require there, and a real
+substring in those scripts is a legitimate sub-phrase, not a mid-word
+accident. The script-detection regex (`NO_SPACE_SCRIPT`) is shared with
+`plan.ts`'s token-cost estimator rather than duplicated, since both need the
+same underlying "does this script use whitespace" answer.
+
+The `failed_stage` backfill's "summarisation did not exist before this
+migration" reasoning does not actually hold for THIS migration: Phase 6's
+`meeting_summaries` table and `summarize.post.ts` shipped before this column
+did, in an earlier PR, so a pre-existing `failed` row can already be a real
+summarisation failure — blanket-assigning `transcription` would silently
+reintroduce the exact ambiguity this column exists to resolve, for exactly
+the rows it is backfilling. `summarize.post.ts` only ever runs once
+`transcript_segments` rows exist for a meeting, and nothing re-transcribes an
+already-transcribed one (that is Phase 9), so a failed meeting that already
+has a transcript can only have failed at summarisation; one with none can
+only have failed before reaching it. The backfill now checks which, instead
+of assuming. The local JSON driver's equivalent normalisation had a related
+gap: coercing a legacy row's missing field to `null` fixed the TYPE but not
+the actual bug — both retry routes compare `failedStage` against an exact
+stage string, and `null` matches neither, so a legacy failed row was still
+stuck either way. It now defaults to `'transcription'` for a legacy row that
+is actually `failed`, mirroring the migration's own default for the same
+(more common, since summarisation is newer) case; local data cannot use the
+transcript-existence check the migration does, since normalising a single row
+has no repository to query against, so it does not distinguish the rarer
+already-summarising case the way the migration now does.
+
+Chunking's aggregate rate limit was not actually respected by "sequential":
+two full-`CHUNK_BUDGET_TOKENS` chunks sent back to back can both land inside
+the provider's same rolling minute and still exceed its aggregate allowance,
+even though each fits its own per-request budget alone — chunking this
+aggressively only ever worked by accident, whenever a chunk happened to take
+long enough on its own to clear the window. Each chunk after the first now
+waits out the rest of the previous chunk's minute before sending, which is
+also why `CLAIM_LEASE_MS` grew from 3h to 4h — the worst case gained up to
+`(MAX_CHUNKS - 1) * 60s` of pure waiting.
+
 ## Consequences
 
-- A long meeting costs several sequential requests, so extraction takes longer
-  than transcription and is more exposed to the per-minute allowance. A failure
-  part-way is retried per chunk, not from the start.
+- A long meeting costs several sequential, PACED requests — not merely
+  sequential, but spaced out against the provider's own rolling-minute window,
+  so two full-budget chunks sent back to back cannot collide with the
+  aggregate per-minute limit the way two merely-sequential ones could — so
+  extraction takes longer than transcription and is more exposed to the
+  per-minute allowance. A malformed reply is retried per chunk (`withRetries`),
+  but a chunk that exhausts its retries fails the whole call; the next attempt
+  restarts from the first chunk, not a resumable one. A truly resumable
+  per-chunk retry belongs to Phase 9's orchestrator, which is the thing that
+  would actually track progress across attempts.
 - Chunk boundaries make the same decision likely to be reported twice; items
   restated at the same moment are collapsed.
 - Items are stored with a composite foreign key onto the transcript segment they

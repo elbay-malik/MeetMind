@@ -33,13 +33,22 @@ for f in supabase/migrations/*.sql; do
   psql -q < "$f"
 done
 
-# A meeting that failed before failed_stage existed has failed_stage=NULL.
+# Meetings that failed before failed_stage existed have failed_stage=NULL.
 # The migration's new CHECK validates every existing row the instant it is
-# added, so without a backfill this insert would make the ALTER TABLE itself
-# fail against a real, populated database — not caught by inserting the row
-# only after the migration, which is what every other check in this file does.
+# added, so without a backfill these inserts would make the ALTER TABLE
+# itself fail against a real, populated database — not caught by inserting
+# the rows only after the migration, which is what every other check in this
+# file does. Two rows: meeting_summaries/summarize.post.ts shipped with Phase
+# 6 before this column did, so a pre-existing failed row is only safely
+# assumed to be a transcription failure when it has no transcript at all —
+# one that already has segments could just as easily be a real summarisation
+# failure, and the backfill needs to tell those apart correctly.
 psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
-            values (gen_random_uuid(),'legacy failure','failed','a.mp4',1,'legacy_failed_row',10);"
+            values (gen_random_uuid(),'legacy failure, no transcript','failed','a.mp4',1,'legacy_failed_no_transcript',10);"
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+            values (gen_random_uuid(),'legacy failure, has transcript','failed','a.mp4',1,'legacy_failed_has_transcript',10);"
+psql -q -c "insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
+            select id, 0, 0, 1000, 'hello' from public.meetings where audio_key='legacy_failed_has_transcript';"
 echo "applying $(basename "$FAILED_STAGE_MIGRATION")"
 psql -q < "$FAILED_STAGE_MIGRATION"
 
@@ -102,8 +111,14 @@ check "failed_stage accepts null and both real stages" \
      union all select failed_stage='transcription' from public.meetings where audio_key='stage_transcription'
      union all select failed_stage='summarization' from public.meetings where audio_key='stage_summarization'
    ) t"
-check "a failed row from before failed_stage existed is backfilled, not rejected" \
-  "select failed_stage = 'transcription' from public.meetings where audio_key = 'legacy_failed_row'"
+check "a legacy failed row with no transcript is backfilled to transcription" \
+  "select failed_stage = 'transcription' from public.meetings where audio_key = 'legacy_failed_no_transcript'"
+check "a legacy failed row that already has a transcript is backfilled to summarization, not transcription" \
+  "select failed_stage = 'summarization' from public.meetings where audio_key = 'legacy_failed_has_transcript'"
+# Both legacy rows have served their purpose; clean up so later checks that
+# assume an otherwise-empty transcript_segments table still hold.
+psql -q -c "delete from public.meetings
+            where audio_key in ('legacy_failed_no_transcript', 'legacy_failed_has_transcript');"
 reject "failed_stage outside the two real stages is refused" \
   "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
    values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_bad',10,'indexing');" \

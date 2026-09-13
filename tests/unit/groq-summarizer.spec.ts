@@ -117,6 +117,30 @@ describe('response', () => {
     expect(result).toMatchObject({ decisions: [], actionItems: [] })
   })
 
+  it('paces chunk requests so two chunks cannot land in the same rate-limit window', async () => {
+    // Sequential alone does not pace anything: two full-budget chunks sent
+    // back to back can both land inside the same rolling minute and exceed
+    // the provider's aggregate allowance even though each fits its own
+    // per-request budget. Two segments, each already over budget alone, so
+    // planChunks puts each in its own chunk regardless of packing.
+    const bigText = Array.from({ length: 4000 }, () => 'word').join(' ')
+    const bigSegments: TranscriptSegment[] = [
+      { idx: 0, startMs: 0, endMs: 1000, text: bigText },
+      { idx: 1, startMs: 1000, endMs: 2000, text: bigText },
+    ]
+    const paced = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, minRequestIntervalMs: 200 })
+    const calls = stubFetch([
+      reply({ summary: '', decisions: [], actionItems: [] }),
+      reply({ summary: '', decisions: [], actionItems: [] }),
+    ])
+
+    const startedAt = Date.now()
+    await paced.summarize({ segments: bigSegments })
+
+    expect(calls).toHaveLength(2)
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180)
+  })
+
   it('does not call the provider at all for an empty transcript', async () => {
     const calls = stubFetch([reply(goodPayload)])
     const result = await summarizer.summarize({ segments: [] })

@@ -22,7 +22,11 @@ import type { TranscriptSegment } from '#shared/types/meeting'
  * characters is costed per character instead: those tokenizers run close to
  * one token per character.
  */
-const NO_SPACE_SCRIPT = /[฀-๿぀-ヿ㐀-䶿一-鿿豈-﫿]/
+// Exported: reconcile.ts's citation matching needs the same "does this
+// script actually use whitespace between words" test, for the same
+// underlying reason (a whitespace-shaped rule silently does the wrong
+// thing for these scripts).
+export const NO_SPACE_SCRIPT = /[฀-๿぀-ヿ㐀-䶿一-鿿豈-﫿]/
 
 export function estimateTokens(text: string): number {
   const trimmed = text.trim()
