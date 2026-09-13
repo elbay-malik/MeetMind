@@ -131,6 +131,7 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
       audioMime: data!.audio_mime,
       uploadedAt: data!.uploaded_at,
       errorMessage: data!.error_message,
+      failedStage: data!.failed_stage,
     })
     expect(parsed.success, JSON.stringify(parsed.error?.issues?.slice(0, 3))).toBe(true)
   })

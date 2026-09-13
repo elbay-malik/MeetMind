@@ -170,25 +170,51 @@ that status is what keeps a reader from ever observing a mid-write state; it is
 the smaller fix the finding that raised this allowed for, short of wrapping the
 five calls in a real transaction.
 
-**Honest limit of the fencing token above:** it protects the meeting row's own
-status column, not `replaceForMeeting`'s writes to the summary tables, which
-are still unconditional. A superseded worker that finishes anyway can still
-overwrite the reclaimer's summary data before its own status write correctly
-fails; the reader would then see a `ready` meeting whose stored summary is the
-superseded worker's, not the reclaimer's. Closing that fully needs the same
-real transaction the five-write sequence above is already missing, for the
-same PostgREST reason. What the lease-length fix above actually buys is
-narrowing when this can happen at all to "the original worker did not crash
-but somehow ran past a lease sized to its own worst case" — which, if the
-worst-case bound is right, should not happen in normal operation.
+The fencing token alone still left a gap: it protects the meeting row's own
+status column, but `replaceForMeeting`/`transcripts.replaceForMeeting` have no
+compare-and-swap of their own, so a superseded worker that finishes anyway
+could still overwrite the reclaimer's data before its own status write
+correctly failed — the reader would then see a meeting whose status reflects
+one worker's outcome and whose stored data reflects the other's. Both routes
+now renew the fence with a second claim (same status back to itself) *right
+before* that write, and abort with a 409 if it fails. `summarize()`/
+`transcribe()` — up to MAX_CHUNKS sequential provider calls, or one
+transcription call — is the slow part; re-checking ownership immediately
+before writing shrinks the exposed window from that entire call down to the
+gap between the renewal and the write itself. That gap is not literally zero
+— closing it fully needs the same real transaction the five-write sequence
+above is already missing, for the same PostgREST reason — but it is the
+closest either route gets without one, and turns "an old worker resumes
+minutes later" into "two requests would have to land within the same
+round-trip," which is a different, much smaller kind of unlikely.
+
+Losing that race honestly matters too: both routes' "lost the race" fallback
+used to return a status and summary/segments this call could not actually
+prove were authoritative — including, in one path, a `ready` status that had
+never been persisted at all when no stored row could be found. Both now
+either re-read the row that is actually authoritative or refuse with a
+conflict, never fabricate one.
 
 The `failed_stage` column's check constraint also asserts, not just names in a
 comment, that the column is non-null exactly when `status = 'failed'` — every
 write in this codebase already keeps that invariant, so enforcing it catches a
-future write that does not. And the migration verifier's own FK-shape check
-now compares actual column names, not just column count and target table: a
+future write that does not. Adding a CHECK validates every existing row
+immediately, so the migration backfills `failed_stage = 'transcription'` for
+any row already `failed` before the column existed — summarisation, and so a
+summarisation failure, did not exist before this migration, so that backfill
+value is not a guess. And the migration verifier's own FK-shape check now
+compares actual column names, not just column count and target table: a
 composite FK can be the right shape (two columns, right target table, right
 cascade) while still being wired from the wrong two source columns.
+
+Separately: the early-return that lets a repeat call skip straight to a
+stored summary used to trigger on `indexing` as well as `ready`. `indexing` is
+the in-flight marker `claim()` itself sets — not "done" — and a re-transcribed
+meeting can be genuinely `indexing` again while `meeting_summaries` still
+holds the *previous* run's row (re-transcription cascades a stale citation
+away but does not delete the summary itself). A concurrent caller hitting
+that window would have been handed the stale summary instead of a 409. Now
+only `ready` counts.
 
 ## Consequences
 

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
+import { createLocalMeetingRepository } from '../../server/utils/db/local'
 import type { CreateMeetingResponse, Meeting, MeetingSummary } from '../../shared/types/meeting'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
@@ -147,6 +148,22 @@ describe('POST /api/meetings/:id/summarize', () => {
     }
     const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('ready')
+  })
+
+  it('does not hand out a stale summary while a fresh extraction is genuinely in progress', async () => {
+    // Re-transcription cascades a stale summary's citations away but leaves
+    // meeting_summaries itself in place (see ADR-0006), so a meeting mid a
+    // FRESH extraction run can still have an old summary sitting in storage.
+    // Simulates that exact shape directly, since there is no re-transcription
+    // route yet to reach it through: complete one extraction, then move the
+    // meeting back to `indexing` without touching the stored summary.
+    const meeting = await transcribedMeeting()
+    await summarize(meeting.id)
+    const repo = createLocalMeetingRepository({ dataDir })
+    await repo.update(meeting.id, { status: 'indexing' })
+
+    const res = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
+    expect(res.status).toBe(409)
   })
 
   it('404s for unknown and malformed ids', async () => {

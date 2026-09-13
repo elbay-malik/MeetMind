@@ -62,7 +62,7 @@ export default defineEventHandler(async (event): Promise<{
   // meeting, the same way summarize.post.ts fences its own final writes: a
   // reclaim writes `transcribing` again, changing `updatedAt` without
   // changing `status`, which a `from`-only compare-and-swap cannot see.
-  const fence = claimed.updatedAt
+  let fence = claimed.updatedAt
 
   try {
     const audio = await useAudioStore(event).get(meeting.audioKey, MAX_AUDIO_BYTES)
@@ -81,6 +81,18 @@ export default defineEventHandler(async (event): Promise<{
       contentType: audio.contentType ?? AUDIO_MIME,
     })
 
+    // Renew the fence immediately before the one write in this route that is
+    // NOT itself claim-gated: replaceForMeeting has no compare-and-swap of its
+    // own. transcribe() above is the slow part; re-checking ownership right
+    // before writing shrinks "a superseded worker overwrites the reclaimer's
+    // transcript" down to the gap between this check and the write (see
+    // ADR-0006's honest limit on this — the same one summarize.post.ts has).
+    const renewed = await repo.claim(
+      id, 'transcribing', { status: 'transcribing', errorMessage: null, failedStage: null }, fence,
+    )
+    if (!renewed) throw conflict('Lost ownership of this meeting\'s transcription before it could be saved')
+    fence = renewed.updatedAt
+
     await transcripts.replaceForMeeting(id, result.segments)
 
     // Claim-gated, not a plain update: a straggler from a stale-lease reclaim
@@ -89,9 +101,15 @@ export default defineEventHandler(async (event): Promise<{
     const updated = await repo.claim(
       id, 'transcribing', { status: 'summarizing', errorMessage: null, failedStage: null }, fence,
     )
-    // The transcript is stored either way; losing the status race here is not
-    // a reason to discard it.
-    return { meeting: updated ?? { ...claimed, status: 'summarizing' }, segments: result.segments }
+    if (updated) return { meeting: updated, segments: result.segments }
+
+    // Lost the race between the renewal above and this write. The transcript
+    // this call wrote is real either way, but the meeting's status is not
+    // ours to report — read back whatever is authoritative instead of
+    // guessing at one.
+    const current = await repo.get(id)
+    if (!current) throw notFound('Meeting not found')
+    return { meeting: current, segments: result.segments }
   }
   catch (err) {
     // An h3 error already says what it means; do not rewrite it as a 500 or

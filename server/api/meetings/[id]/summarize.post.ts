@@ -33,8 +33,16 @@ const RETRY_COOLDOWN_MS = 30_000
  */
 const MAX_CHUNKS = 40
 
-/** Statuses that mean extraction has already happened. */
-const PAST_SUMMARY = ['indexing', 'ready']
+/**
+ * Statuses whose stored summary is safe to return early. Deliberately
+ * `ready` only — NOT `indexing`: a re-transcription cascades away a stale
+ * summary's citations but leaves `meeting_summaries` itself in place (see
+ * ADR-0006), so a meeting genuinely mid a fresh extraction run can still have
+ * an old stored summary sitting there. Treating `indexing` as "done" would
+ * hand a concurrent caller that stale row instead of telling it extraction is
+ * still running.
+ */
+const PAST_SUMMARY = ['ready']
 
 /**
  * Extract decisions and action items from a meeting's transcript.
@@ -91,10 +99,25 @@ export default defineEventHandler(async (event): Promise<{
   // `updatedAt` without changing `status`. A plain `from`-only compare-and-swap
   // cannot tell "still mine" from "reclaimed out from under me" in that case;
   // requiring `updatedAt` to still match the value observed right here can.
-  const fence = claimed.updatedAt
+  let fence = claimed.updatedAt
 
   try {
     const summary = await useSummarizer(event).summarize({ segments })
+
+    // Renew the fence immediately before the one write in this route that
+    // is NOT itself claim-gated: replaceForMeeting has no compare-and-swap of
+    // its own. summarize() above is the slow part (up to MAX_CHUNKS
+    // sequential provider calls); re-checking ownership right before writing
+    // shrinks "a superseded worker overwrites the reclaimer's summary" from
+    // that whole window down to the gap between this check and the write —
+    // not zero, but the closest this route gets without a real transaction
+    // (see ADR-0006's honest limit on this).
+    const renewed = await repo.claim(
+      id, 'indexing', { status: 'indexing', errorMessage: null, failedStage: null }, fence,
+    )
+    if (!renewed) throw conflict('Lost ownership of this meeting\'s extraction before the summary could be saved')
+    fence = renewed.updatedAt
+
     await summaries.replaceForMeeting(id, summary)
 
     // Claim-gated, not a plain update: a straggler from a stale-lease reclaim
@@ -107,13 +130,15 @@ export default defineEventHandler(async (event): Promise<{
     )
     if (updated) return { meeting: updated, summary }
 
-    // Lost the race: someone else's write landed first (or reclaimed the
-    // meeting since). Their result, not ours, is authoritative — the summary
-    // this call computed is discarded rather than persisted over theirs.
+    // Lost the race between the renewal above and this write. Only return a
+    // result this call can prove is authoritative — actually persisted, and
+    // reflected in the meeting's own status — rather than guessing at one.
     const current = await repo.get(id)
-    const stored = current ? await summaries.getForMeeting(id) : null
-    if (current && stored) return { meeting: current, summary: stored }
-    return { meeting: { ...claimed, status: 'ready', failedStage: null }, summary }
+    if (current?.status === 'ready') {
+      const stored = await summaries.getForMeeting(id)
+      if (stored) return { meeting: current, summary: stored }
+    }
+    throw conflict('Summarisation is already running for this meeting')
   }
   catch (err) {
     // An h3 error already says what it means; do not rewrite it.

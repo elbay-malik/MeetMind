@@ -24,10 +24,24 @@ done
 
 psql() { docker exec -i "$CONTAINER" psql -U postgres -v ON_ERROR_STOP=1 "$@"; }
 
+# Applied separately, below: it needs a legacy row inserted right before it to
+# prove its backfill actually runs against data that predates the column.
+FAILED_STAGE_MIGRATION=supabase/migrations/20260913120000_add_meeting_failed_stage.sql
 for f in supabase/migrations/*.sql; do
+  [ "$f" = "$FAILED_STAGE_MIGRATION" ] && continue
   echo "applying $(basename "$f")"
   psql -q < "$f"
 done
+
+# A meeting that failed before failed_stage existed has failed_stage=NULL.
+# The migration's new CHECK validates every existing row the instant it is
+# added, so without a backfill this insert would make the ALTER TABLE itself
+# fail against a real, populated database — not caught by inserting the row
+# only after the migration, which is what every other check in this file does.
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+            values (gen_random_uuid(),'legacy failure','failed','a.mp4',1,'legacy_failed_row',10);"
+echo "applying $(basename "$FAILED_STAGE_MIGRATION")"
+psql -q < "$FAILED_STAGE_MIGRATION"
 
 fail() { echo "FAIL: $1"; exit 1; }
 check() { # check <description> <sql returning t/f>
@@ -88,6 +102,8 @@ check "failed_stage accepts null and both real stages" \
      union all select failed_stage='transcription' from public.meetings where audio_key='stage_transcription'
      union all select failed_stage='summarization' from public.meetings where audio_key='stage_summarization'
    ) t"
+check "a failed row from before failed_stage existed is backfilled, not rejected" \
+  "select failed_stage = 'transcription' from public.meetings where audio_key = 'legacy_failed_row'"
 reject "failed_stage outside the two real stages is refused" \
   "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
    values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_bad',10,'indexing');" \
