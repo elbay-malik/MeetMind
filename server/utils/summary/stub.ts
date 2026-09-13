@@ -1,6 +1,6 @@
 import type { MeetingSummary } from '#shared/types/meeting'
 import { reconcile } from './reconcile'
-import type { SummarizeInput, Summarizer } from './summarizer'
+import { SummarizationError, type SummarizeInput, type Summarizer } from './summarizer'
 
 /**
  * A quote that cannot occur in any real transcript: `attestQuote`'s search is
@@ -13,9 +13,19 @@ import type { SummarizeInput, Summarizer } from './summarizer'
  */
 const CANARY_QUOTE = 'zzz-unsupported-canary-citation-that-nobody-said-zzz'
 
+let retryableFailureUsed = false
+
 export interface StubSummarizerOptions {
   /** Test-only: see CANARY_QUOTE. Never set outside tests. */
   injectCanary?: boolean
+  /**
+   * Test-only: throw a retryable SummarizationError exactly once (module
+   * lifetime, not per-instance), the same shape a transient provider 5xx
+   * takes, so tests can prove a retryable summarization failure lands on a
+   * cooldown-gated `failed` state rather than the ungated `summarizing` one.
+   * Never set outside tests.
+   */
+  failOnceRetryable?: boolean
 }
 
 /**
@@ -32,6 +42,13 @@ export function createStubSummarizer(options: StubSummarizerOptions = {}): Summa
     kind: 'stub',
 
     async summarize({ segments }: SummarizeInput): Promise<MeetingSummary> {
+      if (options.failOnceRetryable && !retryableFailureUsed) {
+        retryableFailureUsed = true
+        throw new SummarizationError(
+          'Summarization service is unavailable (stub-injected for testing).', 502, true,
+        )
+      }
+
       if (segments.length === 0) {
         return { summary: '', decisions: [], actionItems: [], provider: 'stub' }
       }

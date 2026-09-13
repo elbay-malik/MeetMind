@@ -23,7 +23,10 @@ export function useSummarizer(event: H3Event): Summarizer {
   const summarizer = groqReady
     ? createGroqSummarizer({ apiKey: config.groqApiKey })
     // Truthy, not === true: destr parses '1' to the number 1, not a boolean.
-    : createStubSummarizer({ injectCanary: !!config.summaryStubCanary })
+    : createStubSummarizer({
+        injectCanary: !!config.summaryStubCanary,
+        failOnceRetryable: !!config.summaryStubFailOnceRetryable,
+      })
   announce(summarizer.kind)
   return summarizer
 }

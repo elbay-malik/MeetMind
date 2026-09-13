@@ -23,6 +23,20 @@ export function normalise(text: string): string {
 }
 
 /**
+ * For a no-space script, strips ALL whitespace rather than leaving
+ * `normalise`'s single spaces in place. Those spaces stand in for whatever
+ * punctuation used to be there (a comma the model's quote omits, say), and
+ * scripts with no whitespace between words have no reliable word boundary
+ * for that residual space to preserve — so a real citation differing from
+ * the transcript only by a comma would otherwise fail to match by exactly
+ * that one space. Left alone for scripts that actually use whitespace to
+ * separate words, where the space is load-bearing.
+ */
+function compactIfNoSpaceScript(text: string): string {
+  return NO_SPACE_SCRIPT.test(text) ? text.replace(/\s+/gu, '') : text
+}
+
+/**
  * Whether `needle` occurs in `haystack` on token boundaries, for scripts that
  * actually separate words with whitespace. A raw substring check accepts a
  * quote that starts or ends mid-word: "approved by everyone" is a literal
@@ -30,10 +44,20 @@ export function normalise(text: string): string {
  * quote, and at 20+ characters it clears the fragment floor below outright.
  * Scripts with no whitespace between words (CJK, Thai) have no such boundary
  * to require — a real substring there is a legitimate sub-phrase, not a
- * mid-word accident, so those keep plain substring matching.
+ * mid-word accident, so those keep plain substring matching, on whitespace
+ * fully stripped rather than merely normalised (see compactIfNoSpaceScript).
+ *
+ * The choice is made from the QUOTE alone, not the segment: a segment can
+ * legitimately mix scripts (an English sentence naming a place in Japanese),
+ * and checking the whole haystack would fall back to substring matching for
+ * an ENTIRELY LATIN quote just because the segment it is being checked
+ * against happens to also contain an unrelated CJK character elsewhere —
+ * reintroducing the exact mid-word fabrication this function exists to catch.
  */
 function occurs(haystack: string, needle: string): boolean {
-  if (NO_SPACE_SCRIPT.test(haystack) || NO_SPACE_SCRIPT.test(needle)) return haystack.includes(needle)
+  if (NO_SPACE_SCRIPT.test(needle)) {
+    return compactIfNoSpaceScript(haystack).includes(compactIfNoSpaceScript(needle))
+  }
   return ` ${haystack} `.includes(` ${needle} `)
 }
 
@@ -97,7 +121,13 @@ export function attestQuote(
   const candidates: Candidate[] = []
   for (const segment of segments) {
     const segmentText = normalise(segment.text)
-    const full = segmentText === needle
+    // Same compaction as occurs() below, and for the same reason: a no-space
+    // script's "entire text" still has to match despite a punctuation-turned-
+    // space difference (a comma the model's quote omits, say) that a
+    // whitespace-sensitive script would rightly treat as a real distinction.
+    const full = NO_SPACE_SCRIPT.test(needle)
+      ? compactIfNoSpaceScript(segmentText) === compactIfNoSpaceScript(needle)
+      : segmentText === needle
     if (!full && !occurs(segmentText, needle)) continue
     candidates.push({ segment, distance: Math.abs(segment.idx - claimedIdx), full })
   }

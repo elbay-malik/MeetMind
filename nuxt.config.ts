@@ -28,6 +28,11 @@ export default defineNuxtConfig({
     // cooldown-gated retry path over the real HTTP route rather than only by
     // reasoning about the code. Never set outside tests.
     transcribeStubQuotaFail: false, // NUXT_TRANSCRIBE_STUB_QUOTA_FAIL
+    // Test-only: makes the stub summarizer fail once with a retryable error
+    // (a transient 5xx, not a 429), so tests can prove a retryable
+    // summarization failure lands on a cooldown-gated `failed` state rather
+    // than the ungated `summarizing` one. Never set outside tests.
+    summaryStubFailOnceRetryable: false, // NUXT_SUMMARY_STUB_FAIL_ONCE_RETRYABLE
     public: {},
   },
   routeRules: {

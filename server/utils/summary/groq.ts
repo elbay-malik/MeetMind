@@ -82,13 +82,16 @@ export interface GroqSummarizerOptions {
   /** Attempts per chunk when the reply is unusable. One retry is usually enough. */
   maxAttempts?: number
   /**
-   * Minimum time between the start of one chunk request and the next.
-   * Sequential alone does not pace anything: two 5,000-token chunks (a full
-   * CHUNK_BUDGET_TOKENS each) can both land inside the SAME rolling-minute
-   * window and still exceed the provider's ~8,000-token aggregate allowance,
-   * even though each fits comfortably under the per-request budget on its
-   * own. Defaults to 60s, matching that rolling window; overridable so tests
-   * are not forced to actually wait it out.
+   * Minimum time between the start of one request and the next — EVERY
+   * request (a fresh chunk or a within-chunk retry alike), not just the
+   * first attempt of each chunk. Sequential alone does not pace anything:
+   * two 5,000-token requests (a full CHUNK_BUDGET_TOKENS each) can both land
+   * inside the SAME rolling-minute window and still exceed the provider's
+   * ~8,000-token aggregate allowance, even though each fits comfortably
+   * under the per-request budget on its own — and a chunk's own retry is
+   * exactly as capable of that collision as a new chunk is. Defaults to 60s,
+   * matching that rolling window; overridable so tests are not forced to
+   * actually wait it out.
    */
   minRequestIntervalMs?: number
 }
@@ -171,21 +174,24 @@ export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer
 
       // Sequential on purpose: the per-minute token allowance is the binding
       // limit, and firing chunks in parallel is the fastest way to exhaust it.
-      // Sequential alone is not the same as PACED, though: two chunks sent
-      // back to back can both land in the same rolling minute. Waiting out
-      // the rest of the previous chunk's window before sending the next one
-      // keeps each request inside its own window instead of exhausting the
-      // aggregate limit partway through a multi-chunk run. (A within-chunk
-      // retry from withRetries below is not separately paced against this —
-      // a narrower, related gap left as-is here.)
-      let previousChunkStartedAt = 0
-      for (const chunk of chunks) {
-        if (previousChunkStartedAt) {
-          const remaining = minRequestIntervalMs - (Date.now() - previousChunkStartedAt)
+      // Sequential alone is not the same as PACED, though: two requests sent
+      // back to back — whether two different chunks, or one chunk's first
+      // attempt immediately followed by its own retry — can both land in the
+      // same rolling minute. Paces every actual request against the previous
+      // one, whichever kind it is. Scoped to this call (not the summarizer
+      // instance): unrelated summarize() calls must never wait on each other.
+      let previousRequestStartedAt = 0
+      async function pacedAskOnce(transcript: string): Promise<WireSummary> {
+        if (previousRequestStartedAt) {
+          const remaining = minRequestIntervalMs - (Date.now() - previousRequestStartedAt)
           if (remaining > 0) await sleep(remaining)
         }
-        previousChunkStartedAt = Date.now()
-        parts.push(await withRetries(() => askOnce(renderTranscript(chunk.segments)), maxAttempts))
+        previousRequestStartedAt = Date.now()
+        return askOnce(transcript)
+      }
+
+      for (const chunk of chunks) {
+        parts.push(await withRetries(() => pacedAskOnce(renderTranscript(chunk.segments)), maxAttempts))
       }
 
       const merged: WireSummary = {
@@ -223,8 +229,9 @@ async function describeFailure(response: Response): Promise<SummarizationError> 
     // Not retryable here: withRetries has no backoff, so an immediate retry
     // would hit the same throttle again and double the quota pressure that
     // triggered it. The chunk-level failure surfaces to summarize.post.ts,
-    // whose own 30s cooldown before a `failed` meeting can be retried is the
-    // backoff — instant retries are exactly what that cooldown exists to stop.
+    // whose own 60s cooldown (RETRY_COOLDOWN_MS) before a `failed` meeting
+    // can be retried is the backoff — instant retries are exactly what that
+    // cooldown exists to stop.
     const retryAfter = response.headers.get('retry-after')
     return new SummarizationError(
       `Summarization quota is exhausted for now.${retryAfter ? ` Try again in ${retryAfter}s.` : ''}`,

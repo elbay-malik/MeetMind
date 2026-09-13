@@ -60,6 +60,17 @@ describe('attestQuote', () => {
     expect(attestQuote('Priya diria que si, lo enviamos', 0, spanish)).toBeNull()
   })
 
+  it('matches a no-space-script quote that omits internal punctuation the transcript has', () => {
+    // normalise() turns the transcript's internal comma into a space that a
+    // model quoting the same words without it does not have. Japanese has no
+    // reliable word boundary for that residual space to preserve, so it must
+    // not matter here the way it would for a script that actually uses
+    // whitespace to separate words.
+    const japanese = [seg(0, 0, '来週までに、移行計画を作成します。')]
+    expect(attestQuote('来週までに移行計画を作成します', 0, japanese))
+      .toMatchObject({ segmentIdx: 0, startMs: 0 })
+  })
+
   it('still rejects an invented quote in a non-Latin transcript', () => {
     const japanese = [seg(0, 0, '来週までに移行計画を作成します。')]
     expect(attestQuote('競合他社を買収することに合意しました', 0, japanese)).toBeNull()
@@ -79,6 +90,17 @@ describe('attestQuote', () => {
     expect(attestQuote('approved by everyone', 0, disagreed)).toBeNull()
     // The real words, respecting the actual word boundary, still match.
     expect(attestQuote('disapproved by everyone', 0, disagreed)).toMatchObject({ segmentIdx: 0 })
+  })
+
+  it('does not fall back to substring matching just because the SEGMENT also contains an unrelated CJK word', () => {
+    // A segment can legitimately mix scripts (an English sentence naming a
+    // place in Japanese). The all-Latin fabricated quote must still be held
+    // to a word boundary — picking the matching rule from the segment as a
+    // whole would let it slip through just because the segment happens to
+    // also contain a CJK word elsewhere.
+    const mixed = [seg(0, 0, 'The proposal was disapproved by everyone in 東京.')]
+    expect(attestQuote('approved by everyone', 0, mixed)).toBeNull()
+    expect(attestQuote('disapproved by everyone', 0, mixed)).toMatchObject({ segmentIdx: 0 })
   })
 
   it('refuses quotes too short to match anything but by accident', () => {

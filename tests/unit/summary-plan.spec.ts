@@ -35,6 +35,15 @@ describe('estimateTokens', () => {
   it('does not let a long CJK segment cost the same as a short one', () => {
     expect(estimateTokens('あ'.repeat(200))).toBeGreaterThan(estimateTokens('あ') * 10)
   })
+
+  it('detects Han characters outside the Basic Multilingual Plane, not just the common BMP range', () => {
+    // U+20000 is a real (if uncommon) Han ideograph, a supplementary-plane
+    // character a hand-rolled range copied from a BMP-only chart silently
+    // excludes — collapsing right back to the ~6-token bug for exactly the
+    // kind of character this detection exists to catch.
+    const supplementaryHan = String.fromCodePoint(0x20000).repeat(200)
+    expect(estimateTokens(supplementaryHan)).toBeGreaterThan(100)
+  })
 })
 
 describe('planChunks', () => {

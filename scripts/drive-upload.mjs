@@ -209,7 +209,10 @@ try {
     for (const item of [...summary.decisions, ...summary.actionItems]) {
       const cited = byIdx.get(item.segmentIdx)
       if (!cited) fail(`an item cites segment ${item.segmentIdx}, which does not exist`)
-      else if (!normalise(cited.text).includes(normalise(item.quote).slice(0, 20))) {
+      // The COMPLETE quote, not just a prefix: checking only the first 20
+      // characters would pass a quote whose spoken opening is real but whose
+      // remaining words are fabricated.
+      else if (!normalise(cited.text).includes(normalise(item.quote))) {
         fail(`an item quotes text that segment ${item.segmentIdx} does not contain`)
       }
     }

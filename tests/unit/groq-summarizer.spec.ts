@@ -20,7 +20,12 @@ interface GroqRequest {
   }
 }
 
-const summarizer = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 2 })
+// minRequestIntervalMs: 0 — these tests are not about pacing (that has its
+// own test below, with its own summarizer and a real, small interval), and
+// several exercise a within-call retry, which is paced exactly like a new
+// chunk since the pacing fix. Left at the real default they would each wait
+// out a real 60s here for no reason.
+const summarizer = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 2, minRequestIntervalMs: 0 })
 
 const reply = (payload: unknown) => new Response(JSON.stringify({
   choices: [{ message: { content: JSON.stringify(payload) } }],
@@ -141,6 +146,23 @@ describe('response', () => {
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180)
   })
 
+  it('paces a within-chunk retry exactly like a new chunk', async () => {
+    // A retry from withRetries is a real request too, and can consume close
+    // to the same chunk's whole token budget — just as capable of landing in
+    // the same rolling minute as its own first attempt as a new chunk is.
+    const paced = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 2, minRequestIntervalMs: 200 })
+    const calls = stubFetch([
+      reply({ summary: 'x' }), // malformed: triggers a retry
+      reply({ summary: '', decisions: [], actionItems: [] }),
+    ])
+
+    const startedAt = Date.now()
+    await paced.summarize({ segments })
+
+    expect(calls).toHaveLength(2)
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180)
+  })
+
   it('does not call the provider at all for an empty transcript', async () => {
     const calls = stubFetch([reply(goodPayload)])
     const result = await summarizer.summarize({ segments: [] })
@@ -171,7 +193,7 @@ describe('failures and retries', () => {
   it('explains quota exhaustion in the user\'s terms, and does not instantly retry it', async () => {
     // withRetries has no backoff, so retrying a 429 immediately would just
     // hit the same throttle again. Only one request should go out; the
-    // 30s cooldown before a failed meeting can be retried (summarize.post.ts)
+    // 60s cooldown before a failed meeting can be retried (summarize.post.ts)
     // is where the actual backoff lives.
     const calls = stubFetch([
       new Response('rate limited', { status: 429, headers: { 'retry-after': '60' } }),

@@ -98,7 +98,10 @@ describe('POST /api/meetings/:id/summarize', () => {
       // Same rule reconciliation itself checks against — a raw substring
       // check would reject a validly-stored quote that only differs from the
       // segment by punctuation (reconciliation normalizes both sides first).
-      expect(normalise(cited!.text)).toContain(normalise(item.quote).slice(0, 20))
+      // The COMPLETE quote, not a prefix: only checking the first 20
+      // characters would pass a citation whose spoken opening is real but
+      // whose remaining words were fabricated.
+      expect(normalise(cited!.text)).toContain(normalise(item.quote))
     }
   })
 

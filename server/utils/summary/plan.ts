@@ -25,8 +25,12 @@ import type { TranscriptSegment } from '#shared/types/meeting'
 // Exported: reconcile.ts's citation matching needs the same "does this
 // script actually use whitespace between words" test, for the same
 // underlying reason (a whitespace-shaped rule silently does the wrong
-// thing for these scripts).
-export const NO_SPACE_SCRIPT = /[฀-๿぀-ヿ㐀-䶿一-鿿豈-﫿]/
+// thing for these scripts). Unicode Script properties, not hand-rolled
+// code point ranges: Han in particular extends into the supplementary
+// planes (U+20000 and up, in real if uncommon characters), which a range
+// copied from a BMP-only chart silently excludes -- collapsing right back
+// to the bug this exists to fix, just for a narrower set of characters.
+export const NO_SPACE_SCRIPT = /\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Thai}/u
 
 export function estimateTokens(text: string): number {
   const trimmed = text.trim()

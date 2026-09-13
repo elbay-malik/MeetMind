@@ -162,16 +162,21 @@ export default defineEventHandler(async (event): Promise<{
 
     const failure = err instanceof SummarizationError ? err : null
     const message = failure?.message ?? (err instanceof Error ? err.message : String(err))
-    // Default to retryable. Parking a meeting whose transcript is intact on a
-    // terminal status is the worse mistake.
-    const retryable = failure ? failure.retryable : true
+    // Every failure here lands on `failed`, cooldown-gated — retryable or
+    // not. `summarizing` is also the meeting's own pre-first-attempt state,
+    // and claim()'s first branch reclaims it with no cooldown at all; routing
+    // a retryable failure there (as this used to) would let a repeated 5xx or
+    // malformed reply re-launch the WHOLE multi-chunk run instantly, every
+    // time, with no backoff — exactly what the cooldown exists to prevent.
+    // `failed` is not a worse outcome for a retryable failure: the cooldown
+    // reclaim already returns it to service automatically, just not instantly.
     // Claim-gated for the same reason as the success path: if another caller
     // already finished (or is itself retrying) while this one was failing,
     // this write must not regress what they did.
     await repo.claim(id, 'indexing', {
-      status: retryable ? 'summarizing' : 'failed',
+      status: 'failed',
       errorMessage: message,
-      failedStage: retryable ? null : 'summarization',
+      failedStage: 'summarization',
     }, fence)
     throw createError({
       statusCode: failure?.statusCode ?? 500,

@@ -62,10 +62,10 @@ the evidence before stating the claim" a property of the schema rather than a
 request in prose — and then every quote is looked for in the real transcript.
 
 Anything that is not found is dropped. Timestamps are resolved here, from the
-segment the quote was found in, rather than trusted from the model. The search
-tries the claimed segment, then its neighbours, then the whole transcript: a
-model that gets the words right and the index slightly wrong is far more common
-than one that invents both.
+segment the quote was found in, rather than trusted from the model — every
+occurrence anywhere in the transcript is considered (not a search radiating
+out from the claimed index), and the one actually used is chosen by the rule
+below.
 
 This is the single place model output becomes stored data, so it is the only
 place a hallucinated citation can be stopped.
@@ -306,7 +306,64 @@ aggressively only ever worked by accident, whenever a chunk happened to take
 long enough on its own to clear the window. Each chunk after the first now
 waits out the rest of the previous chunk's minute before sending, which is
 also why `CLAIM_LEASE_MS` grew from 3h to 4h — the worst case gained up to
-`(MAX_CHUNKS - 1) * 60s` of pure waiting.
+`(MAX_CHUNKS - 1) * 60s` of pure waiting. Pacing between chunks was not
+enough on its own, either: a within-chunk retry from `withRetries` is a real
+request too, capable of the same collision as a new chunk, so pacing is
+applied to every actual request (a fresh chunk or a retry alike), not to the
+chunk loop specifically.
+
+`occurs()`'s no-space/whitespace-delimited choice, initially made from
+whichever script the whole SEGMENT happened to use, had the same mid-word
+problem one level up: a segment can legitimately mix scripts (English naming
+a place in Japanese), and checking the haystack would fall back to substring
+matching for an entirely Latin quote just because the segment it is checked
+against also contains one unrelated CJK character — reintroducing the exact
+fabrication the boundary check exists to catch. The choice is made from the
+quote alone now.
+
+The no-space branch had a second, subtler bug: it compared `normalise()`'s
+output directly, which turns punctuation into a single space rather than
+removing it. A real citation that omits punctuation the transcript has (or
+the reverse) then differs from the transcript by exactly that one space —
+and a script with no reliable word boundary has no reason to preserve it.
+Both the full-match and fragment checks now compare a further-compacted form
+(all whitespace stripped, not just runs collapsed) whenever the quote is a
+no-space script.
+
+The script-detection regex itself only covered the common, Basic
+Multilingual Plane ranges for each script (hand-transcribed code point
+ranges, copied from a chart) — Han in particular extends into the
+supplementary planes (U+20000 and up), which those ranges silently excluded,
+collapsing a long segment written with one of those characters right back to
+the ~6-token estimate this whole mechanism exists to prevent. Rewritten
+against Unicode Script properties (`\p{Script=Han}`, `\p{Script=Hiragana}`,
+`\p{Script=Katakana}`, `\p{Script=Thai}`) instead of hand-rolled ranges, which
+also turned up a transcription bug in the ranges themselves: the intended
+start of the CJK Compatibility Ideographs range (U+F900) had silently become
+U+8C48 (its canonically-equivalent CJK Unified form) somewhere between typing
+the character and it landing in the file, making that range nearly 15,000
+code points wider than intended, coincidentally covering high surrogates —
+this is exactly the class of error Script properties make impossible.
+
+A retryable summarization failure (a transient 5xx, say) used to reset the
+meeting to `summarizing` rather than `failed`. `summarizing` is also the
+meeting's own pre-first-attempt state, and `claim()`'s first branch reclaims
+it with no cooldown gate at all — so a repeated transient failure could
+re-launch the whole multi-chunk run instantly, every time, exactly what the
+cooldown exists to prevent. The retryable/non-retryable distinction predates
+the cooldown-gated `failed` reclaim added earlier in this round; now that
+`failed` recovers on its own after 60s regardless of why it failed, there is
+no remaining reason for a retryable failure to land anywhere else. Every
+failure here now lands on `failed`.
+
+Two accuracy fixes with no behavioural change: `progress.vue`'s completion
+announcement (`justFinished`) was never cleared when extraction starts, so it
+could re-announce "Transcription finished" for an already-ready meeting once
+`summarizing` fell back to false; and this document's own description of the
+citation search ("tries the claimed segment, then its neighbours, then the
+whole transcript") described an earlier version of the algorithm superseded
+above (every occurrence is considered, not a search radiating from the
+claimed index).
 
 ## Consequences
 
@@ -363,7 +420,14 @@ also why `CLAIM_LEASE_MS` grew from 3h to 4h — the worst case gained up to
   The stub transcriber has the equivalent for quota exhaustion
   (`NUXT_TRANSCRIBE_STUB_QUOTA_FAIL`, its own isolated spec file since it fails
   exactly once for the whole process — sharing a file with tests that expect a
-  normal transcription would break them).
+  normal transcription would break them). The stub summarizer has a third,
+  same-shaped option (`NUXT_SUMMARY_STUB_FAIL_ONCE_RETRYABLE`) for a
+  transient, retryable failure, also its own isolated spec file for the same
+  reason.
+- The e2e/driver citation checks only verified the first 20 normalized
+  characters of a quote against its segment, which would not catch a future
+  regression that only checked a prefix the same way — both now check the
+  complete normalized quote.
 - `reconcile()`'s `normalise()` is exported and reused everywhere a check needs
   to know "does this text support that quote" — the e2e citation assertions and
   `drive-upload.mjs`'s standalone one (duplicated there by hand, since it is a

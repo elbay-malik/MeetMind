@@ -33,6 +33,12 @@ const summarizing = ref(false)
 async function startSummary() {
   summarizing.value = true
   stepError.value = null
+  // Otherwise the completion announcement from transcription survives into
+  // extraction: once summarizing flips back to false, activityLabel falls
+  // through past its own "extracting"/"running" checks to this stale flag,
+  // announcing "Transcription finished" again for an already-summarized,
+  // ready meeting.
+  justFinished.value = false
   try {
     await $fetch(`/api/meetings/${meetingId.value}/summarize`, { method: 'POST' })
   }
