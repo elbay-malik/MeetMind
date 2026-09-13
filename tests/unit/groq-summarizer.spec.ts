@@ -184,6 +184,36 @@ describe('response', () => {
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180)
   })
 
+  it('serializes TRULY concurrent callers of a shared pacer, not just sequentially-awaited ones', async () => {
+    // The previous test only proves pacing works when one caller is fully
+    // awaited before the next starts. A pacer whose read-then-sleep-then-
+    // write has a gap between the read and the write would let two calls
+    // that both invoke wait() before either has updated its own state read
+    // the SAME stale value, both sleep the same remainder, and both fire
+    // together — Promise.all is what actually exercises that gap; two
+    // separately-awaited calls never do. Priming the pacer with one call
+    // first matters too: the very first-ever call never reaches the
+    // internal sleep at all (nothing to wait ON yet), so it can never
+    // expose this race on its own — only a call that actually has to sleep
+    // creates the gap a second concurrent caller can land in.
+    const requestTimestamps: number[] = []
+    vi.stubGlobal('fetch', async () => {
+      requestTimestamps.push(Date.now())
+      return reply({ summary: '', decisions: [], actionItems: [] })
+    })
+
+    const sharedPacer = createRequestPacer(200)
+    await sharedPacer.wait()
+
+    const meetingA = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: sharedPacer })
+    const meetingB = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: sharedPacer })
+
+    await Promise.all([meetingA.summarize({ segments }), meetingB.summarize({ segments })])
+
+    expect(requestTimestamps).toHaveLength(2)
+    expect(Math.abs(requestTimestamps[1]! - requestTimestamps[0]!)).toBeGreaterThanOrEqual(180)
+  })
+
   it('does not call the provider at all for an empty transcript', async () => {
     const calls = stubFetch([reply(goodPayload)])
     const result = await summarizer.summarize({ segments: [] })

@@ -59,6 +59,14 @@ async function deleteStoredSummary(meetingId: string): Promise<void> {
   await storage.removeItem(`summaries/${meetingId}`)
 }
 
+/** Simulate a silent recording: transcription completed but found no speech.
+ * The stub transcriber always produces at least one segment, so this reaches
+ * past it directly rather than needing a real silent fixture. */
+async function emptyTheTranscript(meetingId: string): Promise<void> {
+  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+  await storage.setItem(`transcripts/${meetingId}`, [])
+}
+
 /** Simulate the retry cooldown having elapsed, without a real 60s wait. */
 async function backdateUpdatedAt(id: string, msAgo: number): Promise<void> {
   const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
@@ -188,6 +196,21 @@ describe('POST /api/meetings/:id/summarize', () => {
 
     const res = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
     expect(res.status).toBe(409)
+  })
+
+  it('finishes a silent recording with an empty summary instead of getting stuck in summarizing', async () => {
+    // A meeting that finished transcription with zero segments (real
+    // silence) is a valid outcome, not "not ready yet" — refusing it here
+    // left it permanently stuck in `summarizing`, since nothing else ever
+    // moves a meeting out of that status once transcription has already
+    // completed.
+    const meeting = await transcribedMeeting()
+    await emptyTheTranscript(meeting.id)
+
+    const { meeting: after, summary } = await summarize(meeting.id)
+    expect(after.status).toBe('ready')
+    expect(summary.decisions).toEqual([])
+    expect(summary.actionItems).toEqual([])
   })
 
   it('repairs a ready meeting whose summary row is missing rather than getting stuck', async () => {

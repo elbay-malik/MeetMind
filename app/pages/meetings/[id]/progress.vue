@@ -154,8 +154,13 @@ const createdAt = computed(() => new Date(meeting.value.createdAt).toLocaleStrin
 const canTranscribe = computed(() =>
   meeting.value.status === 'uploaded'
   || (meeting.value.status === 'failed' && meeting.value.failedStage === 'transcription'))
+// Not gated on segments.length: a silent recording (transcribedButEmpty
+// above) genuinely finished transcription with zero segments, and
+// summarize.post.ts finishes that too — with a valid empty summary, not an
+// error — so hiding this button for that case left it stuck in
+// `summarizing` with no reachable transition at all.
 const canSummarize = computed(() =>
-  (meeting.value.status === 'summarizing' && segments.value.length > 0)
+  meeting.value.status === 'summarizing'
   || (meeting.value.status === 'failed' && meeting.value.failedStage === 'summarization'))
 
 /**

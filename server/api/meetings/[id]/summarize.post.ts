@@ -83,9 +83,19 @@ export default defineEventHandler(async (event): Promise<{
   }
 
   const segments = await useTranscriptRepository(event).listForMeeting(id)
-  // Refuse before claiming: a meeting with no transcript has nothing to extract
-  // and should not be moved out of the state it is in.
-  if (segments.length === 0) {
+  // Refuse before claiming, but only when transcription genuinely has not
+  // finished: a meeting that already reached `summarizing` (or later, or is
+  // retrying a summarisation failure) with a zero-segment transcript is a
+  // real, valid outcome — a silent recording (see progress.vue's own
+  // transcribedButEmpty) — not "not ready yet". useSummarizer's own
+  // summarize() already returns a valid empty summary for zero segments
+  // without a provider call, so letting this fall through the rest of the
+  // route as normal is enough to actually finish it, rather than parking it
+  // in `summarizing` forever with no route back — canSummarize's own segment
+  // check meant the UI never offered a way to retry it either.
+  const transcriptionDone = ['summarizing', 'indexing', 'ready'].includes(meeting.status)
+    || (meeting.status === 'failed' && meeting.failedStage === 'summarization')
+  if (segments.length === 0 && !transcriptionDone) {
     throw conflict('This meeting has no transcript to summarise yet')
   }
 

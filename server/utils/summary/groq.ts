@@ -108,21 +108,28 @@ export interface GroqSummarizerOptions {
 
 export interface RequestPacer {
   /** Resolves once at least `minIntervalMs` has passed since the previous
-   * call's own resolution — immediately, the first time. */
+   * call's own reserved slot — immediately, the first time. */
   wait(): Promise<void>
 }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 export function createRequestPacer(minIntervalMs: number): RequestPacer {
-  let previousStartedAt = 0
+  let nextAvailableAt = 0
   return {
     async wait() {
-      if (previousStartedAt) {
-        const remaining = minIntervalMs - (Date.now() - previousStartedAt)
-        if (remaining > 0) await sleep(remaining)
-      }
-      previousStartedAt = Date.now()
+      // Reserves the next slot SYNCHRONOUSLY, before awaiting anything: two
+      // genuinely concurrent callers (Promise.all, not just two sequential
+      // awaited calls) would otherwise both read the same previousStartedAt,
+      // both sleep the same remainder, and both fire together — defeating
+      // pacing for exactly the case it exists for. Reserving first means the
+      // second caller's own reservation always accounts for the first's,
+      // even when both call wait() in the same synchronous tick.
+      const now = Date.now()
+      const scheduledAt = Math.max(now, nextAvailableAt)
+      nextAvailableAt = scheduledAt + minIntervalMs
+      const remaining = scheduledAt - now
+      if (remaining > 0) await sleep(remaining)
     },
   }
 }

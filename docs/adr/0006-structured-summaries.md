@@ -432,6 +432,31 @@ failure leaves the transcript — and the audio that produced it — completely
 intact, so the message now says which route actually needs retrying instead
 of implying transcription is the fix.
 
+The shared pacer's own `wait()` had a race that only a genuinely CONCURRENT
+caller (`Promise.all`, not two sequentially-awaited calls) exercises: it read
+the previous start time, awaited a sleep, and only then wrote the new one —
+so two callers who both invoked `wait()` before either had reached that write
+could both read the same stale value, both sleep the same remainder, and
+both fire together, defeating the exact pacing the shared instance exists
+for. (The regression test for this needed the pacer PRIMED with one prior
+call first: the very first-ever call never reaches the internal sleep at
+all, since there is nothing to wait on yet, so it can never expose the race
+on its own.) Fixed by reserving the next slot synchronously, before awaiting
+anything — a second concurrent caller then always sees the first's
+reservation, even when both call `wait()` in the same synchronous tick.
+
+`summarize.post.ts` refused ANY meeting with zero transcript segments, but a
+meeting that already reached `summarizing` (or later, or is retrying a
+summarisation failure) with zero segments is a real, valid outcome — a
+silent recording, which `progress.vue`'s own `transcribedButEmpty` already
+names as such — not "not transcribed yet". `useSummarizer`'s own
+`summarize()` already returns a valid empty summary for zero segments
+without spending a provider call; the route just needed to stop refusing to
+reach it. `canSummarize` had the identical bug one layer up: gated on
+`segments.length > 0`, it hid the only button that could reach this route at
+all for exactly the recordings that needed it, so a silent meeting was stuck
+in `summarizing` with no reachable transition from either the API or the UI.
+
 ## Consequences
 
 - A long meeting costs several sequential, PACED requests — not merely
