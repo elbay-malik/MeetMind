@@ -175,6 +175,6 @@ describe('update', () => {
 
   it('returns null when no row matched', async () => {
     stubPostgrest([])
-    expect(await repo.update(row.id, { status: 'failed' })).toBeNull()
+    expect(await repo.update(row.id, { status: 'failed', failedStage: 'transcription' })).toBeNull()
   })
 })

@@ -1,9 +1,22 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createStorage } from 'unstorage'
+import fsDriver from 'unstorage/drivers/fs'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
 import type { NewMeeting } from '../../server/utils/db/meetings'
+
+/**
+ * Writes a row straight to the JSON store, bypassing repo.create() (and the
+ * validation it now runs) entirely -- what a genuine legacy row looks like:
+ * written by a version of this repository that predates both the
+ * failedStage field and today's status/failedStage pairing check.
+ */
+async function writeLegacyRow(id: string, row: Record<string, unknown>): Promise<void> {
+  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+  await storage.setItem(`meetings/${id}`, row)
+}
 
 let dataDir: string
 beforeAll(async () => {
@@ -40,7 +53,7 @@ describe('claim', () => {
   it('refuses when the meeting is in a different state', async () => {
     const repo = createLocalMeetingRepository({ dataDir })
     await repo.create(newMeeting('a2'))
-    await repo.update('a2', { status: 'failed' })
+    await repo.update('a2', { status: 'failed', failedStage: 'transcription' })
     expect(await repo.claim('a2', 'uploaded', { status: 'transcribing' })).toBeNull()
   })
 
@@ -92,7 +105,10 @@ describe('claim', () => {
     // not exist when the oldest such rows could have been written, matching
     // the Supabase migration's own backfill for this same shape.
     const repo = createLocalMeetingRepository({ dataDir })
-    await repo.create({ ...newMeeting('a7'), status: 'failed', errorMessage: 'boom' } as NewMeeting)
+    const now = new Date().toISOString()
+    await writeLegacyRow('a7', {
+      ...newMeeting('a7'), status: 'failed', errorMessage: 'boom', createdAt: now, updatedAt: now,
+    })
     expect(await repo.get('a7')).toMatchObject({ failedStage: 'transcription' })
   })
 
@@ -124,5 +140,58 @@ describe('claim', () => {
     finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('status/failedStage pairing', () => {
+  // meetings_failed_stage_matches_status (the failed_stage migration) rejects
+  // exactly these combinations in Supabase. Before assertValidStatusPatch /
+  // assertValidNewMeeting existed, the local driver had no such check and
+  // silently wrote the invalid row instead -- these two existing test
+  // fixtures did precisely that (see git history on this file) until they
+  // were fixed alongside the validation itself.
+
+  it('refuses to update a meeting to failed without a failedStage', async () => {
+    const repo = createLocalMeetingRepository({ dataDir })
+    await repo.create(newMeeting('b1'))
+    await expect(repo.update('b1', { status: 'failed' })).rejects.toThrow(/failedStage/)
+  })
+
+  it('refuses to claim a meeting into failed without a failedStage', async () => {
+    const repo = createLocalMeetingRepository({ dataDir })
+    await repo.create(newMeeting('b2'))
+    await expect(repo.claim('b2', 'uploaded', { status: 'failed' })).rejects.toThrow(/failedStage/)
+  })
+
+  it('refuses to pair a non-failed status with a failedStage', async () => {
+    const repo = createLocalMeetingRepository({ dataDir })
+    await repo.create(newMeeting('b3'))
+    await expect(
+      repo.update('b3', { status: 'transcribing', failedStage: 'transcription' }),
+    ).rejects.toThrow(/failedStage/)
+  })
+
+  it('refuses to create a meeting whose status and failedStage disagree', async () => {
+    const repo = createLocalMeetingRepository({ dataDir })
+    await expect(
+      repo.create({ ...newMeeting('b4'), status: 'failed', errorMessage: 'boom', failedStage: null }),
+    ).rejects.toThrow(/failedStage/)
+  })
+
+  it('accepts a patch that pairs failed with a failedStage', async () => {
+    const repo = createLocalMeetingRepository({ dataDir })
+    await repo.create(newMeeting('b5'))
+    const updated = await repo.update('b5', { status: 'failed', failedStage: 'transcription', errorMessage: 'boom' })
+    expect(updated).toMatchObject({ status: 'failed', failedStage: 'transcription' })
+  })
+
+  it('does not validate a patch that never touches status', async () => {
+    // Nothing in this repository sets failedStage without also setting
+    // status in the same patch, so a patch that only touches unrelated
+    // fields is left unchecked rather than guessed at against a current row
+    // neither driver's update()/claim() is handed here.
+    const repo = createLocalMeetingRepository({ dataDir })
+    await repo.create(newMeeting('b6'))
+    await expect(repo.update('b6', { title: 'renamed' })).resolves.toMatchObject({ title: 'renamed' })
   })
 })

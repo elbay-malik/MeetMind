@@ -5,6 +5,7 @@ import {
   MAX_TITLE_LENGTH,
   audioObjectKey,
   titleFromFileName,
+  transcribedButEmpty,
 } from '../../shared/utils/meeting'
 
 describe('meeting limits', () => {
@@ -37,5 +38,36 @@ describe('titleFromFileName', () => {
   it('caps overly long names', () => {
     const long = 'a'.repeat(MAX_TITLE_LENGTH + 50) + '.mp4'
     expect(titleFromFileName(long)).toHaveLength(MAX_TITLE_LENGTH)
+  })
+})
+
+describe('transcribedButEmpty', () => {
+  it('is true once transcription has finished with no segments', () => {
+    for (const status of ['summarizing', 'indexing', 'ready'] as const) {
+      expect(transcribedButEmpty({ status, failedStage: null }, 0)).toBe(true)
+    }
+  })
+
+  it('is false while transcription has not run yet, even with no segments', () => {
+    for (const status of ['pending_upload', 'uploaded', 'transcribing'] as const) {
+      expect(transcribedButEmpty({ status, failedStage: null }, 0)).toBe(false)
+    }
+  })
+
+  it('is false once segments exist, regardless of status', () => {
+    expect(transcribedButEmpty({ status: 'ready', failedStage: null }, 3)).toBe(false)
+  })
+
+  // The specific case this function exists to get right: a summarisation
+  // failure is orthogonal to whether the transcript it ran against was
+  // empty, so it must still surface "no speech was found" rather than only
+  // the generic extraction error — this was missing before failedStage
+  // existed to distinguish it from a transcription failure.
+  it('is true for a failed meeting whose failure was in summarisation', () => {
+    expect(transcribedButEmpty({ status: 'failed', failedStage: 'summarization' }, 0)).toBe(true)
+  })
+
+  it('is false for a failed meeting whose failure was in transcription', () => {
+    expect(transcribedButEmpty({ status: 'failed', failedStage: 'transcription' }, 0)).toBe(false)
   })
 })

@@ -1,6 +1,8 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from './database.types'
 import {
+  assertValidNewMeeting,
+  assertValidStatusPatch,
   newMeetingToRow,
   patchToRow,
   rowToMeeting,
@@ -42,6 +44,7 @@ export function createSupabaseMeetingRepository(options: SupabaseOptions): Meeti
     kind: 'supabase',
 
     async create(input: NewMeeting) {
+      assertValidNewMeeting(input)
       const { data, error } = await table().insert(newMeetingToRow(input)).select().single()
       if (error) fail('insert', error)
       return rowToMeeting(data)
@@ -63,6 +66,7 @@ export function createSupabaseMeetingRepository(options: SupabaseOptions): Meeti
     },
 
     async claim(id, from, patch: MeetingPatch, expectedUpdatedAt) {
+      assertValidStatusPatch(patch)
       // The extra .eq('status', from) is what makes this atomic: PostgREST
       // sends one UPDATE ... WHERE id = ? AND status = ?, so the database
       // decides the winner and the loser matches no row.
@@ -76,6 +80,7 @@ export function createSupabaseMeetingRepository(options: SupabaseOptions): Meeti
     },
 
     async update(id, patch: MeetingPatch) {
+      assertValidStatusPatch(patch)
       const { data, error } = await table()
         .update(patchToRow(patch))
         .eq('id', id)

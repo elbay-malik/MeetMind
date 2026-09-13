@@ -503,6 +503,81 @@ transcript) produces a row this backfill cannot correctly classify from the
 schema alone. Documented as a genuine, accepted limitation rather than
 silently left implied to be solved.
 
+The `meetings_failed_stage_matches_status` CHECK constraint (above) only ever
+protected Supabase: `MeetingPatch` still let a caller build `{ status: 'failed'
+}` with no `failedStage`, or pair a stage with a non-`failed` status, and the
+local JSON driver had no constraint of its own to catch it — it would write
+the invalid row and never complain. Two of this codebase's own test fixtures
+did exactly that (`{ status: 'failed' }` alone) as setup for something else
+entirely, which is how the gap was found: nothing surfaced it until the
+combination was checked for directly. `assertValidStatusPatch`/
+`assertValidNewMeeting` (`server/utils/db/meetings.ts`) now enforce the same
+pairing in application code, called by both drivers before every write, so
+local and Supabase refuse the identical invalid shape with the identical
+message — Supabase's CHECK stays as the last line of defense, not the only
+one. The check works from the patch alone, never the row it will be merged
+onto: every real caller that touches `status` already sets `failedStage` in
+the same patch, so no extra read of the current row is needed on either
+driver, and a patch that never touches `status` is left unchecked rather than
+guessed at against a row neither driver's `update()`/`claim()` is actually
+handed.
+
+Three more findings from this round were UI-layer, not the pipeline itself.
+`progress.vue`'s `transcribedButEmpty` — whether transcription ran and found
+nothing, as opposed to not having run yet — excluded a `failed`+
+`summarization` meeting, even though that failure is orthogonal to whether
+the transcript it ran against was empty; hiding the warning there silently
+dropped the still-true "the recording may be silent" explanation, leaving
+only a generic extraction error. Extracted into a plain, shared predicate
+(`shared/utils/meeting.ts`) instead of an inline computed, so this — the one
+thing deciding whether that explanation shows at all — has a fast unit test
+independent of mounting the page.
+
+`transcribe.post.ts`'s "lost the race" fallback (see above, on both routes)
+returned its in-memory result unconditionally once the final claim failed,
+without the same status check `summarize.post.ts`'s analogous fallback
+already had from an earlier round in this series — a reclaimer that was
+itself still `transcribing`, or had itself since failed, would be reported to
+the ORIGINAL caller as a completed 200. Brought to parity: only `summarizing`,
+`indexing` or `ready` on the re-read row counts as done. Like the identical
+fencing gap this ADR already discloses for `replaceForMeeting` itself, the
+precise interleaving this branch exists for — another claimant landing between
+this call's own renewal and final claim, inside a single request's lifetime —
+could not be reproduced through this test harness (the e2e tier runs the
+server as a separate process; the only lever available from outside it,
+`backdateUpdatedAt`-style direct writes to the stale-lease path, cannot land
+inside another request's few-millisecond window on demand). Verified by
+reading the code against `summarize.post.ts`'s already-accepted version of
+the same fix, not by a test built to force that exact race.
+
+`index.vue`'s `centreOn` used `el.offsetTop`, which is relative to
+`el.offsetParent` — the nearest ancestor with a `position` other than
+`static` — not necessarily the scroll container doing the centring. The
+transcript's own scroll container has no `position` of its own (just
+`overflow-y-auto`), so `offsetTop` was actually relative to whatever
+positioned ancestor was nearest — the page itself, with the summary and
+player content above the transcript pushing everything down — computing a
+wildly oversized `scrollTop` that jumped the list to its bottom instead of
+centring the active line. Fixed by comparing `getBoundingClientRect()`s
+instead, which is independent of the `offsetParent` chain entirely. Fixing it
+surfaced a second, previously-latent bug it had been silently masking:
+`resumeFollow()` calls `centreOn()` directly rather than through the
+`followIndex` watcher, and setting `scrollTop` fires a native `scroll` event
+same as a user's own scroll would — `onListScroll` was reading that as the
+user taking over and flipping `followPlayback` straight back off, undoing the
+resume within the same tick. The old, broken `offsetTop` math happened to
+compute a `scrollTop` that clamped to wherever the container already was in
+the one scenario this was ever exercised in, so no `scroll` event fired and
+the bug stayed invisible; the corrected math actually moves the scroll
+position, which is what exposed it. Fixed by having every programmatic
+scroll — not just the one reached through the watcher — record where it left
+the scroll position before the resulting `scroll` event can be misread.
+`scripts/drive-player.mjs` gained an assertion that the active line is
+actually visible inside the (deliberately shrunk) container after resuming,
+which is what caught both of these against a real browser; a JSDOM/happy-dom
+mount would not have, since neither computes real layout for
+`getBoundingClientRect()`.
+
 ## Consequences
 
 - A long meeting costs several sequential, PACED requests — not merely

@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { createStorage, type Storage } from 'unstorage'
 import type { Meeting } from '#shared/types/meeting'
-import type { MeetingPatch, MeetingRepository, NewMeeting } from './meetings'
+import { assertValidNewMeeting, assertValidStatusPatch, type MeetingPatch, type MeetingRepository, type NewMeeting } from './meetings'
 
 const storages = new Map<string, Promise<Storage>>()
 
@@ -71,6 +71,7 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
     kind: 'local',
 
     async create(input: NewMeeting) {
+      assertValidNewMeeting(input)
       return serialize(input.id, async () => {
         const now = new Date().toISOString()
         const meeting: Meeting = { ...input, createdAt: now, updatedAt: now }
@@ -99,6 +100,7 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
     },
 
     async update(id, patch: MeetingPatch) {
+      assertValidStatusPatch(patch)
       return serialize(id, async () => {
         const s = await storage()
         const found = await s.getItem<Meeting>(meetingKey(id))
@@ -110,6 +112,7 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
     },
 
     async claim(id, from, patch: MeetingPatch, expectedUpdatedAt) {
+      assertValidStatusPatch(patch)
       return serialize(id, async () => {
         const s = await storage()
         const found = await s.getItem<Meeting>(meetingKey(id))

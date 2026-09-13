@@ -109,7 +109,7 @@ try {
     container.style.maxHeight = '80px'
     await new Promise(r => setTimeout(r, 100))
     if (container.scrollHeight <= container.clientHeight) {
-      return { scrollable: false, stopped: false, resumed: false }
+      return { scrollable: false, stopped: false, resumed: false, visible: false }
     }
     container.scrollTop = container.scrollHeight - container.clientHeight
     container.dispatchEvent(new Event('scroll'))
@@ -118,12 +118,26 @@ try {
     const button = [...document.querySelectorAll('button')].find(b => b.textContent.includes('Follow playback'))
     button?.click()
     await new Promise(r => setTimeout(r, 250))
-    return { scrollable: true, stopped, resumed: !document.body.textContent.includes('Follow playback') }
+    const resumed = !document.body.textContent.includes('Follow playback')
+    // Resuming re-centres the active line via centreOn(). This container has
+    // no `position` of its own, so an offsetTop-based centring (the old
+    // implementation) measured against whatever positioned ancestor was
+    // actually nearest — the page, not this container — and could compute a
+    // scrollTop that left the active line nowhere near this 80px viewport at
+    // all. getBoundingClientRect comparisons must not have that problem: the
+    // active line should end up fully inside the container's own bounds.
+    const active = document.querySelector('[aria-current="true"]')
+    const c = container.getBoundingClientRect()
+    const a = active?.getBoundingClientRect()
+    const visible = !!a && a.top >= c.top - 1 && a.bottom <= c.bottom + 1
+    return { scrollable: true, stopped, resumed, visible }
   })
   if (!stoppedThenResumed.scrollable) fail('could not make the transcript scrollable, so follow behaviour went untested')
   console.log('user scroll stopped following:', stoppedThenResumed.stopped, '| control resumed it:', stoppedThenResumed.resumed)
   if (!stoppedThenResumed.stopped) fail('a user scroll did not stop the transcript following playback')
   if (!stoppedThenResumed.resumed) fail('the Follow playback control did not resume following')
+  console.log('active line visible in the (shrunk) container after re-centring:', stoppedThenResumed.visible)
+  if (!stoppedThenResumed.visible) fail('resuming follow did not scroll the active line into view within the transcript container')
 
   // Following playback must not move the page, or the player scrolls out of
   // view. Measured as a delta so an earlier deliberate click is not counted.

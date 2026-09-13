@@ -66,14 +66,21 @@ function centreOn(index: number) {
   const container = list.value
   const el = lineAt(index)
   if (!container || !el) return
-  const target = el.offsetTop - (container.clientHeight - el.clientHeight) / 2
+  // getBoundingClientRect, not el.offsetTop: offsetTop is relative to
+  // el.offsetParent, the nearest POSITIONED ancestor — not necessarily this
+  // container. This container has no `position` of its own (just
+  // overflow-y-auto), so offsetTop was relative to whatever positioned
+  // ancestor was actually nearest (the page, with the summary/player content
+  // above the transcript pushing everything down), computing a wildly
+  // oversized scrollTop that jumped the list to its bottom instead of
+  // centering the focused line. Comparing bounding rects is independent of
+  // the offsetParent chain: this element's position relative to the
+  // container's OWN scroll origin, regardless of what either is positioned
+  // against.
+  const elTop = el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+  const target = elTop - (container.clientHeight - el.clientHeight) / 2
   container.scrollTop = Math.max(0, target)
 }
-
-watch(followIndex, (index) => {
-  if (!followPlayback.value || index < 0) return
-  void nextTick(() => centreOn(index))
-})
 
 /**
  * Treat a scroll as the user's only when it moved somewhere we did not put it.
@@ -87,17 +94,35 @@ function onListScroll() {
   followPlayback.value = false
 }
 
-watch(followIndex, () => {
-  void nextTick(() => {
-    lastProgrammaticTop = list.value?.scrollTop ?? -1
-  })
+/**
+ * centreOn, plus recording where it actually left the scroll position.
+ * scrollTop assignment fires a native 'scroll' event same as a user's own
+ * scroll would, just dispatched asynchronously rather than inside this same
+ * call — so setting lastProgrammaticTop here, before that event is handled,
+ * is what keeps onListScroll from reading our own centring as the user
+ * taking over and immediately flipping followPlayback back off. This used to
+ * be a second watcher paired with the one below by registration order alone
+ * (both scheduled via nextTick on the same tick) — which resumeFollow, since
+ * it calls centreOn directly rather than through the watch, was never part
+ * of: resuming set followPlayback true, centreOn moved the scroll position,
+ * and onListScroll — with lastProgrammaticTop never updated for this call —
+ * read that as the user scrolling and flipped it straight back off.
+ */
+function centreAndTrack(index: number) {
+  centreOn(index)
+  lastProgrammaticTop = list.value?.scrollTop ?? -1
+}
+
+watch(followIndex, (index) => {
+  if (!followPlayback.value || index < 0) return
+  void nextTick(() => centreAndTrack(index))
 })
 
 /** Resume following and go to where playback actually is, not where the view was. */
 function resumeFollow() {
   followPlayback.value = true
   const index = followIndex.value
-  if (index >= 0) void nextTick(() => centreOn(index))
+  if (index >= 0) void nextTick(() => centreAndTrack(index))
 }
 
 /** Clicking a line seeks; the highlight then follows from the player itself. */

@@ -147,9 +147,8 @@ const statusColor = computed(() => ({
 
 const statusText = computed(() => meeting.value.status.replace('_', ' '))
 
-/** Transcription has run and found nothing, as opposed to not having run. */
-const transcribedButEmpty = computed(() =>
-  ['summarizing', 'indexing', 'ready'].includes(meeting.value.status) && segments.value.length === 0)
+// See shared/utils/meeting.ts for what this actually checks and why.
+const showTranscribedButEmpty = computed(() => transcribedButEmpty(meeting.value, segments.value.length))
 const createdAt = computed(() => new Date(meeting.value.createdAt).toLocaleString())
 const canTranscribe = computed(() =>
   meeting.value.status === 'uploaded'
@@ -306,7 +305,7 @@ const activityLabel = computed(() => {
     />
 
     <UAlert
-      v-if="transcribedButEmpty"
+      v-if="showTranscribedButEmpty"
       color="warning"
       variant="subtle"
       icon="i-lucide-message-square-off"

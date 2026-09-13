@@ -1,3 +1,5 @@
+import type { Meeting } from '#shared/types/meeting'
+
 /**
  * Limits and naming rules for meeting audio, shared by client and server so
  * both sides enforce the same invariants.
@@ -35,4 +37,25 @@ export function titleFromFileName(fileName: string): string {
   const base = fileName.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim()
   const title = base || 'Untitled meeting'
   return title.length > MAX_TITLE_LENGTH ? title.slice(0, MAX_TITLE_LENGTH).trimEnd() : title
+}
+
+/**
+ * Transcription has run and found nothing, as opposed to not having run yet.
+ * Extracted out of the progress page (rather than left as an inline
+ * computed) so this — the one thing that decides whether "no speech was
+ * found" gets shown instead of leaving the page stuck with only a generic
+ * extraction error — has a fast unit test independent of mounting the page.
+ *
+ * Includes a `failed`+`summarization` meeting too: that failure is orthogonal
+ * to whether the transcript it ran against was empty, and hiding this warning
+ * there would leave only a generic extraction error, silently dropping the
+ * (still true, still useful) "the recording may be silent" explanation.
+ */
+export function transcribedButEmpty(
+  meeting: Pick<Meeting, 'status' | 'failedStage'>,
+  segmentCount: number,
+): boolean {
+  const transcriptionDone = ['summarizing', 'indexing', 'ready'].includes(meeting.status)
+    || (meeting.status === 'failed' && meeting.failedStage === 'summarization')
+  return transcriptionDone && segmentCount === 0
 }

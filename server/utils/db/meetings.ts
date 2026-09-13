@@ -93,6 +93,58 @@ export function newMeetingToRow(meeting: NewMeeting): Omit<MeetingRow, 'created_
   }
 }
 
+/**
+ * `meetings_failed_stage_matches_status` (see the failed_stage migration)
+ * requires `failedStage` to be set precisely when `status` is `failed`, and
+ * null every other time. Supabase enforces that with a CHECK constraint; the
+ * local driver has none of its own, so without this it would silently write
+ * a row Supabase would refuse -- the two drivers quietly disagreeing about
+ * what data is valid, discovered when a test fixture did exactly that and the
+ * local driver never complained. `failedStage` is compared with `!=` so a
+ * value that is merely `undefined` (a patch that never mentions it, or a
+ * record built by bypassing the type) counts as "no stage" too, not as some
+ * third state distinct from `null`.
+ */
+function assertFailedStagePairing(
+  status: MeetingStatus,
+  failedStage: 'transcription' | 'summarization' | null | undefined,
+): void {
+  const shouldHaveStage = status === 'failed'
+  const hasStage = failedStage != null
+  if (shouldHaveStage !== hasStage) {
+    throw new Error(
+      shouldHaveStage
+        ? `Cannot set status to 'failed' without a failedStage`
+        : `Cannot set failedStage to '${failedStage}' unless status is 'failed' (got status: '${status}')`,
+    )
+  }
+}
+
+/**
+ * Validates a patch purely from what it itself sets, not the row it will be
+ * merged onto: every real caller that changes `status` already sets
+ * `failedStage` in the SAME patch (a stage string moving into `failed`, or
+ * `null` moving out of it) precisely so a partial update never needs to
+ * re-derive the pairing from whatever was there before. Enforcing that
+ * convention here needs no extra read of the current row on either driver.
+ *
+ * A patch that leaves `status` untouched is not checked here at all: this
+ * repository has no caller that sets `failedStage` without also setting
+ * `status` in the same patch, and validating that combination would need the
+ * current row's status, which callers of `update`/`claim` do not hand in.
+ */
+export function assertValidStatusPatch(patch: MeetingPatch): void {
+  if (patch.status === undefined) return
+  assertFailedStagePairing(patch.status, patch.failedStage)
+}
+
+/** Same pairing, enforced on a full row at creation. `NewMeeting` requires
+ * both fields, so this only ever catches a value mismatch (or a cast that
+ * bypasses the type, as one legacy-row test fixture deliberately does). */
+export function assertValidNewMeeting(meeting: NewMeeting): void {
+  assertFailedStagePairing(meeting.status, meeting.failedStage)
+}
+
 export function patchToRow(
   patch: MeetingPatch,
 ): Partial<Pick<MeetingRow, 'status' | 'uploaded_at' | 'error_message' | 'failed_stage' | 'title'>> {

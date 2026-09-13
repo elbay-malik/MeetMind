@@ -110,10 +110,20 @@ export default defineEventHandler(async (event): Promise<{
     // with their own by now, so pairing their meeting row with THIS call's
     // in-memory result.segments could show a status and a transcript that
     // never actually coexisted. Re-read both from storage instead of
-    // returning anything this call itself produced.
+    // returning anything this call itself produced — and only report success
+    // (HTTP 200) if the CURRENT status actually proves transcription
+    // completed. Returning current unconditionally here used to report a 200
+    // for a reclaimer that is still `transcribing` (not done yet) or has
+    // itself since failed, misleading the caller into treating an
+    // unfinished or failed attempt as a completed transcription.
     const current = await repo.get(id)
     if (!current) throw notFound('Meeting not found')
-    return { meeting: current, segments: await transcripts.listForMeeting(id) }
+    if (PAST_TRANSCRIPTION.includes(current.status)) {
+      return { meeting: current, segments: await transcripts.listForMeeting(id) }
+    }
+    throw conflict(current.status === 'transcribing'
+      ? 'Transcription is already running for this meeting'
+      : `Meeting is ${current.status}; this transcription attempt did not complete`)
   }
   catch (err) {
     // An h3 error already says what it means; do not rewrite it as a 500 or
