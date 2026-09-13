@@ -8,7 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
 import { normalise, occurs } from '../../server/utils/summary/reconcile'
-import type { CreateMeetingResponse, Meeting, MeetingSummary } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, Meeting, MeetingSummary, TranscriptSegment } from '../../shared/types/meeting'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-summary-'))
@@ -59,13 +59,18 @@ async function deleteStoredSummary(meetingId: string): Promise<void> {
   await storage.removeItem(`summaries/${meetingId}`)
 }
 
+/** Reach past the repository interface to replace a meeting's whole stored
+ * transcript, for shapes the stub transcriber cannot produce on its own
+ * (silence, or a transcript needing more than MAX_CHUNKS requests). */
+async function setStoredTranscript(meetingId: string, segments: TranscriptSegment[]): Promise<void> {
+  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+  await storage.setItem(`transcripts/${meetingId}`, segments)
+}
+
 /** Simulate a silent recording: transcription completed but found no speech.
  * The stub transcriber always produces at least one segment, so this reaches
  * past it directly rather than needing a real silent fixture. */
-async function emptyTheTranscript(meetingId: string): Promise<void> {
-  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
-  await storage.setItem(`transcripts/${meetingId}`, [])
-}
+const emptyTheTranscript = (meetingId: string) => setStoredTranscript(meetingId, [])
 
 /** Simulate the retry cooldown having elapsed, without a real 60s wait. */
 async function backdateUpdatedAt(id: string, msAgo: number): Promise<void> {
@@ -211,6 +216,29 @@ describe('POST /api/meetings/:id/summarize', () => {
     expect(after.status).toBe('ready')
     expect(summary.decisions).toEqual([])
     expect(summary.actionItems).toEqual([])
+  })
+
+  it('persists a diagnosable failure for a too-long transcript instead of a silent stuck state', async () => {
+    // The chunk-count limit used to throw 413 before ever claiming the
+    // meeting, so nothing was ever persisted — the meeting stayed in
+    // `summarizing` forever, and every future call hit the exact same 413
+    // with no visible error and no way to resolve it. Each segment here is
+    // already over CHUNK_BUDGET_TOKENS alone, so planChunks gives each its
+    // own chunk regardless of packing — 41 of them clears MAX_CHUNKS (40).
+    const meeting = await transcribedMeeting()
+    const bigText = Array.from({ length: 4000 }, () => 'word').join(' ')
+    const tooLong: TranscriptSegment[] = Array.from({ length: 41 }, (_, i) => ({
+      idx: i, startMs: i * 1000, endMs: i * 1000 + 900, text: bigText,
+    }))
+    await setStoredTranscript(meeting.id, tooLong)
+
+    const res = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
+    expect(res.status).toBe(413)
+
+    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    expect(after.status).toBe('failed')
+    expect(after.failedStage).toBe('summarization')
+    expect(after.errorMessage).toMatch(/too long|sequential requests/i)
   })
 
   it('repairs a ready meeting whose summary row is missing rather than getting stuck', async () => {

@@ -24,23 +24,29 @@ const fail = (msg) => {
   process.exitCode = 1
 }
 
-// Same normalization + citation-matching contract
-// server/utils/summary/reconcile.ts uses (normalise, occurs, and the
-// no-space-script handling both depend on). Duplicated here (kept in sync by
-// hand) since this is a plain Node script, not a place that can import a
-// TypeScript server module. A weaker approximation here (a raw
-// normalise().includes(), say) would both accept a mid-word fabrication and
-// reject a legitimate no-space-script citation that differs from the
-// transcript only by punctuation — reintroducing, in this smoke check, the
-// exact two bugs reconciliation itself exists to avoid.
-const normalise = text => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+// Same normalization + citation-matching contract as
+// server/utils/summary/reconcile.ts's normalise/occurs/tokenize. Duplicated
+// here (kept in sync BY HAND — see the review note this comment itself
+// exists because of) since this is a plain Node script, not a place that can
+// import a TypeScript server module. A weaker approximation here would
+// reintroduce, in this smoke check, exactly the bugs reconciliation itself
+// exists to avoid: a raw substring check accepts a mid-word fabrication and
+// rejects a no-space-script citation differing only by punctuation; deciding
+// token-vs-substring matching from the whole quote's script (rather than
+// tokenizing) still fails a quote that mixes a fabricated Latin phrase with a
+// real CJK one in the same string; and skipping NFC/combining-mark handling
+// fails a citation that is canonically identical but differently composed.
 const NO_SPACE_SCRIPT = /\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Thai}/u
-const compactIfNoSpaceScript = text => (NO_SPACE_SCRIPT.test(text) ? text.replace(/\s+/gu, '') : text)
+const normalise = text => text.normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ').trim()
+function tokenize(text) {
+  return text.replace(new RegExp(NO_SPACE_SCRIPT.source, 'gu'), match => ` ${match} `)
+    .trim().split(/\s+/).filter(Boolean)
+}
+const tokenKey = text => tokenize(text).join(' ')
 function occurs(haystack, needle) {
-  if (NO_SPACE_SCRIPT.test(needle)) {
-    return compactIfNoSpaceScript(haystack).includes(compactIfNoSpaceScript(needle))
-  }
-  return ` ${haystack} `.includes(` ${needle} `)
+  const needleKey = tokenKey(needle)
+  if (!needleKey) return false
+  return ` ${tokenKey(haystack)} `.includes(` ${needleKey} `)
 }
 
 /** Poll the meeting's real status via the API instead of a transient UI label. */

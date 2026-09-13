@@ -285,11 +285,22 @@ did, in an earlier PR, so a pre-existing `failed` row can already be a real
 summarisation failure — blanket-assigning `transcription` would silently
 reintroduce the exact ambiguity this column exists to resolve, for exactly
 the rows it is backfilling. `summarize.post.ts` only ever runs once
-`transcript_segments` rows exist for a meeting, and nothing re-transcribes an
-already-transcribed one (that is Phase 9), so a failed meeting that already
-has a transcript can only have failed at summarisation; one with none can
-only have failed before reaching it. The backfill now checks which, instead
-of assuming. The local JSON driver's equivalent normalisation had a related
+`transcript_segments` rows exist for a meeting, so whether they exist is the
+best available signal for telling the two apart after the fact — but it is
+not a proof, and the migration says so in its own comment rather than
+claiming one: before `failedStage` existed, every `failed` meeting was
+retried through the transcription route regardless of which stage actually
+failed, so a summarisation failure "retried" that way, whose retry then
+itself failed before ever reaching `transcripts.replaceForMeeting`, leaves a
+row that is genuinely a transcription failure but still carries the OLD
+segments from before any of this happened — indistinguishable, from the
+schema alone, from an ordinary summarisation failure. The two guesses are not
+equally safe to get wrong, though: a misclassified `summarization` row
+retries into `summarize.post.ts` and extracts from whatever transcript is
+already there; a misclassified `transcription` row would instead retry into
+`transcribe.post.ts` and unconditionally replace that transcript, the more
+destructive mistake to default to. The backfill picks the less costly wrong
+guess, not a guaranteed right one. The local JSON driver's equivalent normalisation had a related
 gap: coercing a legacy row's missing field to `null` fixed the TYPE but not
 the actual bug — both retry routes compare `failedStage` against an exact
 stage string, and `null` matches neither, so a legacy failed row was still
@@ -456,6 +467,41 @@ reach it. `canSummarize` had the identical bug one layer up: gated on
 `segments.length > 0`, it hid the only button that could reach this route at
 all for exactly the recordings that needed it, so a silent meeting was stuck
 in `summarizing` with no reachable transition from either the API or the UI.
+
+The `MAX_CHUNKS` limit had the same "stuck with no reachable transition"
+shape as the two problems above, for a different reason: it threw its 413
+BEFORE `claim()`, so a too-long transcript was never actually claimed, let
+alone marked `failed` — the meeting stayed wherever it already was
+(`summarizing`, or `ready` mid the no-summary repair) forever, with no
+persisted error and every future call hitting the identical 413. Unlike an
+empty transcript, this genuinely cannot be finished — chunk count does not
+change between attempts — so the fix is the opposite of that one: claim the
+meeting, persist a `failed`/`'summarization'` state with an accurate message,
+THEN throw. It has to happen outside the try/catch below, and not simply be
+moved inside it: the generic catch's `isError(err)` branch treats an h3
+error as "already says what it means, don't rewrite it" and resets the
+meeting back to `summarizing` — correct for a conflict raised mid-flight by
+another caller, wrong here, where resetting to `summarizing` would look like
+"try again" when trying again is guaranteed to fail identically.
+
+`drive-upload.mjs`'s standalone citation matcher, duplicated by hand from
+`reconcile.ts` since it cannot import a TypeScript server module, had fallen
+out of sync with `reconcile.ts`'s own fixes earlier in this round: it still
+decided token-vs-substring matching from the whole quote's script (not
+tokenizing), and still normalised without NFC/combining-mark handling —
+meaning this smoke check could itself accept a mixed-script mid-word
+fabrication, or reject a valid citation over an accent's composition, the
+exact two things `reconcile.ts` was just fixed to avoid. Re-synced to match.
+
+The `failed_stage` migration's backfill comment was also corrected to stop
+overclaiming certainty it cannot actually have (see the "Every citation is
+checked against the transcript" section above) — the transcript-existence
+signal is the best available guess, not a proof, and a specific historical
+sequence (a summarisation failure "retried" through the pre-`failedStage`
+transcription route, whose own retry then failed before replacing the
+transcript) produces a row this backfill cannot correctly classify from the
+schema alone. Documented as a genuine, accepted limitation rather than
+silently left implied to be solved.
 
 ## Consequences
 

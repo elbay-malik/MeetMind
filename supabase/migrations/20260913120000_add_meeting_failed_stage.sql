@@ -13,15 +13,33 @@ alter table public.meetings
 -- already sitting at status='failed' from before this column existed would
 -- otherwise have failed_stage=NULL and fail that check outright.
 --
--- Blanket-assigning 'transcription' would be wrong: meeting_summaries and
--- summarize.post.ts shipped with Phase 6, before this column, so a failed row
--- from that window can already be a genuine summarisation failure -- exactly
--- the ambiguity this column exists to resolve, reintroduced by the backfill
--- meant to fix it. summarize.post.ts only ever runs once transcript_segments
--- exist for a meeting, and no route re-transcribes an already-transcribed one
--- (that is Phase 9), so a failed meeting WITH segments already stored can only
--- have failed at summarisation; one with none can only have failed before
--- reaching it, at transcription.
+-- Blanket-assigning 'transcription' would be wrong in the common case:
+-- meeting_summaries and summarize.post.ts shipped with Phase 6, before this
+-- column, so a failed row from that window can already be a genuine
+-- summarisation failure. Whether transcript_segments exist for the meeting is
+-- the best signal available for telling the two apart after the fact, since
+-- summarize.post.ts only ever runs once they do, and (at the time this
+-- migration was written) nothing re-transcribes an already-transcribed
+-- meeting.
+--
+-- That signal is not perfectly reliable, and this is a genuine, accepted
+-- limitation rather than a solved one: before failedStage existed, EVERY
+-- 'failed' meeting was treated as a transcription failure by the retry route,
+-- including one that was really a summarisation failure -- so a client could
+-- "retry" a summarisation failure through the transcription route, have that
+-- retry itself fail before ever reaching transcripts.replaceForMeeting, and
+-- leave a row that is failed_stage='transcription' by the actual sequence of
+-- events but still has the OLD segments from before any of this happened.
+-- This backfill has no way to distinguish that historical row from an
+-- ordinary summarisation failure -- the information that would tell them
+-- apart (which failure happened most recently) was never recorded. Given the
+-- choice between two imperfect guesses, this is the less costly one to get
+-- wrong: a misclassified 'summarization' row retries through
+-- summarize.post.ts, which extracts from whatever transcript is already
+-- there (usable, if possibly not the newest); a misclassified 'transcription'
+-- row would instead retry through transcribe.post.ts and unconditionally
+-- replace that transcript, which is the more destructive mistake to default
+-- to at scale.
 update public.meetings m
   set failed_stage = case
     when exists (select 1 from public.transcript_segments s where s.meeting_id = m.id)

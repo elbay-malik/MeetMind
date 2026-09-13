@@ -99,15 +99,6 @@ export default defineEventHandler(async (event): Promise<{
     throw conflict('This meeting has no transcript to summarise yet')
   }
 
-  const chunkCount = planChunks(segments, CHUNK_BUDGET_TOKENS).length
-  if (chunkCount > MAX_CHUNKS) {
-    throw createError({
-      statusCode: 413,
-      statusMessage: 'Transcript too long',
-      message: `This transcript would need ${chunkCount} sequential requests, over the ${MAX_CHUNKS} limit.`,
-    })
-  }
-
   const claimed = await claim(repo, meeting)
   if (!claimed) {
     const current = await repo.get(id)
@@ -123,6 +114,22 @@ export default defineEventHandler(async (event): Promise<{
   // cannot tell "still mine" from "reclaimed out from under me" in that case;
   // requiring `updatedAt` to still match the value observed right here can.
   let fence = claimed.updatedAt
+
+  // After claiming (not before, unlike the empty-transcript check above) and
+  // outside the try/catch below: this is not retryable — the transcript's
+  // length does not change between attempts — so it needs its own persisted
+  // `failed` state, not the generic catch's "an h3 error already says what it
+  // means" pass-through, which would reset this back to `summarizing` as if
+  // trying again could ever succeed. Without persisting anything here, this
+  // meeting stays claimed in `indexing`/`ready`-with-no-summary forever: every
+  // future call hits the exact same 413 before ever reaching a state that
+  // records it, with nothing to show the user and no way to resolve it.
+  const chunkCount = planChunks(segments, CHUNK_BUDGET_TOKENS).length
+  if (chunkCount > MAX_CHUNKS) {
+    const message = `This transcript would need ${chunkCount} sequential requests, over the ${MAX_CHUNKS} limit.`
+    await repo.claim(id, 'indexing', { status: 'failed', errorMessage: message, failedStage: 'summarization' }, fence)
+    throw createError({ statusCode: 413, statusMessage: 'Transcript too long', message })
+  }
 
   try {
     const summary = await useSummarizer(event).summarize({ segments })
