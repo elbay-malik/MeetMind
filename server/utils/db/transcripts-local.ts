@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { createStorage, type Storage } from 'unstorage'
 import type { TranscriptSegment } from '#shared/types/meeting'
+import { serialize } from './local'
 import type { TranscriptRepository } from './transcripts'
 
 const storages = new Map<string, Promise<Storage>>()
@@ -26,13 +27,22 @@ export function createLocalTranscriptRepository(options: { dataDir: string }): T
 
     async replaceForMeeting(meetingId, segments) {
       // One file per meeting, so replacing is atomic here in a way the
-      // PostgREST driver cannot be.
-      await (await storageFor(base)).setItem<TranscriptSegment[]>(transcriptKey(meetingId), segments)
+      // PostgREST driver cannot be. Still queued behind the shared per-id
+      // chain (see local.ts's own docstring on `serialize`): summarize.post.ts
+      // reads a meeting's transcript before it has claimed the meeting, so a
+      // concurrent replaceForMeeting (a re-transcription attempt racing an
+      // extraction request for the same meeting) is a real, not hypothetical,
+      // way for a read here to land mid-write without this queue.
+      await serialize(meetingId, async () => {
+        await (await storageFor(base)).setItem<TranscriptSegment[]>(transcriptKey(meetingId), segments)
+      })
     },
 
     async listForMeeting(meetingId) {
-      const stored = await (await storageFor(base)).getItem<TranscriptSegment[]>(transcriptKey(meetingId))
-      return stored ?? []
+      return serialize(meetingId, async () => {
+        const stored = await (await storageFor(base)).getItem<TranscriptSegment[]>(transcriptKey(meetingId))
+        return stored ?? []
+      })
     },
   }
 }

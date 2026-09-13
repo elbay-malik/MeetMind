@@ -197,5 +197,13 @@ function describeWhyNotClaimable(current: Meeting): string {
     const remainingSec = Math.max(1, Math.ceil(remainingMs / 1000))
     return `The last transcription attempt failed recently; wait ${remainingSec}s before retrying`
   }
+  // A summarisation failure leaves the transcript (and so the audio that
+  // produced it) completely intact — this route just isn't the one that
+  // failed. "It has no audio ready" below would be actively wrong here, not
+  // just unhelpful: it implies retrying transcription is the fix, when what
+  // is actually needed is retrying extraction, at POST .../summarize.
+  if (current.status === 'failed' && current.failedStage === 'summarization') {
+    return 'This meeting\'s transcript is already there; the failure was in extraction — retry summarisation, not transcription'
+  }
   return `Meeting is ${current.status}; it has no audio ready to transcribe`
 }

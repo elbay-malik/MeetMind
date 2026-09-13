@@ -57,6 +57,15 @@ async function backdateUpdatedAt(id: string, msAgo: number): Promise<void> {
   await storage.setItem(`meetings/${id}`, { ...meeting, updatedAt: new Date(Date.now() - msAgo).toISOString() })
 }
 
+/** Simulate a meeting whose SUMMARISATION failed, without spinning up
+ * summarize.post.ts's own multi-chunk provider flow. */
+async function markFailedAt(id: string, failedStage: Meeting['failedStage']): Promise<void> {
+  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+  const meeting = await storage.getItem<Meeting>(`meetings/${id}`)
+  if (!meeting) throw new Error(`no local meeting row for ${id}`)
+  await storage.setItem(`meetings/${id}`, { ...meeting, status: 'failed', failedStage, errorMessage: 'boom' })
+}
+
 describe('POST /api/meetings/:id/transcribe', () => {
   it('transcribes uploaded audio and advances the meeting', async () => {
     const meeting = await uploadedMeeting()
@@ -203,6 +212,22 @@ describe('recovery', () => {
     await backdateUpdatedAt(meeting.id, 61_000)
     const { meeting: recovered } = await transcribe(meeting.id)
     expect(recovered.status).toBe('summarizing')
+  })
+
+  it('explains that a SUMMARISATION failure needs the other route, not "no audio"', async () => {
+    // failedStage disambiguates exactly this case: the transcript (and the
+    // audio that produced it) is completely intact when summarisation is
+    // what failed. Saying "no audio ready" would be actively wrong, not just
+    // unhelpful — it implies retrying transcription is the fix.
+    const meeting = await uploadedMeeting()
+    await transcribe(meeting.id)
+    await markFailedAt(meeting.id, 'summarization')
+
+    const res = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.message).toMatch(/extraction|summar/i)
+    expect(body.message).not.toMatch(/no audio/)
   })
 
   it('refuses when the stored audio no longer matches what was verified', async () => {

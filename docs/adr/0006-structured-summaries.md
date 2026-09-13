@@ -392,6 +392,46 @@ sent without a real transaction) — verified by reading the code rather than
 by an automated test, since reproducing the exact interleaving deterministically
 would need mocking this codebase's test setup does not have.
 
+`occurs()`'s mixed-script fix from the previous round was itself incomplete:
+deciding the matching rule from the QUOTE's overall script still fails a
+quote that mixes an entirely fabricated Latin phrase with a real CJK one in
+the SAME string ("approved by everyone in 東京") — the quote contains a CJK
+character, so the whole thing fell back to substring matching, letting the
+Latin portion land mid-word again. There is no single "which script" answer
+for a string that genuinely mixes scripts; the fix tokenizes instead —
+whitespace-delimited words for scripts that use them, but each no-space-script
+character as its own token — and checks whether the quote's token sequence
+appears as a contiguous run in the segment's, which handles a pure-Latin
+quote, a pure-CJK quote, and a mixed one identically, without a branch. This
+also subsumes the previous round's separate whitespace-stripping fix for
+no-space-script punctuation differences: two token sequences that differ only
+in how many CJK characters a since-removed comma stood between are identical
+once tokenized, with no separate handling needed.
+
+Two more `normalise()`/`attestQuote` gaps in the same area: canonically
+equivalent accented text ("café" as one precomposed character vs. as a base
+letter plus a separate combining accent) normalised differently, since the
+old filter kept letters and numbers but dropped combining marks as if they
+were punctuation — now NFC-normalised first and `\p{M}` kept in the filter.
+And the fragment/full-match length floor counted `.length` (UTF-16 code
+units), so a single supplementary-plane character — one code point, two
+UTF-16 units — could pass the 2-character full-match floor as if it were two
+characters; now counted by spreading the string (code points), matching how
+`plan.ts` already counts for the same reason.
+
+The local transcript driver was missing the same `serialize()` queueing
+`summaries-local.ts` already has: `summarize.post.ts` reads a meeting's
+transcript before claiming it, so a concurrent `replaceForMeeting` (a retried
+or re-run transcription for the same meeting) racing that read was a real,
+not hypothetical, way to observe a torn write. Now queued per meeting id like
+every other local driver.
+
+`transcribe.post.ts`'s generic "no audio ready" refusal was actively wrong,
+not just unhelpful, for a meeting whose `failedStage` is `summarization`: that
+failure leaves the transcript — and the audio that produced it — completely
+intact, so the message now says which route actually needs retrying instead
+of implying transcription is the fix.
+
 ## Consequences
 
 - A long meeting costs several sequential, PACED requests — not merely

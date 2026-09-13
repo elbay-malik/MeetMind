@@ -103,6 +103,42 @@ describe('attestQuote', () => {
     expect(attestQuote('disapproved by everyone', 0, mixed)).toMatchObject({ segmentIdx: 0 })
   })
 
+  it('holds the Latin portion of a MIXED-SCRIPT QUOTE to a word boundary too, not just an all-Latin one', () => {
+    // Deciding "which script" from the quote as a whole is not enough either:
+    // a single fabricated quote can itself mix an entirely invented Latin
+    // phrase with a real CJK one. "approved by everyone in 東京" must still
+    // fail on its Latin portion even though the same quote also contains CJK
+    // characters that genuinely occur in the segment.
+    const mixed = [seg(0, 0, 'The proposal was disapproved by everyone in 東京.')]
+    expect(attestQuote('approved by everyone in 東京', 0, mixed)).toBeNull()
+    expect(attestQuote('disapproved by everyone in 東京', 0, mixed)).toMatchObject({ segmentIdx: 0 })
+  })
+
+  it('treats canonically equivalent accented text the same, precomposed or not', () => {
+    // Cafe/e-acute can be written as one precomposed character (U+00E9) or
+    // as a base letter plus a separate combining acute accent (U+0065
+    // U+0301) -- the same text, but a letters-and-numbers-only filter drops
+    // the second form's accent as if it were punctuation while leaving the
+    // first form's intact, so otherwise-identical text would fail to match.
+    // .normalize() constructs each form explicitly, rather than depending on
+    // which form this file's own text happens to be saved as.
+    const text = 'Caf\u00e9 est pr\u00eat pour la r\u00e9union.'
+    const precomposed = [seg(0, 0, text.normalize('NFC'))]
+    expect(attestQuote(text.normalize('NFD'), 0, precomposed)).toMatchObject({ segmentIdx: 0 })
+    const decomposed = [seg(0, 0, text.normalize('NFD'))]
+    expect(attestQuote(text.normalize('NFC'), 0, decomposed)).toMatchObject({ segmentIdx: 0 })
+  })
+
+  it('counts the fragment/full-match floor by Unicode code point, not UTF-16 code unit', () => {
+    // A single supplementary-plane character is ONE code point but TWO
+    // UTF-16 code units (a surrogate pair) -- `.length` alone would let a
+    // single such character slip through the 2-character full-match floor
+    // as though it were two characters.
+    const oneChar = String.fromCodePoint(0x20000)
+    const segment = [seg(0, 0, oneChar)]
+    expect(attestQuote(oneChar, 0, segment)).toBeNull()
+  })
+
   it('refuses quotes too short to match anything but by accident', () => {
     expect(attestQuote('the', 0, segments)).toBeNull()
     expect(attestQuote('', 0, segments)).toBeNull()
