@@ -22,8 +22,15 @@ const CLAIM_LEASE_MS = 3 * 60 * 60_000
  * How long a failure must sit before it can be retried. Extraction is several
  * sequential provider requests, not one, so an instant retry after a failure
  * re-hammers the provider with the whole run again immediately.
+ *
+ * A fixed ceiling, not an exact wait: Groq can return a `Retry-After` longer
+ * than this on a 429 (shown to the user in errorMessage), and this route does
+ * not currently carry that specific value across requests to honour it
+ * exactly — doing so needs a persisted per-failure deadline, which is a
+ * bigger change than this fixed cooldown. 60s comfortably covers a per-minute
+ * throttle window resetting, which is what Groq's quota errors are.
  */
-const RETRY_COOLDOWN_MS = 30_000
+const RETRY_COOLDOWN_MS = 60_000
 
 /**
  * A transcript needing more sequential requests than this is rejected before
@@ -65,6 +72,12 @@ export default defineEventHandler(async (event): Promise<{
   if (PAST_SUMMARY.includes(meeting.status)) {
     const stored = await summaries.getForMeeting(id)
     if (stored) return { meeting, summary: stored }
+    // `ready` with no stored summary is a broken invariant, not a live race
+    // to arbitrate — nothing in this route ever sets a meeting BACK to
+    // `ready` except the write immediately after the summary that makes it
+    // true, so falling through here (rather than returning) means claim()
+    // below needs to accept `ready` as something worth reclaiming, not that
+    // any other caller could legitimately be mid-flight against it.
   }
 
   const segments = await useTranscriptRepository(event).listForMeeting(id)
@@ -89,9 +102,7 @@ export default defineEventHandler(async (event): Promise<{
     if (!current) throw notFound('Meeting not found')
     const stored = await summaries.getForMeeting(id)
     if (stored && PAST_SUMMARY.includes(current.status)) return { meeting: current, summary: stored }
-    throw conflict(current.status === 'indexing'
-      ? 'Summarisation is already running for this meeting'
-      : `Meeting is ${current.status}; it has no transcript ready to summarise`)
+    throw conflict(describeWhyNotClaimable(current))
   }
 
   // Fences every write below against a later stale-lease reclaim of THIS same
@@ -180,6 +191,13 @@ async function claim(
   const patch = { status: 'indexing' as const, errorMessage: null, failedStage: null }
   if (meeting.status === 'summarizing') return repo.claim(meeting.id, 'summarizing', patch)
 
+  // Only reached when the caller already confirmed no summary row exists
+  // (see PAST_SUMMARY above) — a healthy `ready` meeting never gets here,
+  // since that branch returns early. Nothing else can ever put a meeting
+  // back in `ready`, so no concurrent worker can be legitimately mid-flight
+  // against it; this is a repair, not a race to arbitrate.
+  if (meeting.status === 'ready') return repo.claim(meeting.id, 'ready', patch)
+
   const staleSince = Date.now() - CLAIM_LEASE_MS
   if (meeting.status === 'indexing' && new Date(meeting.updatedAt).getTime() < staleSince) {
     return repo.claim(meeting.id, 'indexing', patch)
@@ -193,4 +211,16 @@ async function claim(
     return repo.claim(meeting.id, 'failed', patch)
   }
   return null
+}
+
+/** An accurate reason claim() refused, instead of a generic one that reads as
+ * "there is nothing to summarise" even when the real cause is a cooldown. */
+function describeWhyNotClaimable(current: Meeting): string {
+  if (current.status === 'indexing') return 'Summarisation is already running for this meeting'
+  if (current.status === 'failed' && current.failedStage === 'summarization') {
+    const remainingMs = RETRY_COOLDOWN_MS - (Date.now() - new Date(current.updatedAt).getTime())
+    const remainingSec = Math.max(1, Math.ceil(remainingMs / 1000))
+    return `The last extraction failed recently; wait ${remainingSec}s before retrying`
+  }
+  return `Meeting is ${current.status}; it has no transcript ready to summarise`
 }

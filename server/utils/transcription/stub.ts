@@ -1,5 +1,18 @@
 import type { TranscribeInput, TranscribeResult, Transcriber } from './transcriber'
+import { TranscriptionError } from './transcriber'
 import { normalizeSegments } from './normalize'
+
+let quotaFailureUsed = false
+
+export interface StubTranscriberOptions {
+  /**
+   * Test-only: throw a 429 exactly once (module-lifetime, not per-instance —
+   * a fresh transcriber is built per request), the same shape a real Groq
+   * quota exhaustion takes, so tests can prove the cooldown-gated retry path
+   * over the real HTTP route without credentials. Never set outside tests.
+   */
+  failWithQuotaOnce?: boolean
+}
 
 /**
  * Stands in for a speech-to-text provider when no API key is configured, so
@@ -9,11 +22,16 @@ import { normalizeSegments } from './normalize'
  * Output is derived from the audio's length and bytes, so it is deterministic
  * for a given file and obviously not a real transcript to anyone reading it.
  */
-export function createStubTranscriber(): Transcriber {
+export function createStubTranscriber(options: StubTranscriberOptions = {}): Transcriber {
   return {
     kind: 'stub',
 
     async transcribe(input: TranscribeInput): Promise<TranscribeResult> {
+      if (options.failWithQuotaOnce && !quotaFailureUsed) {
+        quotaFailureUsed = true
+        throw new TranscriptionError('Transcription quota is exhausted for now (stub-injected for testing).', 429, true)
+      }
+
       // 16 kHz mono Opus at 16 kbps, the format Phase 3 produces: 2 kB ≈ 1 s.
       const durationSec = Math.max(1, Math.round(input.bytes.byteLength / 2000))
       const segmentCount = Math.min(12, Math.max(1, Math.round(durationSec / 5)))

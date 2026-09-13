@@ -23,6 +23,11 @@ export default defineNuxtConfig({
     // drops it over the real HTTP path rather than only in a unit test that
     // calls reconcile() directly. Never set outside tests.
     summaryStubCanary: false, // NUXT_SUMMARY_STUB_CANARY
+    // Test-only: makes the stub transcriber fail once with a 429, the same
+    // shape a real Groq quota exhaustion takes, so tests can prove the
+    // cooldown-gated retry path over the real HTTP route rather than only by
+    // reasoning about the code. Never set outside tests.
+    transcribeStubQuotaFail: false, // NUXT_TRANSCRIBE_STUB_QUOTA_FAIL
     public: {},
   },
   routeRules: {

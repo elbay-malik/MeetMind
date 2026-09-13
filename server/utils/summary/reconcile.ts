@@ -10,8 +10,14 @@ import { actionItemSchema, decisionSchema, type WireSummary } from '#shared/sche
  * language, so restricting this to a-z silently destroyed every non-Latin
  * transcript: Japanese and Cyrillic collapsed to an empty string and were
  * rejected outright, and accented Latin was mangled into a different phrase.
+ *
+ * Exported so every place that needs to check "does this text support that
+ * quote" — reconciliation itself, and the e2e/driver checks that verify its
+ * output over the real route — uses the identical rule rather than a raw
+ * substring check that would reject a validly-stored, punctuation-normalized
+ * citation.
  */
-function normalise(text: string): string {
+export function normalise(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
 

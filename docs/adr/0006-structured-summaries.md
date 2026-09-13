@@ -216,6 +216,34 @@ away but does not delete the summary itself). A concurrent caller hitting
 that window would have been handed the stale summary instead of a 409. Now
 only `ready` counts.
 
+`ready` with no stored summary row is a different, rarer shape: not a race
+between two live callers, but a broken invariant (the row deleted some other
+way; nothing in this app does that today). The two routes used to treat it as
+a dead end — `claim()` never accepted `ready` as a state worth reclaiming, so
+retrying just produced a confusing "it has no transcript ready to summarise"
+conflict, forever. Nothing else can ever put a meeting *back* in `ready`
+except the write immediately after a real summary is stored, so reclaiming a
+`ready`-with-no-summary row cannot collide with another worker's legitimate
+progress — it is a repair, not a race to arbitrate. Both routes' generic
+conflict message had the same "dead end" shape for a cooldown refusal: it read
+as "there is nothing to summarise/transcribe" when the real, temporary reason
+was the cooldown, exactly while the progress page's retry button is showing.
+Both now say which it is, with the remaining wait.
+
+A retryable Groq 429 during transcription used to reset the meeting straight
+to `uploaded` — the friendly, no-cooldown reset a transient blip deserves.
+`uploaded` has no cooldown gate at all, so a client retrying immediately could
+hammer the very quota that just refused it, with no backoff whatsoever (worse
+than the flat cooldown summarisation's own quota errors already had). A 429
+now routes through `failed` instead, purely to get the cooldown; a transient
+storage/network blip still gets the friendlier `uploaded` reset. Neither
+cooldown is an exact wait — Groq's `Retry-After` can ask for longer than the
+fixed ceiling both routes use, and neither currently carries that specific
+number across requests to honour it exactly. Bumped to 60s (was 30s), which
+comfortably covers a per-minute throttle window resetting; closing the gap
+completely needs a persisted per-failure deadline, which is more machinery
+than this fixed cooldown for a bounded, worst-case-one-extra-retry problem.
+
 ## Consequences
 
 - A long meeting costs several sequential requests, so extraction takes longer
@@ -261,3 +289,13 @@ only `ready` counts.
   only by `tests/e2e/summary-api.spec.ts`) injects one deliberately unsupported
   citation so the drop path is exercised over the real route; without it, a
   disabled reconciliation check would go unnoticed by every credential-free test.
+  The stub transcriber has the equivalent for quota exhaustion
+  (`NUXT_TRANSCRIBE_STUB_QUOTA_FAIL`, its own isolated spec file since it fails
+  exactly once for the whole process — sharing a file with tests that expect a
+  normal transcription would break them).
+- `reconcile()`'s `normalise()` is exported and reused everywhere a check needs
+  to know "does this text support that quote" — the e2e citation assertions and
+  `drive-upload.mjs`'s standalone one (duplicated there by hand, since it is a
+  plain Node script, not a place a TypeScript server module can be imported
+  into). A raw case-insensitive substring check accepts less than reconciliation
+  does, so it can reject a citation that was correctly stored.

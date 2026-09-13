@@ -24,6 +24,23 @@ const fail = (msg) => {
   process.exitCode = 1
 }
 
+// Same normalization server/utils/summary/reconcile.ts's `normalise` uses —
+// letters/numbers in any script, case-insensitive. Duplicated here (kept in
+// sync by hand) since this is a plain Node script, not a place that can
+// import a TypeScript server module.
+const normalise = text => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+
+/** Poll the meeting's real status via the API instead of a transient UI label. */
+async function waitForMeetingStatus(meetingId, predicate, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const { meeting } = await (await fetch(`${baseURL}/api/meetings/${meetingId}`)).json()
+    if (predicate(meeting.status)) return meeting
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for meeting ${meetingId} status`)
+    await new Promise(resolve => setTimeout(resolve, 500))
+  }
+}
+
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {}),
@@ -132,10 +149,14 @@ try {
   }
   console.log('segments are ordered, gapless and non-empty')
 
-  // The stage list must not claim more or less than the truth. Scope to the
-  // pipeline card: the transcript is also an ordered list.
+  // The stage list must not claim more or less than the truth. Scoped to the
+  // FIRST <ol> specifically — the pipeline card, which renders before the
+  // transcript card in the DOM — not every <ol> on the page: the transcript
+  // is also an ordered list, and a real transcript segment containing the
+  // word "Indexing" would otherwise fail this for a reason that has nothing
+  // to do with the pipeline.
   const STAGES = ['Audio uploaded', 'Transcribed', 'Summarized']
-  const listText = await page.locator('ol li').allInnerTexts()
+  const listText = await page.locator('ol').first().locator('li').allInnerTexts()
   const stages = STAGES.filter(label => listText.some(t => t.includes(label)))
   if (stages.length !== STAGES.length) {
     fail(`pipeline is missing stages: ${STAGES.filter(l => !stages.includes(l)).join(', ')}`)
@@ -166,23 +187,29 @@ try {
   const summaryButton = page.getByRole('button', { name: /Extract decisions/ })
   await summaryButton.waitFor({ timeout: 10_000 })
   await summaryButton.click()
-  await page.waitForFunction(
-    () => !document.body.textContent.includes('Extracting decisions'),
-    { timeout: 120_000 },
-  )
+  // Polling the actual meeting status rather than a transient UI label: the
+  // "Extracting decisions" text can be briefly absent right after the click,
+  // before Vue has even rendered it — a predicate that only checks for its
+  // ABSENCE can pass on that very first poll, before extraction has even
+  // started, let alone finished.
+  await waitForMeetingStatus(meetingId, s => s === 'ready' || s === 'failed', 120_000)
 
   const { summary } = await (await fetch(`${baseURL}/api/meetings/${meetingId}/summary`)).json()
   if (!summary) fail('extraction produced no summary')
   else {
     console.log(`summary stored: ${summary.decisions.length} decisions, ${summary.actionItems.length} action items`)
 
-    // Every citation must point at a segment that exists and quote it.
+    // Every citation must point at a segment that exists and quote it. Same
+    // normalization reconciliation itself checks against (letters/numbers in
+    // any script, case-insensitive) — a raw substring check would reject a
+    // validly-stored citation that only differs from the segment by
+    // punctuation.
     const { segments: lines } = await (await fetch(`${baseURL}/api/meetings/${meetingId}/transcript`)).json()
     const byIdx = new Map(lines.map(l => [l.idx, l]))
     for (const item of [...summary.decisions, ...summary.actionItems]) {
       const cited = byIdx.get(item.segmentIdx)
       if (!cited) fail(`an item cites segment ${item.segmentIdx}, which does not exist`)
-      else if (!cited.text.toLowerCase().includes(item.quote.toLowerCase().slice(0, 20))) {
+      else if (!normalise(cited.text).includes(normalise(item.quote).slice(0, 20))) {
         fail(`an item quotes text that segment ${item.segmentIdx} does not contain`)
       }
     }

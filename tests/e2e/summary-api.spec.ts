@@ -3,8 +3,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { createStorage } from 'unstorage'
+import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
+import { normalise } from '../../server/utils/summary/reconcile'
 import type { CreateMeetingResponse, Meeting, MeetingSummary } from '../../shared/types/meeting'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
@@ -49,6 +52,21 @@ async function transcribedMeeting(): Promise<Meeting> {
 const summarize = (id: string) =>
   $fetch<{ meeting: Meeting, summary: MeetingSummary }>(`/api/meetings/${id}/summarize`, { method: 'POST' })
 
+/** Reach past the repository interface to simulate the row being physically
+ * gone — there is no application flow that deletes a summary directly. */
+async function deleteStoredSummary(meetingId: string): Promise<void> {
+  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+  await storage.removeItem(`summaries/${meetingId}`)
+}
+
+/** Simulate the retry cooldown having elapsed, without a real 60s wait. */
+async function backdateUpdatedAt(id: string, msAgo: number): Promise<void> {
+  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+  const meeting = await storage.getItem<Meeting>(`meetings/${id}`)
+  if (!meeting) throw new Error(`no local meeting row for ${id}`)
+  await storage.setItem(`meetings/${id}`, { ...meeting, updatedAt: new Date(Date.now() - msAgo).toISOString() })
+}
+
 describe('POST /api/meetings/:id/summarize', () => {
   it('extracts a summary and advances the meeting to ready', async () => {
     const meeting = await transcribedMeeting()
@@ -77,7 +95,10 @@ describe('POST /api/meetings/:id/summarize', () => {
       const cited = byIdx.get(item.segmentIdx)
       expect(cited, `cited segment ${item.segmentIdx} does not exist`).toBeDefined()
       expect(item.startMs).toBe(cited!.startMs)
-      expect(cited!.text.toLowerCase()).toContain(item.quote.toLowerCase().slice(0, 20))
+      // Same rule reconciliation itself checks against — a raw substring
+      // check would reject a validly-stored quote that only differs from the
+      // segment by punctuation (reconciliation normalizes both sides first).
+      expect(normalise(cited!.text)).toContain(normalise(item.quote).slice(0, 20))
     }
   })
 
@@ -164,6 +185,46 @@ describe('POST /api/meetings/:id/summarize', () => {
 
     const res = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
     expect(res.status).toBe(409)
+  })
+
+  it('repairs a ready meeting whose summary row is missing rather than getting stuck', async () => {
+    // No route in this app ever deletes a summary row; this simulates the row
+    // being gone some other way (manual intervention, a bug in something
+    // else) to prove `ready` isn't a dead end once that happens: nothing else
+    // can ever put a meeting back in `ready`, so reclaiming it here cannot
+    // collide with another worker's legitimate progress.
+    const meeting = await transcribedMeeting()
+    await summarize(meeting.id)
+    await deleteStoredSummary(meeting.id)
+
+    const { summary: stillMissing } = await $fetch<{ summary: MeetingSummary | null }>(
+      `/api/meetings/${meeting.id}/summary`,
+    )
+    expect(stillMissing).toBeNull()
+
+    const { meeting: repaired, summary } = await summarize(meeting.id)
+    expect(repaired.status).toBe('ready')
+    expect(summary.summary).not.toBe('')
+  })
+
+  it('explains a cooldown-refused retry instead of claiming there is no transcript', async () => {
+    // The generic conflict message used to say "it has no transcript ready to
+    // summarise" even when the transcript was perfectly fine and the real
+    // reason was the cooldown — exactly the case the progress page's "Try
+    // extraction again" button reaches for a summarization failure.
+    const meeting = await transcribedMeeting()
+    const repo = createLocalMeetingRepository({ dataDir })
+    await repo.update(meeting.id, { status: 'failed', failedStage: 'summarization', errorMessage: 'boom' })
+
+    const res = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.message).toMatch(/wait \d+s/)
+    expect(body.message).not.toMatch(/no transcript/)
+
+    await backdateUpdatedAt(meeting.id, 61_000)
+    const { meeting: recovered } = await summarize(meeting.id)
+    expect(recovered.status).toBe('ready')
   })
 
   it('404s for unknown and malformed ids', async () => {

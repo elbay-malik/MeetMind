@@ -22,7 +22,8 @@ export function useTranscriber(event: H3Event): Transcriber {
   const groqReady = requireAllOrNone('Groq', { NUXT_GROQ_API_KEY: config.groqApiKey })
   const transcriber = groqReady
     ? createGroqTranscriber({ apiKey: config.groqApiKey })
-    : createStubTranscriber()
+    // Truthy, not === true: destr parses '1' to the number 1, not a boolean.
+    : createStubTranscriber({ failWithQuotaOnce: !!config.transcribeStubQuotaFail })
   announce(transcriber.kind)
   return transcriber
 }

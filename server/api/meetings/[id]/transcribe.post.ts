@@ -17,9 +17,12 @@ const CLAIM_LEASE_MS = 15 * 60_000
 /**
  * How long a failure must sit before it can be retried. Matches
  * summarize.post.ts's reasoning: an instant retry after a failure re-hammers
- * whatever just failed (the provider, or storage) immediately again.
+ * whatever just failed (the provider, or storage) immediately again. Same
+ * fixed-ceiling caveat as there: a real Groq 429 can ask for longer than this
+ * via `Retry-After`, which this route does not currently carry across
+ * requests to honour exactly.
  */
-const RETRY_COOLDOWN_MS = 30_000
+const RETRY_COOLDOWN_MS = 60_000
 
 /** Statuses that mean transcription has already happened. */
 const PAST_TRANSCRIPTION = ['summarizing', 'indexing', 'ready']
@@ -53,9 +56,7 @@ export default defineEventHandler(async (event): Promise<{
     if (PAST_TRANSCRIPTION.includes(current.status)) {
       return { meeting: current, segments: await transcripts.listForMeeting(id) }
     }
-    throw conflict(current.status === 'transcribing'
-      ? 'Transcription is already running for this meeting'
-      : `Meeting is ${current.status}; it has no audio ready to transcribe`)
+    throw conflict(describeWhyNotClaimable(current))
   }
 
   // Fences the writes below against a later stale-lease reclaim of THIS same
@@ -126,10 +127,18 @@ export default defineEventHandler(async (event): Promise<{
     // worse mistake is parking a perfectly good meeting on `failed`, which
     // nothing can move again.
     const retryable = transcription ? transcription.retryable : true
+    // A quota exhaustion (429) is retryable, but resetting straight to
+    // `uploaded` — the friendly reset a transient blip gets — has no cooldown
+    // gate at all, since `uploaded` is immediately reclaimable. That would let
+    // a client hammer the very quota that just refused it. Route it through
+    // `failed` instead, same as a non-retryable failure, purely to get the
+    // cooldown; failedStage still says which stage it was so retrying goes
+    // through the right route once the cooldown clears.
+    const quotaExceeded = transcription?.statusCode === 429
     await repo.claim(id, 'transcribing', {
-      status: retryable ? 'uploaded' : 'failed',
+      status: (retryable && !quotaExceeded) ? 'uploaded' : 'failed',
       errorMessage: message,
-      failedStage: retryable ? null : 'transcription',
+      failedStage: (retryable && !quotaExceeded) ? null : 'transcription',
     }, fence)
     throw createError({
       statusCode: transcription?.statusCode ?? 500,
@@ -170,4 +179,16 @@ async function claim(
     return repo.claim(meeting.id, 'failed', patch)
   }
   return null
+}
+
+/** An accurate reason claim() refused, instead of a generic one that reads as
+ * "there is no audio" even when the real cause is a cooldown. */
+function describeWhyNotClaimable(current: Meeting): string {
+  if (current.status === 'transcribing') return 'Transcription is already running for this meeting'
+  if (current.status === 'failed' && current.failedStage === 'transcription') {
+    const remainingMs = RETRY_COOLDOWN_MS - (Date.now() - new Date(current.updatedAt).getTime())
+    const remainingSec = Math.max(1, Math.ceil(remainingMs / 1000))
+    return `The last transcription attempt failed recently; wait ${remainingSec}s before retrying`
+  }
+  return `Meeting is ${current.status}; it has no audio ready to transcribe`
 }

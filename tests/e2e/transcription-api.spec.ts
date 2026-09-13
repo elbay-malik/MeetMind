@@ -45,7 +45,7 @@ const transcribe = (id: string) =>
   $fetch<{ meeting: Meeting, segments: TranscriptSegment[] }>(`/api/meetings/${id}/transcribe`, { method: 'POST' })
 
 /**
- * Simulate the retry cooldown having elapsed, without a real 30s wait in the
+ * Simulate the retry cooldown having elapsed, without a real 60s wait in the
  * suite. Goes around the repository's own `update`/`claim`, which always
  * stamp `updatedAt` with the current time — exactly the field this has to
  * override.
@@ -174,7 +174,7 @@ describe('recovery', () => {
     // (Past the retry cooldown — that is a separate concern, tested below.)
     await writeFile(path, audioBytes)
     await writeFile(`${path}.meta`, meta)
-    await backdateUpdatedAt(meeting.id, 31_000)
+    await backdateUpdatedAt(meeting.id, 61_000)
     const { meeting: recovered, segments } = await transcribe(meeting.id)
     expect(recovered.status).toBe('summarizing')
     expect(recovered.errorMessage).toBeNull()
@@ -200,7 +200,7 @@ describe('recovery', () => {
     const { meeting: stillFailed } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
     expect(stillFailed.status).toBe('failed')
 
-    await backdateUpdatedAt(meeting.id, 31_000)
+    await backdateUpdatedAt(meeting.id, 61_000)
     const { meeting: recovered } = await transcribe(meeting.id)
     expect(recovered.status).toBe('summarizing')
   })
