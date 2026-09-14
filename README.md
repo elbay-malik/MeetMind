@@ -32,7 +32,8 @@ uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
 │   (one request per meeting; segments in integer ms)         │
 │ Groq gpt-oss ─► decisions & action items, each citing a     │
 │   transcript segment that is verified before storage        │
-│ gemini-embedding-001 (768d) ─► Supabase pgvector (HNSW)     │
+│ gemini-embedding-2 (768d) ─► Supabase pgvector; questions   │
+│   answered by gpt-oss, citations verified like summaries    │
 └───────────────┬──────────────────────────────────────────────┘
                 ▼
    Transcript ↔ player over a byte-range route (click-to-seek both ways),
@@ -146,15 +147,16 @@ quota; the UI reports it as such.
 
 ## Roadmap
 
-Phases 0-6 of the [playbook](docs/PLAYBOOK.md) are done: scaffold, FFmpeg spike,
+Phases 0-7 of the [playbook](docs/PLAYBOOK.md) are done: scaffold, FFmpeg spike,
 in-browser extraction, upload & storage, transcription, the transcript viewer with
-click-to-seek playback, and structured summaries with decisions and action items.
+click-to-seek playback, structured summaries with decisions and action items, and
+semantic Q&A over a meeting with verified, clickable citations.
 Several playbook instructions were changed after re-checking their premises — see
 [ADR-0004](docs/adr/0004-transcription.md),
-[ADR-0005](docs/adr/0005-audio-playback-and-transcript-sync.md) and
-[ADR-0006](docs/adr/0006-structured-summaries.md). Next: waveform peaks computed
-during extraction, pgvector semantic Q&A, archive & cross-meeting search, rate
-limiting, Cloudflare Workers.
+[ADR-0005](docs/adr/0005-audio-playback-and-transcript-sync.md),
+[ADR-0006](docs/adr/0006-structured-summaries.md) and
+[ADR-0007](docs/adr/0007-semantic-qa.md). Next: archive & cross-meeting search,
+pipeline orchestration, rate limiting, Cloudflare Workers.
 
 ## License
 

@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { AwsClient } from 'aws4fetch'
+import { createGeminiEmbedder, GEMINI_EMBEDDING_MODEL } from '../../server/utils/qa/gemini'
 import { createGroqTranscriber } from '../../server/utils/transcription/groq'
 import { meetingSchema, transcriptSegmentSchema } from '../../shared/schemas/meeting'
 import { MAX_AUDIO_BYTES } from '../../shared/utils/meeting'
@@ -249,5 +250,47 @@ describe.skipIf(!has('NUXT_GROQ_API_KEY') || !probe)('Groq Whisper', () => {
       expect(segment.endMs).toBeGreaterThanOrEqual(segment.startMs)
     }
     console.info(`[verify] transcribed into ${result.segments.length} segments, duration ${result.durationSec}s`)
+  })
+})
+
+// ------------------------------------------------------------- Gemini embeddings
+describe.skipIf(!has('NUXT_GEMINI_API_KEY'))('Gemini embeddings', () => {
+  // Nothing in ADR-0007's driver has run against the real API: the request
+  // shape comes from the API reference, and three of its facts could only be
+  // confirmed with a key. These are those three.
+  const embedder = () => createGeminiEmbedder({ apiKey: process.env.NUXT_GEMINI_API_KEY! })
+  const cosine = (a: number[], b: number[]) => {
+    const dot = a.reduce((sum, v, i) => sum + v * b[i]!, 0)
+    return dot / Math.sqrt(a.reduce((s, v) => s + v * v, 0) * b.reduce((s, v) => s + v * v, 0))
+  }
+
+  it('honours embedContentConfig.outputDimensionality, returning 768 values rather than the 3,072 default', async () => {
+    // assertEmbedding inside the driver throws on any other length, so this
+    // passing at all proves the field name is right.
+    const [vector] = await embedder().embedDocuments(['We agreed to ship the billing change on Friday.'])
+    expect(vector).toHaveLength(768)
+  })
+
+  it('returns unit-length vectors at 768 dimensions, as gemini-embedding-2 is documented to', async () => {
+    // gemini-embedding-001 would need the caller to re-normalize a truncated
+    // vector; ADR-0007 chose this model partly because it does not.
+    const [vector] = await embedder().embedDocuments(['The marketing budget is being cut next quarter.'])
+    const norm = Math.sqrt(vector!.reduce((sum, v) => sum + v * v, 0))
+    console.info(`[verify] ${GEMINI_EMBEDDING_MODEL} norm at 768d: ${norm.toFixed(6)}`)
+    expect(norm).toBeCloseTo(1, 3)
+  })
+
+  it('ranks a question closer to the passage that answers it than to an unrelated one', async () => {
+    // The task prefixes are what put queries and documents in the same space.
+    const client = embedder()
+    const [budget, hiring] = await client.embedDocuments([
+      'We agreed to cut the marketing budget by twenty percent next quarter.',
+      'Priya will interview two candidates for a design role.',
+    ])
+    const question = await client.embedQuery('What did we decide about marketing spend?')
+    const toBudget = cosine(question, budget!)
+    const toHiring = cosine(question, hiring!)
+    console.info(`[verify] similarity: answering passage ${toBudget.toFixed(3)}, unrelated ${toHiring.toFixed(3)}`)
+    expect(toBudget).toBeGreaterThan(toHiring)
   })
 })
