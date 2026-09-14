@@ -3,8 +3,9 @@ import { reconcile } from './reconcile'
 import { SummarizationError, type SummarizeInput, type Summarizer } from './summarizer'
 
 /**
- * A quote that cannot occur in any real transcript: `attestQuote`'s search is
- * substring-based, and no meeting says this. Used only when the canary option
+ * A quote that cannot occur in any real transcript: `attestQuote` compares
+ * token sequences (see reconcile.ts's tokenize), and no meeting says this.
+ * Used only when the canary option
  * is on, to prove reconciliation actually rejects an unsupported citation
  * through the real HTTP path — the stub's own quotes are always real, since
  * they are lifted verbatim from the transcript, so without this there is

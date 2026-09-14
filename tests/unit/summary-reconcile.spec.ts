@@ -326,4 +326,23 @@ describe('reconcile', () => {
     expect(result.decisions).toEqual([])
     expect(result.droppedDecisions).toBe(1)
   })
+
+  it('counts de-duplicated repeats as dropped, so kept + dropped accounts for everything sent', () => {
+    // Chunk boundaries make the same decision arrive twice, which the dedupe
+    // above is for — but it used to `continue` without incrementing, so the
+    // counters silently failed to add up precisely in the case the code says
+    // is common. Anything reporting "N of M dropped" was wrong there.
+    const decision = { quote: 'ship the billing change', segmentIdx: 1, decision: 'Ship Friday' }
+    const action = { quote: 'draft the migration plan', segmentIdx: 2, task: 'Draft the plan' }
+    const result = reconcile({
+      summary: 'x',
+      decisions: [decision, { ...decision }, { ...decision }],
+      actionItems: [action, { ...action }],
+    }, segments)
+
+    expect(result.decisions).toHaveLength(1)
+    expect(result.actionItems).toHaveLength(1)
+    expect(result.decisions.length + result.droppedDecisions).toBe(3)
+    expect(result.actionItems.length + result.droppedActionItems).toBe(2)
+  })
 })

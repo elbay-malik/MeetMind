@@ -28,11 +28,29 @@ export default defineEventHandler(async (event): Promise<{ meeting: Meeting }> =
   const refusal = inspectStoredAudio(meeting, object)
   if (refusal) throw conflict(await failMeetingUpload(store, repo, meeting, refusal))
 
-  const updated = await repo.update(id, {
+  // Claim-gated on the status this handler already checked above, rather than a
+  // plain update: between that read and this write another caller can fail the
+  // same meeting (failMeetingUpload, from a concurrent complete), and an
+  // unconditional write would resurrect it as `uploaded` with the failure's
+  // errorMessage cleared and its audio already deleted.
+  //
+  // failedStage is set explicitly, not left alone: the pairing the database
+  // enforces is a property of the resulting ROW, so moving `status` out of
+  // `failed` without clearing the stage is exactly the combination
+  // `meetings_failed_stage_matches_status` refuses. Reachable only via the race
+  // above today, which is why it went unnoticed — the repository's patch-level
+  // validation cannot see it, since this patch is perfectly consistent on its own.
+  const updated = await repo.claim(id, 'pending_upload', {
     status: 'uploaded',
     uploadedAt: new Date().toISOString(),
     errorMessage: null,
+    failedStage: null,
   })
-  if (!updated) throw notFound('Meeting not found')
+  if (!updated) {
+    const current = await repo.get(id)
+    if (!current) throw notFound('Meeting not found')
+    if (current.status === 'uploaded') return { meeting: current }
+    throw conflict(`Meeting is ${current.status}; upload can no longer be completed`)
+  }
   return { meeting: updated }
 })

@@ -197,7 +197,11 @@ async function claim(
   // or provider call that just failed.
   const cooledDown = Date.now() - new Date(meeting.updatedAt).getTime() >= RETRY_COOLDOWN_MS
   if (meeting.status === 'failed' && meeting.failedStage === 'transcription' && cooledDown) {
-    return repo.claim(meeting.id, 'failed', patch)
+    // Fenced on the same updatedAt the cooldown was judged against, like the
+    // stale-lease branch above: without it, a reclaim that lands after ANOTHER
+    // caller has already retried and failed again still matches `from` and
+    // skips the new failure's cooldown entirely.
+    return repo.claim(meeting.id, 'failed', patch, meeting.updatedAt)
   }
   return null
 }

@@ -220,7 +220,14 @@ export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Re
     // The same decision restated at the same moment is one decision. Chunked
     // transcripts make this common at boundaries.
     const key = `${attested.segmentIdx}:${normalise(text)}`
-    if (seenDecisions.has(key)) continue
+    // Counted as dropped, because it was: `kept + dropped` is meant to account
+    // for everything the model sent, and skipping silently here made it
+    // under-report exactly when chunk boundaries produce the duplicates the
+    // comment above says are common.
+    if (seenDecisions.has(key)) {
+      droppedDecisions++
+      continue
+    }
     seenDecisions.add(key)
     decisions.push({ idx: 0, decision: text, ...attested })
   }
@@ -234,7 +241,10 @@ export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Re
       continue
     }
     const key = `${attested.segmentIdx}:${normalise(task)}`
-    if (seenActions.has(key)) continue
+    if (seenActions.has(key)) {
+      droppedActionItems++
+      continue
+    }
     seenActions.add(key)
     actionItems.push({
       idx: 0,

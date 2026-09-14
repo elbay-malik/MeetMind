@@ -185,6 +185,32 @@ describe('status/failedStage pairing', () => {
     expect(updated).toMatchObject({ status: 'failed', failedStage: 'transcription' })
   })
 
+  it('refuses a patch that moves status out of failed without clearing the stage', async () => {
+    // The gap the patch-level check structurally cannot see: this patch is
+    // internally consistent — no `failed`, no stage — but a partial update
+    // leaves failed_stage alone, so the ROW it produces is the pairing
+    // meetings_failed_stage_matches_status forbids. Postgres judges the merged
+    // row; the local driver used to judge only the patch, and so accepted a
+    // row Supabase would have rejected. complete.post.ts is a real caller that
+    // writes exactly this shape.
+    const repo = createLocalMeetingRepository({ dataDir })
+    await repo.create(newMeeting('b7'))
+    await repo.update('b7', { status: 'failed', failedStage: 'transcription', errorMessage: 'boom' })
+    await expect(repo.update('b7', { status: 'uploaded' })).rejects.toThrow(/failedStage/)
+    // And the same through claim(), which has its own merge.
+    await expect(repo.claim('b7', 'failed', { status: 'uploaded' })).rejects.toThrow(/failedStage/)
+    // The row is untouched by the refusal, not half-written.
+    expect(await repo.get('b7')).toMatchObject({ status: 'failed', failedStage: 'transcription' })
+  })
+
+  it('accepts the same move when the stage is cleared alongside it', async () => {
+    const repo = createLocalMeetingRepository({ dataDir })
+    await repo.create(newMeeting('b8'))
+    await repo.update('b8', { status: 'failed', failedStage: 'transcription', errorMessage: 'boom' })
+    expect(await repo.update('b8', { status: 'uploaded', failedStage: null }))
+      .toMatchObject({ status: 'uploaded', failedStage: null })
+  })
+
   it('does not validate a patch that never touches status', async () => {
     // Nothing in this repository sets failedStage without also setting
     // status in the same patch, so a patch that only touches unrelated

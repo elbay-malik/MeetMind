@@ -1,7 +1,14 @@
 import { join } from 'node:path'
 import { createStorage, type Storage } from 'unstorage'
 import type { Meeting } from '#shared/types/meeting'
-import { assertValidNewMeeting, assertValidStatusPatch, type MeetingPatch, type MeetingRepository, type NewMeeting } from './meetings'
+import {
+  assertValidMeetingRow,
+  assertValidNewMeeting,
+  assertValidStatusPatch,
+  type MeetingPatch,
+  type MeetingRepository,
+  type NewMeeting,
+} from './meetings'
 
 const storages = new Map<string, Promise<Storage>>()
 
@@ -106,6 +113,11 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
         const found = await s.getItem<Meeting>(meetingKey(id))
         if (!found) return null
         const next: Meeting = { ...normalize(found), ...patch, updatedAt: new Date().toISOString() }
+        // The merged row, not just the patch: a patch that changes `status`
+        // without mentioning `failedStage` is internally consistent and can
+        // still produce the pairing the database forbids, by leaving a stage
+        // behind from whatever the row was before.
+        assertValidMeetingRow(next)
         await s.setItem<Meeting>(meetingKey(id), next)
         return next
       })
@@ -119,6 +131,7 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
         if (!found || found.status !== from) return null
         if (expectedUpdatedAt !== undefined && found.updatedAt !== expectedUpdatedAt) return null
         const next: Meeting = { ...normalize(found), ...patch, updatedAt: new Date().toISOString() }
+        assertValidMeetingRow(next)
         await s.setItem<Meeting>(meetingKey(id), next)
         return next
       })

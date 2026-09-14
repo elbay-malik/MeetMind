@@ -121,21 +121,39 @@ function assertFailedStagePairing(
 }
 
 /**
- * Validates a patch purely from what it itself sets, not the row it will be
- * merged onto: every real caller that changes `status` already sets
- * `failedStage` in the SAME patch (a stage string moving into `failed`, or
- * `null` moving out of it) precisely so a partial update never needs to
- * re-derive the pairing from whatever was there before. Enforcing that
- * convention here needs no extra read of the current row on either driver.
+ * Validates what the patch ITSELF sets, so an internally contradictory patch
+ * is refused the same way, with the same message, on both drivers — before any
+ * request is sent, and without either needing to read the current row.
  *
- * A patch that leaves `status` untouched is not checked here at all: this
- * repository has no caller that sets `failedStage` without also setting
- * `status` in the same patch, and validating that combination would need the
- * current row's status, which callers of `update`/`claim` do not hand in.
+ * This is NOT equivalent to what the database enforces, and the previous
+ * version of this comment wrongly implied it was ("every real caller that
+ * changes `status` already sets `failedStage` in the SAME patch" — complete.post.ts
+ * does not). Postgres checks the MERGED row; a patch is only half the input to
+ * that. `{ status: 'uploaded' }` applied to a row that is `failed` +
+ * 'transcription' is a perfectly consistent patch and still produces a row the
+ * CHECK constraint rejects, because a partial update leaves `failed_stage`
+ * alone. So assertValidMeetingRow below covers the other half wherever the
+ * merged row is actually available, which is the local driver — see its own
+ * note for why the Supabase driver leans on the constraint instead.
  */
 export function assertValidStatusPatch(patch: MeetingPatch): void {
   if (patch.status === undefined) return
   assertFailedStagePairing(patch.status, patch.failedStage)
+}
+
+/**
+ * The same pairing on a whole row, which is what `meetings_failed_stage_matches_status`
+ * actually constrains.
+ *
+ * The local driver merges patch over row in memory before writing, so it can
+ * check the real post-write shape for free and reject exactly what Postgres
+ * would. The Supabase driver cannot without an extra read — and that read
+ * would be outside the UPDATE's own atomicity, so it could not be trusted
+ * anyway; there the CHECK constraint IS the enforcement, applied to the row
+ * the statement actually produces.
+ */
+export function assertValidMeetingRow(row: Pick<Meeting, 'status' | 'failedStage'>): void {
+  assertFailedStagePairing(row.status, row.failedStage)
 }
 
 /** Same pairing, enforced on a full row at creation. `NewMeeting` requires
