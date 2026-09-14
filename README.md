@@ -51,6 +51,7 @@ The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 | [0004](docs/adr/0004-transcription.md) | Transcription: one request per meeting, no chunking, stub provider for credential-free dev |
 | [0005](docs/adr/0005-audio-playback-and-transcript-sync.md) | Playback: same-origin byte-range route, native player before a waveform |
 | [0006](docs/adr/0006-structured-summaries.md) | Summaries: chunked extraction, citations checked against the transcript |
+| [0007](docs/adr/0007-semantic-qa.md) | Semantic Q&A: windowed Gemini embeddings, answers held to the same citation check |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
