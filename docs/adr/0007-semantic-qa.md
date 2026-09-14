@@ -111,12 +111,28 @@ instead of returning noise.
 ### 5. The index is resumable, and tied to its model and text.
 
 Every stored window records the model, the dimensions, and its text hash.
-Indexing plans the windows from the current transcript and does three things:
+Indexing plans the windows from the current transcript and does three things,
+**in this order** — a self-review of this branch caught an earlier draft of
+this ADR describing skip/embed/delete, the opposite of what the code actually
+does, which would mislead a reader reasoning about what a crash mid-run
+leaves behind:
 
-1. **Skips** every window already stored with the same hash and model.
-2. **Embeds** the rest in batches of at most 100 texts. The API documents no
-   limit, so 100 is a conservative cap.
-3. **Deletes** stored windows the plan no longer contains.
+1. **Deletes** stored windows the plan no longer contains, or that belong to
+   a different model, first. They can never be current, and leaving them in
+   place would let search return them while re-embedding is still in
+   progress.
+2. **Skips** every remaining window already stored with the same hash and
+   model.
+3. **Embeds** the rest in batches of at most 100 texts — the API documents no
+   limit, so 100 is a conservative cap — storing each batch as soon as it is
+   embedded, not at the end.
+
+Deleting first means a crash between the delete and the matching re-embed
+does lose that window's row rather than leaving a superseded-but-complete one
+in place; nothing here promises otherwise. It stays low-risk only because
+asking is guarded separately: an index missing rows reads as `incomplete`,
+and `askMeeting` refuses to answer from anything short of `ready` (decision 3
+below), so the observable effect is "index it again," never a wrong answer.
 
 That shape is forced by the quota, which Google no longer publishes. A
 third-party measurement on 2 September 2026, read from the quota fields of the
