@@ -27,30 +27,35 @@ psql() { docker exec -i "$CONTAINER" psql -U postgres -v ON_ERROR_STOP=1 "$@"; }
 # Applied separately, below: it needs a legacy row inserted right before it to
 # prove its backfill actually runs against data that predates the column.
 FAILED_STAGE_MIGRATION=supabase/migrations/20260913120000_add_meeting_failed_stage.sql
+
+insert_legacy_failed_rows() {
+  # Meetings that failed before failed_stage existed have failed_stage=NULL.
+  # The migration's new CHECK validates every existing row the instant it is
+  # added, so without a backfill these inserts would make the ALTER TABLE
+  # itself fail against a real, populated database — not caught by inserting
+  # the rows only after the migration, which is what every other check in this
+  # file does. Two rows: meeting_summaries/summarize.post.ts shipped with Phase
+  # 6 before this column did, so a pre-existing failed row is only safely
+  # assumed to be a transcription failure when it has no transcript at all —
+  # one that already has segments could just as easily be a real summarisation
+  # failure, and the backfill needs to tell those apart correctly.
+  psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+              values (gen_random_uuid(),'legacy failure, no transcript','failed','a.mp4',1,'legacy_failed_no_transcript',10);"
+  psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+              values (gen_random_uuid(),'legacy failure, has transcript','failed','a.mp4',1,'legacy_failed_has_transcript',10);"
+  psql -q -c "insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
+              select id, 0, 0, 1000, 'hello' from public.meetings where audio_key='legacy_failed_has_transcript';"
+}
+
+# In timestamp order, exactly as production applies them. The failed_stage
+# migration used to be skipped here and applied LAST, so any later migration
+# would have been verified in an order production never uses.
+[ -f "$FAILED_STAGE_MIGRATION" ] || { echo "FAIL: $FAILED_STAGE_MIGRATION is missing"; exit 1; }
 for f in supabase/migrations/*.sql; do
-  [ "$f" = "$FAILED_STAGE_MIGRATION" ] && continue
+  [ "$f" = "$FAILED_STAGE_MIGRATION" ] && insert_legacy_failed_rows
   echo "applying $(basename "$f")"
   psql -q < "$f"
 done
-
-# Meetings that failed before failed_stage existed have failed_stage=NULL.
-# The migration's new CHECK validates every existing row the instant it is
-# added, so without a backfill these inserts would make the ALTER TABLE
-# itself fail against a real, populated database — not caught by inserting
-# the rows only after the migration, which is what every other check in this
-# file does. Two rows: meeting_summaries/summarize.post.ts shipped with Phase
-# 6 before this column did, so a pre-existing failed row is only safely
-# assumed to be a transcription failure when it has no transcript at all —
-# one that already has segments could just as easily be a real summarisation
-# failure, and the backfill needs to tell those apart correctly.
-psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
-            values (gen_random_uuid(),'legacy failure, no transcript','failed','a.mp4',1,'legacy_failed_no_transcript',10);"
-psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
-            values (gen_random_uuid(),'legacy failure, has transcript','failed','a.mp4',1,'legacy_failed_has_transcript',10);"
-psql -q -c "insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
-            select id, 0, 0, 1000, 'hello' from public.meetings where audio_key='legacy_failed_has_transcript';"
-echo "applying $(basename "$FAILED_STAGE_MIGRATION")"
-psql -q < "$FAILED_STAGE_MIGRATION"
 
 fail() { echo "FAIL: $1"; exit 1; }
 check() { # check <description> <sql returning t/f>
@@ -62,11 +67,18 @@ check() { # check <description> <sql returning t/f>
 
 echo "checking schema invariants ..."
 
-check "audio cap matches MAX_AUDIO_BYTES in shared/utils/meeting.ts" \
-  "select pg_get_constraintdef(con.oid) like '%25000000%'
-   from pg_constraint con join pg_class rel on rel.oid=con.conrelid
-   where rel.relname='meetings' and con.contype='c'
-     and pg_get_constraintdef(con.oid) like '%audio_bytes%'"
+# Read from the constant itself. The old check never opened the TypeScript at
+# all, and matched the constraint text with LIKE '%25000000%' — a cap of
+# 250000000 contains that substring and passed a check labelled "matches".
+CAP=$(grep -E "^export const MAX_AUDIO_BYTES = " shared/utils/meeting.ts | sed -E 's/.*= *([0-9_]+).*/\1/' | tr -d _)
+[[ "$CAP" =~ ^[0-9]+$ ]] || fail "MAX_AUDIO_BYTES did not parse as a plain integer (got '$CAP')"
+[ -n "$CAP" ] || fail "could not read MAX_AUDIO_BYTES from shared/utils/meeting.ts"
+echo "  (MAX_AUDIO_BYTES in shared/utils/meeting.ts: ${CAP})"
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+            values (gen_random_uuid(),'x','uploaded','a.mp4',1,'at_cap',${CAP});"
+check "audio_bytes exactly at MAX_AUDIO_BYTES is accepted" \
+  "select count(*)=1 from public.meetings where audio_key='at_cap'"
+psql -q -c "delete from public.meetings where audio_key='at_cap';"
 
 check "row-level security is on with no policies" \
   "select relrowsecurity and (select count(*) from pg_policies where tablename='meetings')=0
@@ -74,16 +86,22 @@ check "row-level security is on with no policies" \
 
 # Every status in the TypeScript union must be insertable. `failed` also needs
 # a failed_stage, now that the column requires one exactly when status='failed'.
+# Read from the union itself: a status added in code but not in SQL used to
+# pass, because this list was a copy.
+STATUSES=$(sed -n '/^export type MeetingStatus/,/^$/p' shared/types/meeting.ts | grep -o "'[a-z_]*'" | tr '\n' ',' | sed 's/,$//')
+[ -n "$STATUSES" ] || fail "could not read MeetingStatus from shared/types/meeting.ts"
+STATUS_COUNT=$(echo "$STATUSES" | tr ',' '\n' | grep -c .)
+echo "  (MeetingStatus values in shared/types/meeting.ts: ${STATUSES})"
 psql -q -c "do \$\$
 declare s text;
 begin
-  foreach s in array array['pending_upload','uploaded','transcribing','summarizing','indexing','ready','failed'] loop
+  foreach s in array array[${STATUSES}] loop
     insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
     values (gen_random_uuid(), s, s, 'a.mp4', 1, 'lifecycle_'||s, 10, case when s = 'failed' then 'transcription' end);
   end loop;
 end \$\$;"
 check "every MeetingStatus value is accepted" \
-  "select count(*)=7 from public.meetings where audio_key like 'lifecycle_%'"
+  "select count(*)=${STATUS_COUNT} from public.meetings where audio_key like 'lifecycle_%'"
 
 # Rejections.
 reject() { # reject <description> <sql> <expected error fragment>
@@ -92,9 +110,9 @@ reject() { # reject <description> <sql> <expected error fragment>
   echo "$out" | grep -q "$3" || fail "$1 — expected '$3', got: $out"
   echo "  ok: $1"
 }
-reject "audio_bytes above the cap is refused" \
-  "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes) values (gen_random_uuid(),'x','uploaded','a.mp4',1,'over',25000001);" \
-  "violates check"
+reject "audio_bytes one over MAX_AUDIO_BYTES is refused" \
+  "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes) values (gen_random_uuid(),'x','uploaded','a.mp4',1,'over',$((CAP + 1)));" \
+  "violates check constraint \"meetings_audio_bytes_check\""
 reject "an unknown status is refused" \
   "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes) values (gen_random_uuid(),'x','nope','a.mp4',1,'badstatus',10);" \
   "violates check"
@@ -136,7 +154,7 @@ psql -q -c "delete from public.meetings
 reject "failed_stage outside the declared stages is refused" \
   "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
    values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_bad',10,'indexing');" \
-  "violates check"
+  "violates check constraint \"meetings_failed_stage_matches_status\""
 reject "a non-failed meeting cannot carry a failed_stage" \
   "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
    values (gen_random_uuid(),'x','ready','a.mp4',1,'stage_mismatch_a',10,'transcription');" \
@@ -154,9 +172,10 @@ check "transcript_segments cascades from meetings" \
    where conrelid='public.transcript_segments'::regclass and contype='f'"
 
 check "a transcript segment is keyed by (meeting_id, idx)" \
-  "select array_agg(att.attname::text order by att.attname) = array['idx','meeting_id']
+  "select array_agg(att.attname::text order by k.ord) = array['meeting_id','idx']
    from pg_constraint con
-   join pg_attribute att on att.attrelid=con.conrelid and att.attnum = any(con.conkey)
+   cross join unnest(con.conkey) with ordinality as k(attnum, ord)
+   join pg_attribute att on att.attrelid=con.conrelid and att.attnum = k.attnum
    where con.conrelid='public.transcript_segments'::regclass and con.contype='p'"
 
 check "transcript_segments has row-level security on with no policies" \
@@ -202,12 +221,14 @@ for t in meeting_decisions meeting_action_items; do
      )"
 done
 
-check "summaries, decisions and action items all have RLS on with no policies" \
-  "select bool_and(c.relrowsecurity)
-     and (select count(*) from pg_policies
-          where tablename in ('meeting_summaries','meeting_decisions','meeting_action_items'))=0
-   from pg_class c where c.relname in
-     ('meeting_summaries','meeting_decisions','meeting_action_items')"
+# Per table. The old aggregate used bool_and over whichever of the three
+# tables happened to exist, so with only meeting_summaries created it
+# returned true for a check naming all three.
+for t in meeting_summaries meeting_decisions meeting_action_items; do
+  check "$t exists, has row-level security on, and has no policies" \
+    "select exists (select 1 from pg_class where oid = to_regclass('public.$t') and relrowsecurity)
+       and (select count(*) from pg_policies where schemaname='public' and tablename='$t') = 0"
+done
 
 # Extraction rows must hang off a real segment and vanish with the meeting.
 psql -q -c "insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
