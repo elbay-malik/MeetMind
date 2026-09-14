@@ -93,7 +93,19 @@ export function transcribedButEmpty(
   meeting: Pick<Meeting, 'status' | 'failedStage'>,
   segmentCount: number,
 ): boolean {
-  const transcriptionDone = ['summarizing', 'indexing', 'ready'].includes(meeting.status)
+  return transcriptionFinished(meeting) && segmentCount === 0
+}
+
+/**
+ * Whether transcription has completed for this meeting, whatever happened after.
+ *
+ * `failed` + 'summarization' counts: extraction only ever runs against a
+ * transcript that already exists, so its failure says nothing about the
+ * transcript. The one place this is decided, rather than each caller keeping
+ * its own copy of the status list — extraction, the progress page and indexing
+ * all need exactly this answer.
+ */
+export function transcriptionFinished(meeting: Pick<Meeting, 'status' | 'failedStage'>): boolean {
+  return ['summarizing', 'indexing', 'ready'].includes(meeting.status)
     || (meeting.status === 'failed' && meeting.failedStage === 'summarization')
-  return transcriptionDone && segmentCount === 0
 }

@@ -1,6 +1,6 @@
 import { isError } from 'h3'
 import type { Meeting, MeetingSummary } from '#shared/types/meeting'
-import { SUMMARIZE_CLAIM_LEASE_MS } from '#shared/utils/meeting'
+import { SUMMARIZE_CLAIM_LEASE_MS, transcriptionFinished } from '#shared/utils/meeting'
 import { useMeetingRepository, useSummaryRepository, useTranscriptRepository } from '../../../utils/db'
 import { conflict, notFound, requireMeetingId } from '../../../utils/http'
 import { useSummarizer } from '../../../utils/summary'
@@ -109,9 +109,7 @@ export default defineEventHandler(async (event): Promise<{
   // route as normal is enough to actually finish it, rather than parking it
   // in `summarizing` forever with no route back — canSummarize's own segment
   // check meant the UI never offered a way to retry it either.
-  const transcriptionDone = ['summarizing', 'indexing', 'ready'].includes(meeting.status)
-    || (meeting.status === 'failed' && meeting.failedStage === 'summarization')
-  if (segments.length === 0 && !transcriptionDone) {
+  if (segments.length === 0 && !transcriptionFinished(meeting)) {
     throw conflict('This meeting has no transcript to summarise yet')
   }
 

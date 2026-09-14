@@ -123,3 +123,25 @@ export interface CreateMeetingResponse {
   meeting: Meeting
   upload: UploadInstructions
 }
+
+/**
+ * Whether a meeting can be asked questions yet (ADR-0007 decision 6). Derived
+ * from the stored windows, never kept as a meeting status: `indexing` in the
+ * status machine is extraction's in-flight claim, not this.
+ *
+ * - `unavailable` — transcription has not finished, so there is nothing to index.
+ * - `none` — nothing is indexed for the current embedding model.
+ * - `incomplete` — some windows are missing or no longer match the transcript:
+ *   an interrupted run (the embedding quota), or a replaced transcript.
+ * - `ready` — every window of the current transcript is indexed. A transcript
+ *   with no segments is `ready` with zero windows: there is nothing to find.
+ */
+export interface SearchIndexStatus {
+  state: 'unavailable' | 'none' | 'incomplete' | 'ready'
+  /** Windows the current transcript plans into. */
+  windowCount: number
+  /** Of those, how many are stored, current, and from the current model. */
+  indexedCount: number
+  /** The embedding model the index is (or would be) built with. */
+  model: string
+}
