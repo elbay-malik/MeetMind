@@ -22,6 +22,9 @@ function storageFor(base: string): Promise<Storage> {
 
 const windowsKey = (meetingId: string) => `windows/${meetingId}`
 
+/** A similarity as an ordering key: NaN sorts as the worst possible value, matching pgvector. */
+const rank = (similarity: number): number => (Number.isNaN(similarity) ? Number.NEGATIVE_INFINITY : similarity)
+
 /**
  * JSON-file index under `<dataDir>/db/` for development and tests. One file per
  * meeting, searched by exact cosine similarity in memory — the same result the
@@ -77,7 +80,14 @@ export function createLocalTranscriptIndexRepository(options: { dataDir: string 
           ...window,
           similarity: cosineSimilarity(query, embedding),
         }))
-        .sort((a, b) => b.similarity - a.similarity || a.idx - b.idx)
+        // NaN (a zero-norm window, see cosineSimilarity) must rank last, worse
+        // than any real similarity including a genuinely negative one — the
+        // same place pgvector puts it. Plain `b.similarity - a.similarity` does
+        // not do this: once either side is NaN the subtraction is NaN too,
+        // which `||` reads as falsy and falls through to the index tiebreak
+        // instead, letting a zero-norm window rank ahead of a worse-but-real
+        // one depending only on index order.
+        .sort((a, b) => rank(b.similarity) - rank(a.similarity) || a.idx - b.idx)
         .slice(0, clampLimit(limit))
     },
   }

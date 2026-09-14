@@ -101,9 +101,15 @@ export function clampLimit(limit: number): number {
 }
 
 /**
- * Cosine similarity, matching pgvector's `1 - (a <=> b)`. A zero vector has no
- * direction; it scores 0 here rather than NaN, so it sorts last instead of
- * corrupting the order.
+ * Cosine similarity, matching pgvector's `1 - (a <=> b)` exactly, NaN
+ * included: a zero vector has no direction, and pgvector's `<=>` genuinely
+ * returns NaN for it rather than a number (verified against a real
+ * pgvector/pgvector:pg17 instance) — earlier this returned 0 instead, which
+ * reads as "unrelated" but actually outranks any window with genuine negative
+ * similarity, the opposite of pgvector's real ordering. Callers that rank by
+ * this value need to sort NaN as worst explicitly (see windows-local.ts's
+ * search) rather than relying on arithmetic comparison, which never singles
+ * NaN out on its own.
  */
 export function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) throw new Error(`Cannot compare vectors of ${a.length} and ${b.length} dimensions`)
@@ -115,6 +121,6 @@ export function cosineSimilarity(a: number[], b: number[]): number {
     normA += a[i]! * a[i]!
     normB += b[i]! * b[i]!
   }
-  if (normA === 0 || normB === 0) return 0
+  if (normA === 0 || normB === 0) return Number.NaN
   return dot / Math.sqrt(normA * normB)
 }

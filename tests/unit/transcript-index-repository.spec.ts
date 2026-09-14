@@ -48,8 +48,15 @@ describe('shared helpers', () => {
     expect(cosineSimilarity(axis(0).map(v => v * 5), axis(0))).toBeCloseTo(1, 12)
   })
 
-  it('scores a zero vector as 0 rather than NaN, so it sorts last instead of corrupting the order', () => {
-    expect(cosineSimilarity(new Array(DIMS).fill(0), axis(0))).toBe(0)
+  it('scores a zero vector as NaN, matching pgvector rather than inventing a direction for it', () => {
+    // pgvector's `<=>` genuinely returns NaN for a zero-norm operand (verified
+    // against a real pgvector/pgvector:pg17 instance during a self-review of
+    // this branch) — Postgres then sorts NaN as larger than every real value,
+    // in either direction, so a zero-norm row always ranks last. Scoring it as
+    // 0 here matched neither: 0 sorts ABOVE any window with genuine negative
+    // similarity, the opposite of where pgvector places it. See the ordering
+    // test below for the local driver's search() actually honouring this.
+    expect(cosineSimilarity(new Array(DIMS).fill(0), axis(0))).toBeNaN()
   })
 
   it('refuses to compare vectors of different sizes', () => {
@@ -123,6 +130,23 @@ describe('local transcript index repository', () => {
     expect(matches[2]!.similarity).toBe(0)
     expect(matches[0]).not.toHaveProperty('embedding')
     expect(matches[0]).not.toHaveProperty('model')
+  })
+
+  it('ranks a zero-norm window behind one with genuine negative similarity, matching pgvector', async () => {
+    // The parity claim this file's module comment makes ("the same result the
+    // SQL function returns") specifically for the case pgvector treats as
+    // worst-of-all: a zero-norm embedding. Sorting it as similarity 0 (rather
+    // than NaN, sorted last) would rank it ABOVE window 1's genuine -1, the
+    // opposite of what a real pgvector instance returns for identical data.
+    const repo = createLocalTranscriptIndexRepository({ dataDir })
+    const opposite = axis(0).map(v => -v)
+    await repo.upsertWindows('m10', [
+      window(0, axis(0)),
+      window(1, opposite),
+      window(2, new Array(DIMS).fill(0)),
+    ])
+    const matches = await repo.search('m10', axis(0), { model: 'gemini-embedding-2', limit: 5 })
+    expect(matches.map(m => m.idx)).toEqual([0, 1, 2])
   })
 
   it('never returns windows embedded by a different model', async () => {
