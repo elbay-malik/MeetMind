@@ -135,7 +135,16 @@ function seekTo(segment: TranscriptSegment) {
   }
   audio.currentTime = segment.startMs / 1000
   currentMs.value = segment.startMs
+  const wasFollowing = followPlayback.value
   followPlayback.value = true
+  // Re-enabling following on the line that is ALREADY the follow target does
+  // not change followIndex, so its watcher never recentres — and
+  // lastProgrammaticTop stays whatever the user scrolled to, which the next
+  // scroll event reads as the user taking over again.
+  if (!wasFollowing) {
+    const index = followIndex.value
+    if (index >= 0) void nextTick(() => centreAndTrack(index))
+  }
   if (audio.paused) {
     void audio.play().catch(() => {
       // Autoplay can be refused; the seek still happened, which is the point.
@@ -150,7 +159,15 @@ function seekToCitation(startMs: number, segmentIdx: number) {
   const segment = segments.value.find(s => s.idx === segmentIdx)
   if (segment) return onSelect(segment, segments.value.indexOf(segment))
   const audio = player.value
-  if (audio && Number.isFinite(audio.duration)) audio.currentTime = startMs / 1000
+  if (!audio) return
+  // Same guard and the same message as seekTo: this used to be a silent no-op
+  // when the audio was not ready, while clicking a transcript line in that
+  // same state explained itself.
+  if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
+    audioError.value = 'The audio is not ready yet, so this line cannot be played.'
+    return
+  }
+  audio.currentTime = startMs / 1000
 }
 
 function onSelect(segment: TranscriptSegment, index: number) {
@@ -159,16 +176,17 @@ function onSelect(segment: TranscriptSegment, index: number) {
 }
 
 /**
- * Tabbing in should land on the line being played, not the top of the
- * transcript, and must not be mistaken for the user scrolling away.
+ * Keep the roving tab stop on whichever line actually received focus.
+ *
+ * Landing on the line being played when tabbing in is the activeIndex watcher
+ * below, not this: every focusable descendant of the list is a line button
+ * carrying data-idx, and the scroll container itself is not a tab stop, so the
+ * fallback this used to have for "focus landed on something else" could never
+ * run.
  */
 function onListFocusIn(event: FocusEvent) {
   const entered = (event.target as HTMLElement | null)?.dataset?.idx
-  if (entered !== undefined) {
-    focusIndex.value = Number(entered)
-    return
-  }
-  if (activeIndex.value >= 0) focusIndex.value = activeIndex.value
+  if (entered !== undefined) focusIndex.value = Number(entered)
 }
 
 // Keep the tab stop on the line being played while the user is not in the list.
@@ -200,7 +218,12 @@ function onKeydown(event: KeyboardEvent, index: number) {
       // preventScroll, then centre within the container ourselves: the default
       // focus scroll moves the whole page, which pushes the player out of view.
       lineAt(focusIndex.value)?.focus({ preventScroll: true })
-      centreOn(focusIndex.value)
+      // Tracked, like every other programmatic scroll. It happens to be safe
+      // untracked here only because followPlayback was just set false, so
+      // onListScroll never compares against lastProgrammaticTop — the next
+      // thing that turns following back on without recentring would read a
+      // stale value and switch it straight off again.
+      centreAndTrack(focusIndex.value)
     })
   }
   if (event.key === 'ArrowDown') return move(index + 1)
@@ -208,6 +231,24 @@ function onKeydown(event: KeyboardEvent, index: number) {
   if (event.key === 'Home') return move(0)
   if (event.key === 'End') return move(last)
 }
+
+/** What to say when there are no segments, which means different things by status. */
+const emptyTranscript = computed(() => {
+  const { status, failedStage } = meeting.value
+  if (transcribedButEmpty(meeting.value, 0)) {
+    return { title: 'No speech was found', description: 'Transcription ran and returned nothing. The recording may be silent.' }
+  }
+  if (status === 'failed' && failedStage === 'upload') {
+    return { title: 'No audio to transcribe', description: 'The uploaded audio was rejected and removed. Upload the recording again.' }
+  }
+  if (status === 'transcribing') {
+    return { title: 'Transcription is running', description: 'The transcript will appear here when it finishes.' }
+  }
+  if (status === 'pending_upload') {
+    return { title: 'Waiting for audio', description: 'The upload has not been confirmed yet.' }
+  }
+  return { title: 'No transcript yet', description: 'Run transcription from the progress screen to see the meeting\'s words here.' }
+})
 
 const audioSrc = computed(() => `/api/meetings/${meetingId.value}/audio`)
 const hasAudio = computed(() => meeting.value.status !== 'pending_upload')
@@ -296,7 +337,16 @@ const hasAudio = computed(() => meeting.value.status !== 'pending_upload')
                 <span class="w-16 shrink-0 text-right font-mono text-xs text-muted tabular-nums">
                   {{ formatDuration(decision.startMs / 1000) }}
                 </span>
-                <span>{{ decision.decision }}</span>
+                <span class="min-w-0">
+                  {{ decision.decision }}
+                  <!-- The evidence, shown. It is checked against the transcript
+                       before storage, but it only proves the WORDS were said,
+                       not that they support the claim above them (see
+                       ADR-0006) — a model can pair a real "Yeah." with any
+                       decision. Showing it is what lets a reader catch that;
+                       it used to be stored and never rendered. -->
+                  <q class="mt-0.5 block text-xs text-muted italic">{{ decision.quote }}</q>
+                </span>
               </button>
             </li>
           </ul>
@@ -319,13 +369,20 @@ const hasAudio = computed(() => meeting.value.status !== 'pending_upload')
                 <span class="w-16 shrink-0 text-right font-mono text-xs text-muted tabular-nums">
                   {{ formatDuration(item.startMs / 1000) }}
                 </span>
-                <span>
+                <span class="min-w-0">
                   {{ item.task }}
                   <!-- Absent, not unknown: the meeting simply did not say. -->
                   <span class="text-muted">
                     · {{ item.assignee ?? 'nobody named' }}
                     <template v-if="item.dueDateText">· due {{ item.dueDateText }}</template>
                   </span>
+                  <!-- The evidence, shown. It is checked against the transcript
+                       before storage, but it only proves the WORDS were said,
+                       not that they support the claim above them (see
+                       ADR-0006) — a model can pair a real "Yeah." with any
+                       decision. Showing it is what lets a reader catch that;
+                       it used to be stored and never rendered. -->
+                  <q class="mt-0.5 block text-xs text-muted italic">{{ item.quote }}</q>
                 </span>
               </button>
             </li>
@@ -336,7 +393,7 @@ const hasAudio = computed(() => meeting.value.status !== 'pending_upload')
           v-if="!summary.decisions.length && !summary.actionItems.length"
           class="text-sm text-muted"
         >
-          No decisions or action items were found in this meeting.
+          No decisions or action items are recorded for this meeting.
         </p>
       </div>
     </UCard>
@@ -392,13 +449,17 @@ const hasAudio = computed(() => meeting.value.status !== 'pending_upload')
       </div>
     </UCard>
 
+    <!-- Driven by status, not by the segment count alone: a silent recording
+         is `ready` with no segments, and telling that reader to "run
+         transcription from the progress screen" sent them to a page offering
+         no such action. -->
     <UAlert
       v-else
       color="neutral"
       variant="subtle"
       icon="i-lucide-file-text"
-      title="No transcript yet"
-      description="Run transcription from the progress screen to see the meeting's words here."
+      :title="emptyTranscript.title"
+      :description="emptyTranscript.description"
     />
 
     <div class="flex gap-3">

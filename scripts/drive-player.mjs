@@ -104,16 +104,26 @@ try {
   // committed fixture yields a handful of short lines that never overflow the
   // container, so shrink it first — otherwise there is nothing to scroll and
   // the check would pass without exercising anything.
-  const stoppedThenResumed = await page.evaluate(async () => {
+  const scrollable = await page.evaluate(async () => {
     const container = document.querySelector('ol').parentElement
     container.style.maxHeight = '80px'
-    await new Promise(r => setTimeout(r, 100))
-    if (container.scrollHeight <= container.clientHeight) {
-      return { scrollable: false, stopped: false, resumed: false, visible: false }
-    }
-    container.scrollTop = container.scrollHeight - container.clientHeight
-    container.dispatchEvent(new Event('scroll'))
+    container.scrollIntoView({ block: 'center' })
     await new Promise(r => setTimeout(r, 150))
+    return container.scrollHeight > container.clientHeight
+  })
+  // A real wheel over the list, dispatched by the browser as user input. This
+  // used to set scrollTop and dispatch a synthetic 'scroll' event — which is
+  // precisely what centreOn does itself, so the check could not distinguish a
+  // user scroll from a programmatic one the page failed to record.
+  if (scrollable) {
+    const box = await page.locator('ol').first().locator('..').boundingBox()
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.wheel(0, 400)
+    await page.waitForTimeout(250)
+  }
+  const stoppedThenResumed = await page.evaluate(async (scrollable) => {
+    const container = document.querySelector('ol').parentElement
+    if (!scrollable) return { scrollable: false, stopped: false, resumed: false, visible: false }
     const stopped = document.body.textContent.includes('Follow playback')
     const button = [...document.querySelectorAll('button')].find(b => b.textContent.includes('Follow playback'))
     button?.click()
@@ -131,7 +141,7 @@ try {
     const a = active?.getBoundingClientRect()
     const visible = !!a && a.top >= c.top - 1 && a.bottom <= c.bottom + 1
     return { scrollable: true, stopped, resumed, visible }
-  })
+  }, scrollable)
   if (!stoppedThenResumed.scrollable) fail('could not make the transcript scrollable, so follow behaviour went untested')
   console.log('user scroll stopped following:', stoppedThenResumed.stopped, '| control resumed it:', stoppedThenResumed.resumed)
   if (!stoppedThenResumed.stopped) fail('a user scroll did not stop the transcript following playback')
@@ -154,33 +164,77 @@ try {
   console.log('window scrollY caused by following:', pageMovement)
   if (pageMovement > 0) fail('following playback scrolled the page and pushed the player out of view')
 
-  // Keyboard navigation must not move the page either.
-  const keyboardMovement = await page.evaluate(async () => {
-    window.scrollTo(0, 0)
-    const first = document.querySelector('ol li button')
-    first?.focus({ preventScroll: true })
-    for (let i = 0; i < 5; i++) {
-      document.activeElement?.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
-      )
-      await new Promise(r => setTimeout(r, 80))
-    }
-    return window.scrollY
+  // Moving within the transcript by keyboard must not move the page.
+  //
+  // Real key presses, measured from where the page already is. The old version
+  // dispatched untrusted KeyboardEvents, whose DEFAULT actions browsers never
+  // perform — so the native arrow-key page scroll that move()'s preventDefault
+  // exists to stop could not happen, and the check could not fail for the
+  // reason it names. It also focused the first line with preventScroll itself,
+  // pre-empting the one step that moves the page.
+  //
+  // Tabbing INTO the list from outside is deliberately not held to this: the
+  // browser scrolling a newly focused control into view is what keeps keyboard
+  // focus visible, and suppressing it could leave the focused line off-screen.
+  // What must not move the page is navigation once focus is already there.
+  await page.evaluate(() => {
+    document.querySelector('ol').parentElement.scrollIntoView({ block: 'center' })
+    document.querySelector('ol li button[tabindex="0"]')?.focus()
   })
+  await page.waitForTimeout(150)
+  // Record whether each real arrow key reached the window with its default
+  // action cancelled. Page movement alone cannot fail this reliably: a native
+  // arrow-key scroll moves the focused list first and only chains to the page
+  // once neither can move further, so with preventDefault removed from move()
+  // the page still measured 0 here in both mid-list and end-of-list runs. The
+  // cancelled default IS the behaviour that keeps the page still.
+  await page.evaluate(() => {
+    window.__arrowKeys = []
+    window.addEventListener('keydown', (e) => {
+      if (e.key.startsWith('Arrow')) window.__arrowKeys.push(e.defaultPrevented)
+    })
+  })
+  const scrollBefore = await page.evaluate(() => window.scrollY)
+  for (let i = 0; i < 5; i++) {
+    await page.keyboard.press('ArrowDown')
+    await page.waitForTimeout(80)
+  }
+  const arrowKeys = await page.evaluate(() => window.__arrowKeys)
+  console.log(`arrow keys handled with their default cancelled: ${arrowKeys.filter(Boolean).length}/${arrowKeys.length}`)
+  if (arrowKeys.length === 0) fail('no arrow key reached the page, so keyboard navigation went untested')
+  else if (!arrowKeys.every(Boolean)) fail('an arrow key inside the transcript was left to scroll natively')
+  const keyboardMovement = Math.abs(await page.evaluate(() => window.scrollY) - scrollBefore)
   console.log('window scrollY caused by keyboard navigation:', keyboardMovement)
   if (keyboardMovement > 0) fail('keyboard navigation scrolled the page out from under the player')
+
+  // Every summary item shows its supporting quote. It is the only way a reader
+  // can notice a real quote paired with a claim it does not support, and it
+  // used to be stored and never rendered at all.
+  const quotes = await page.evaluate(() => {
+    const items = [...document.querySelectorAll('ul li button')]
+    return { items: items.length, withQuote: items.filter(b => b.querySelector('q')?.textContent.trim()).length }
+  })
+  console.log(`summary items: ${quotes.items}, showing their quote: ${quotes.withQuote}`)
+  if (quotes.items === 0) fail('no summary items rendered, so quote rendering went untested')
+  else if (quotes.withQuote !== quotes.items) fail('a summary item is rendered without its supporting quote')
 
   // The transcript must be one tab stop, not one per line.
   const tabbable = await page.locator('ol li button[tabindex="0"]').count()
   console.log(`transcript tab stops: ${tabbable}`)
   if (tabbable !== 1) fail(`expected exactly 1 tab stop in the transcript, found ${tabbable}`)
 
-  // Arrow keys must move within the transcript.
+  // Arrow keys must move focus to the NEXT line. The old check only asserted
+  // that focus was on SOME line afterwards — true before the key press too,
+  // since focusing the target already put it on one, so deleting the focus
+  // move from onKeydown left it passing.
   await target.focus()
+  const beforeIdx = Number(await page.evaluate(() => document.activeElement?.getAttribute('data-idx')))
   await page.keyboard.press('ArrowDown')
-  const focusedIdx = await page.evaluate(() => document.activeElement?.getAttribute('data-idx'))
-  console.log(`after ArrowDown, focus is on line index ${focusedIdx}`)
-  if (focusedIdx === null) fail('ArrowDown did not move focus within the transcript')
+  const afterIdx = Number(await page.evaluate(() => document.activeElement?.getAttribute('data-idx')))
+  console.log(`ArrowDown moved focus from line ${beforeIdx} to line ${afterIdx}`)
+  if (afterIdx !== Math.min(beforeIdx + 1, count - 1)) {
+    fail(`ArrowDown should move focus to line ${beforeIdx + 1}, but it is on ${afterIdx}`)
+  }
 }
 catch (err) {
   fail(err.message)
