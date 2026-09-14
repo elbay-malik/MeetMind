@@ -398,6 +398,11 @@ const hasAudio = computed(() => meeting.value.status !== 'pending_upload')
       </div>
     </UCard>
 
+    <MeetingQuestions
+      :meeting-id="meetingId"
+      @seek="seekToCitation"
+    />
+
     <UCard v-if="segments.length">
       <template #header>
         <div class="flex items-center justify-between gap-3">

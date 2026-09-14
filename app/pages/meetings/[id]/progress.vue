@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Meeting, MeetingStatus, TranscriptSegment } from '#shared/types/meeting'
+import type { Meeting, MeetingStatus, SearchIndexStatus, TranscriptSegment } from '#shared/types/meeting'
 
 const route = useRoute()
 const meetingId = computed(() => String(route.params.id))
@@ -37,10 +37,67 @@ const now = ref(Date.now())
  * focusing is the real <button>, whatever the UI library wraps it in. */
 const footer = ref<HTMLElement | null>(null)
 
+const { data: indexData, refresh: refreshIndex }
+  = await useFetch<{ index: SearchIndexStatus }>(`/api/meetings/${meetingId.value}/search-index`)
+const searchIndex = computed(() => indexData.value?.index ?? null)
+
 async function reloadAll() {
-  await Promise.all([refresh(), refreshTranscript()])
+  // The index status is derived from the transcript, so it changes whenever a
+  // step changes the transcript — transcription finishing makes it `none`.
+  await Promise.all([refresh(), refreshTranscript(), refreshIndex()])
   now.value = Date.now()
 }
+
+/**
+ * Indexing for questions (ADR-0007 decision 6). A separate step, not part of
+ * the pipeline status: it needs a finished transcript and nothing else, so it
+ * neither waits for extraction nor blocks it.
+ */
+const indexing = ref(false)
+const indexError = ref<string | null>(null)
+const justIndexed = ref(false)
+const questionsCard = ref<HTMLElement | null>(null)
+
+const canIndex = computed(() =>
+  searchIndex.value?.state === 'none' || searchIndex.value?.state === 'incomplete')
+
+async function startIndexing() {
+  if (indexing.value) return
+  indexing.value = true
+  indexError.value = null
+  justIndexed.value = false
+  try {
+    await $fetch(`/api/meetings/${meetingId.value}/search-index`, { method: 'POST' })
+    justIndexed.value = true
+  }
+  catch (err) {
+    indexError.value = describeError(err)
+  }
+  finally {
+    indexing.value = false
+    await refreshIndex()
+    // The button disappears once the index is ready; keep focus in the card
+    // (on the link to ask) rather than letting it fall to <body>.
+    await nextTick()
+    if (!document.activeElement || document.activeElement === document.body) {
+      questionsCard.value?.querySelector<HTMLElement>('a, button')?.focus()
+    }
+  }
+}
+
+const indexLabel = computed(() => {
+  const index = searchIndex.value
+  if (indexing.value) return 'Indexing the transcript for questions.'
+  if (!index || index.state === 'unavailable') return 'Available once transcription has finished.'
+  if (justIndexed.value && index.state === 'ready') return 'Indexing finished. This meeting can be asked questions.'
+  if (index.state === 'ready') {
+    return index.windowCount === 0
+      ? 'Nothing to index: the transcript is empty.'
+      : `Ready for questions: all ${index.windowCount} passages indexed.`
+  }
+  if (index.state === 'none') return 'Not indexed yet.'
+  return `${index.indexedCount} of ${index.windowCount} passages indexed for the current transcript.`
+})
 
 /**
  * Put focus back on the action after a step finishes.
@@ -392,6 +449,52 @@ const activityLabel = computed(() => {
           >{{ activityLabel }}</span>
         </div>
       </template>
+    </UCard>
+
+    <UCard>
+      <template #header>
+        <h2 class="font-semibold">
+          Questions
+        </h2>
+      </template>
+      <div
+        ref="questionsCard"
+        class="flex flex-wrap items-center gap-3"
+      >
+        <UButton
+          v-if="canIndex"
+          :loading="indexing"
+          icon="i-lucide-search"
+          variant="soft"
+          @click="startIndexing"
+        >
+          {{ searchIndex?.state === 'incomplete' ? 'Update the index' : 'Index for questions' }}
+        </UButton>
+        <UButton
+          v-else-if="searchIndex?.state === 'ready' && searchIndex.windowCount > 0"
+          :to="`/meetings/${meetingId}`"
+          variant="ghost"
+          icon="i-lucide-message-circle-question"
+        >
+          Ask on the meeting page
+        </UButton>
+        <!-- Always mounted, like the pipeline card's region. -->
+        <span
+          class="text-sm text-muted"
+          role="status"
+          aria-live="polite"
+        >{{ indexLabel }}</span>
+      </div>
+      <UAlert
+        v-if="indexError"
+        role="alert"
+        color="error"
+        variant="subtle"
+        icon="i-lucide-triangle-alert"
+        class="mt-3"
+        title="Indexing failed"
+        :description="indexError"
+      />
     </UCard>
 
     <UAlert

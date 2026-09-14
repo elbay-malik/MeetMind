@@ -219,6 +219,69 @@ try {
   console.log('status after extraction:', summarized.status)
   if (summarized.status !== 'ready') fail(`expected status ready, saw ${summarized.status}`)
 
+  // Questions (ADR-0007): index from the progress page, then ask on the meeting
+  // page through the real form, and check the cited line against the transcript
+  // the server serves — then that clicking it moves the player there.
+  const indexButton = page.getByRole('button', { name: 'Index for questions' })
+  await indexButton.waitFor({ timeout: 10_000 })
+  await indexButton.click()
+  // Right after indexing, the live region announces completion rather than the
+  // resting "Ready for questions" text; wait for the next action to appear.
+  await page.getByRole('link', { name: 'Ask on the meeting page' }).waitFor({ timeout: 30_000 })
+  const indexAnnouncement = (await page.locator('[role="status"]').allTextContents()).join(' ')
+  console.log('indexing announced:', /Indexing finished/.test(indexAnnouncement))
+  if (!/Indexing finished/.test(indexAnnouncement)) fail('indexing finished without announcing it to assistive tech')
+  const { index } = await (await fetch(`${baseURL}/api/meetings/${meetingId}/search-index`)).json()
+  console.log(`search index: ${index.state}, ${index.indexedCount}/${index.windowCount} windows, model ${index.model}`)
+  if (index.state !== 'ready' || index.windowCount === 0) fail('indexing did not leave a ready, non-empty index')
+
+  await page.getByRole('link', { name: 'Ask on the meeting page' }).click()
+  await page.waitForURL(new RegExp(`/meetings/${meetingId}$`), { timeout: 10_000 })
+  const questionBox = page.getByRole('textbox', { name: 'Your question' })
+  await questionBox.waitFor({ timeout: 10_000 })
+  // The stub transcriber's lines all say what the placeholder stands in for.
+  await questionBox.fill('What does the placeholder stand in for?')
+  await page.getByRole('button', { name: 'Ask', exact: true }).click()
+  const citationButtons = page.locator('section[aria-labelledby="answer-heading"] li button')
+  await citationButtons.first().waitFor({ timeout: 30_000 })
+
+  const cited = await citationButtons.evaluateAll(buttons => buttons.map(b => ({
+    stamp: b.querySelector('span')?.textContent?.trim(),
+    quote: b.querySelector('q')?.textContent?.trim(),
+  })))
+  console.log(`answer cites ${cited.length} line(s); first: ${cited[0]?.stamp} "${cited[0]?.quote?.slice(0, 50)}…"`)
+  const focusedOnAnswer = await page.evaluate(() => document.activeElement?.id === 'answer-heading')
+  console.log('focus moved to the answer:', focusedOnAnswer)
+  if (!focusedOnAnswer) fail('asking did not move focus to the answer')
+
+  const { segments: servedSegments } = await (await fetch(`${baseURL}/api/meetings/${meetingId}/transcript`)).json()
+  for (const c of cited) {
+    const line = servedSegments.find(s => occurs(normalise(s.text), normalise(c.quote ?? '')))
+    if (!line) fail(`answer cites a quote that is not in the transcript: "${c.quote}"`)
+  }
+  console.log('every answer citation is a real transcript line')
+
+  const target = servedSegments.find(s => occurs(normalise(s.text), normalise(cited.at(-1)?.quote ?? '')))
+  // Park the player far from the cited line first. Resetting to 0 would make
+  // this check pass without the click doing anything whenever the citation is
+  // the first line, which starts at 0:00.
+  const parkedAt = await page.evaluate(async (targetSec) => {
+    const audio = document.querySelector('audio')
+    if (!Number.isFinite(audio.duration)) {
+      await new Promise(resolve => audio.addEventListener('loadedmetadata', resolve, { once: true }))
+    }
+    audio.pause()
+    audio.currentTime = targetSec < audio.duration / 2 ? audio.duration - 0.5 : 0
+    await new Promise(resolve => setTimeout(resolve, 150))
+    return audio.currentTime
+  }, target.startMs / 1000)
+  if (Math.abs(parkedAt - target.startMs / 1000) < 5) fail('could not park the player away from the cited line, so seeking went untested')
+  await citationButtons.last().click()
+  await page.waitForTimeout(400)
+  const seekedTo = await page.evaluate(() => document.querySelector('audio').currentTime)
+  console.log(`clicking the citation moved the player to ${seekedTo.toFixed(2)}s (line starts at ${(target.startMs / 1000).toFixed(2)}s)`)
+  if (Math.abs(seekedTo - target.startMs / 1000) > 1.5) fail('clicking an answer citation did not seek to its line')
+
   // The archive lists the new meeting.
   await page.goto(`${baseURL}/meetings`, { waitUntil: 'networkidle' })
   await page.getByRole('link', { name: /Drive-script upload/ }).first().waitFor({ timeout: 10_000 })
