@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { createStorage } from 'unstorage'
+import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
 import { MAX_AUDIO_BYTES } from '../../shared/utils/meeting'
@@ -115,6 +117,18 @@ describe('POST /api/meetings', () => {
   })
 })
 
+/**
+ * Simulate the retry cooldown having elapsed, without a real 60s wait. Goes
+ * around the repository's own update/claim, which always stamp updatedAt with
+ * the current time — the field this has to override.
+ */
+async function backdateUpdatedAt(id: string, msAgo: number): Promise<void> {
+  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+  const meeting = await storage.getItem<Meeting>(`meetings/${id}`)
+  if (!meeting) throw new Error(`no local meeting row for ${id}`)
+  await storage.setItem(`meetings/${id}`, { ...meeting, updatedAt: new Date(Date.now() - msAgo).toISOString() })
+}
+
 describe('upload → complete', () => {
   it('stores the audio, verifies it and marks the meeting uploaded', async () => {
     const { meeting, upload } = await register()
@@ -172,6 +186,34 @@ describe('upload → complete', () => {
     const { meeting: failed } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
     expect(failed.status).toBe('failed')
     expect(failed.errorMessage).toMatch(/video\/mp4/)
+    // Recorded as the stage that actually failed. As 'transcription' — which
+    // is what this used to write — the progress page offered "Try
+    // transcription again" for audio this very request had just deleted, and
+    // every attempt returned the same 409 forever, with nothing else on offer.
+    expect(failed.failedStage).toBe('upload')
+  })
+
+  it('does not offer a transcription retry for audio it has just deleted', async () => {
+    const { meeting } = await register()
+    const path = audioPath(meeting)
+    await mkdir(join(path, '..'), { recursive: true })
+    await writeFile(path, audio)
+    await writeFile(`${path}.meta`, JSON.stringify({ contentType: 'video/mp4', size: audio.byteLength }))
+    await fetch(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
+
+    // The retry route must decline it as terminal rather than claiming the
+    // meeting, spending an attempt and rewriting the identical failure. Past
+    // the retry cooldown, so a cooldown is not what is being observed here.
+    await backdateUpdatedAt(meeting.id, 61_000)
+    const retry = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    expect(retry.status).toBe(409)
+    const body = await retry.json()
+    expect(body.message).toMatch(/upload the recording again/i)
+    expect(body.message).not.toMatch(/missing from storage/i)
+
+    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    expect(after.status).toBe('failed')
+    expect(after.failedStage).toBe('upload')
   })
 
   it('deletes a stored object whose size differs from the declaration and fails the meeting', async () => {

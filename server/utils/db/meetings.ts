@@ -52,7 +52,7 @@ export type MeetingRow = {
   audio_mime: string
   uploaded_at: string | null
   error_message: string | null
-  failed_stage: 'transcription' | 'summarization' | null
+  failed_stage: 'transcription' | 'summarization' | 'upload' | null
 }
 
 export function rowToMeeting(row: MeetingRow): Meeting {
@@ -107,7 +107,7 @@ export function newMeetingToRow(meeting: NewMeeting): Omit<MeetingRow, 'created_
  */
 function assertFailedStagePairing(
   status: MeetingStatus,
-  failedStage: 'transcription' | 'summarization' | null | undefined,
+  failedStage: 'transcription' | 'summarization' | 'upload' | null | undefined,
 ): void {
   const shouldHaveStage = status === 'failed'
   const hasStage = failedStage != null

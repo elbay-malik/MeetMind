@@ -1,6 +1,6 @@
 import { isError } from 'h3'
 import type { Meeting, TranscriptSegment } from '#shared/types/meeting'
-import { AUDIO_MIME, MAX_AUDIO_BYTES } from '#shared/utils/meeting'
+import { AUDIO_MIME, MAX_AUDIO_BYTES, TRANSCRIBE_CLAIM_LEASE_MS } from '#shared/utils/meeting'
 import { useAudioStore } from '../../../utils/storage'
 import { useMeetingRepository, useTranscriptRepository } from '../../../utils/db'
 import { conflict, notFound, requireMeetingId } from '../../../utils/http'
@@ -11,8 +11,12 @@ import { TranscriptionError } from '../../../utils/transcription/transcriber'
  * How long a claim is honoured before another caller may take it over. A crash,
  * a deploy or a Workers eviction between claiming and finishing would otherwise
  * leave the meeting in `transcribing` with nothing running and no way back.
+ *
+ * Shared with the client (see #shared/utils/meeting): the progress page needs
+ * the same number to know when offering a retry is recovery rather than a
+ * duplicate request. This route re-checks it under a compare-and-swap anyway.
  */
-const CLAIM_LEASE_MS = 15 * 60_000
+const CLAIM_LEASE_MS = TRANSCRIBE_CLAIM_LEASE_MS
 
 /**
  * How long a failure must sit before it can be retried. Matches
@@ -214,6 +218,12 @@ function describeWhyNotClaimable(current: Meeting): string {
   // is actually needed is retrying extraction, at POST .../summarize.
   if (current.status === 'failed' && current.failedStage === 'summarization') {
     return 'This meeting\'s transcript is already there; the failure was in extraction — retry summarisation, not transcription'
+  }
+  // The one genuinely terminal failure: verification deleted the object, so
+  // retrying here can only ever report the audio missing. Say that it cannot
+  // be retried rather than implying a later attempt might work.
+  if (current.status === 'failed' && current.failedStage === 'upload') {
+    return 'The uploaded audio was rejected and removed, so there is nothing to transcribe; upload the recording again'
   }
   return `Meeting is ${current.status}; it has no audio ready to transcribe`
 }

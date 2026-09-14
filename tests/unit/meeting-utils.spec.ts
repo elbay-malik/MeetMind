@@ -3,7 +3,10 @@ import {
   AUDIO_MIME,
   MAX_AUDIO_BYTES,
   MAX_TITLE_LENGTH,
+  SUMMARIZE_CLAIM_LEASE_MS,
+  TRANSCRIBE_CLAIM_LEASE_MS,
   audioObjectKey,
+  claimLooksStale,
   titleFromFileName,
   transcribedButEmpty,
 } from '../../shared/utils/meeting'
@@ -69,5 +72,48 @@ describe('transcribedButEmpty', () => {
 
   it('is false for a failed meeting whose failure was in transcription', () => {
     expect(transcribedButEmpty({ status: 'failed', failedStage: 'transcription' }, 0)).toBe(false)
+  })
+})
+
+describe('claimLooksStale', () => {
+  const at = (ms: number) => new Date(ms).toISOString()
+
+  // The reason this exists: a meeting left in transcribing/indexing by a
+  // crashed or evicted worker was recoverable ONLY by calling the route again,
+  // and the progress page — the only caller there is — offered no button for
+  // those statuses. The spinner polled forever. The page needs the same notion
+  // of "stale" the routes use to know when offering that call is recovery.
+  it('is false while a claim is still within its lease', () => {
+    const now = 10 * 60 * 60_000
+    expect(claimLooksStale({ status: 'transcribing', updatedAt: at(now - 60_000) }, now)).toBe(false)
+    expect(claimLooksStale({ status: 'indexing', updatedAt: at(now - 60 * 60_000) }, now)).toBe(false)
+  })
+
+  it('is true once nothing can still be holding the claim', () => {
+    const now = 10 * 60 * 60_000
+    expect(claimLooksStale(
+      { status: 'transcribing', updatedAt: at(now - TRANSCRIBE_CLAIM_LEASE_MS - 1) }, now,
+    )).toBe(true)
+    expect(claimLooksStale(
+      { status: 'indexing', updatedAt: at(now - SUMMARIZE_CLAIM_LEASE_MS - 1) }, now,
+    )).toBe(true)
+  })
+
+  it('uses each route\'s own lease, not a single shared number', () => {
+    // Extraction's lease is 16x transcription's, because a multi-chunk run
+    // legitimately takes hours. Treating them alike would either declare a
+    // live extraction dead or leave a dead transcription unrecoverable for 4h.
+    const now = 10 * 60 * 60_000
+    const justOverTranscribe = at(now - TRANSCRIBE_CLAIM_LEASE_MS - 1)
+    expect(claimLooksStale({ status: 'transcribing', updatedAt: justOverTranscribe }, now)).toBe(true)
+    expect(claimLooksStale({ status: 'indexing', updatedAt: justOverTranscribe }, now)).toBe(false)
+  })
+
+  it('is false for statuses that are not an in-flight claim at all', () => {
+    const now = 10 * 60 * 60_000
+    const ancient = at(0)
+    for (const status of ['pending_upload', 'uploaded', 'summarizing', 'ready', 'failed'] as const) {
+      expect(claimLooksStale({ status, updatedAt: ancient }, now), status).toBe(false)
+    }
   })
 })

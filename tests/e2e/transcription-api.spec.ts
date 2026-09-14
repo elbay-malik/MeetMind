@@ -7,6 +7,7 @@ import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting, TranscriptSegment } from '../../shared/types/meeting'
+import { TRANSCRIBE_CLAIM_LEASE_MS } from '../../shared/utils/meeting'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-transcribe-'))
@@ -64,6 +65,15 @@ async function markFailedAt(id: string, failedStage: Meeting['failedStage']): Pr
   const meeting = await storage.getItem<Meeting>(`meetings/${id}`)
   if (!meeting) throw new Error(`no local meeting row for ${id}`)
   await storage.setItem(`meetings/${id}`, { ...meeting, status: 'failed', failedStage, errorMessage: 'boom' })
+}
+
+/** Put a meeting into an in-flight status with nothing actually running it —
+ * the crashed/evicted worker the claim lease exists for. */
+async function setStatus(id: string, status: Meeting['status']): Promise<void> {
+  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+  const meeting = await storage.getItem<Meeting>(`meetings/${id}`)
+  if (!meeting) throw new Error(`no local meeting row for ${id}`)
+  await storage.setItem(`meetings/${id}`, { ...meeting, status, updatedAt: new Date().toISOString() })
 }
 
 describe('POST /api/meetings/:id/transcribe', () => {
@@ -212,6 +222,25 @@ describe('recovery', () => {
     await backdateUpdatedAt(meeting.id, 61_000)
     const { meeting: recovered } = await transcribe(meeting.id)
     expect(recovered.status).toBe('summarizing')
+  })
+
+  it('reclaims a transcribing meeting whose holder is gone, once the lease has expired', async () => {
+    // The whole point of CLAIM_LEASE_MS, and until now exercised by nothing:
+    // every backdateUpdatedAt in the suite used 61s (the retry cooldown), so
+    // no test ever pushed a meeting past the lease and the route's stale-lease
+    // branch — including the fencing token it passes — was never executed.
+    const meeting = await uploadedMeeting()
+    await setStatus(meeting.id, 'transcribing')
+
+    // Still inside the lease: a live worker must not be trampled.
+    const tooSoon = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    expect(tooSoon.status).toBe(409)
+    expect((await tooSoon.json()).message).toMatch(/already running/i)
+
+    await backdateUpdatedAt(meeting.id, TRANSCRIBE_CLAIM_LEASE_MS + 60_000)
+    const { meeting: recovered, segments } = await transcribe(meeting.id)
+    expect(recovered.status).toBe('summarizing')
+    expect(segments.length).toBeGreaterThan(0)
   })
 
   it('explains that a SUMMARISATION failure needs the other route, not "no audio"', async () => {

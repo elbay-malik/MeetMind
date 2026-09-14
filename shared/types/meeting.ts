@@ -41,8 +41,16 @@ export interface Meeting {
    * meant two, and neither the retry route nor the UI could tell them apart —
    * retrying transcription on a summarisation failure re-ran transcription and
    * overwrote a perfectly good transcript. Null outside `failed`.
+   *
+   * `'upload'` is the stage that has no retry at all: verification refused the
+   * stored object and deleted it, so there is nothing left for any route to
+   * work from. It exists precisely so the retry routes and the UI can tell
+   * that apart from a transcription failure, which they could not when this
+   * case was recorded as `'transcription'` — the progress page offered "Try
+   * transcription again" for audio that had just been deleted, and every
+   * attempt returned the same 409, forever.
    */
-  failedStage: 'transcription' | 'summarization' | null
+  failedStage: 'transcription' | 'summarization' | 'upload' | null
 }
 
 /**

@@ -1,5 +1,6 @@
 import { isError } from 'h3'
 import type { Meeting, MeetingSummary } from '#shared/types/meeting'
+import { SUMMARIZE_CLAIM_LEASE_MS } from '#shared/utils/meeting'
 import { useMeetingRepository, useSummaryRepository, useTranscriptRepository } from '../../../utils/db'
 import { conflict, notFound, requireMeetingId } from '../../../utils/http'
 import { useSummarizer } from '../../../utils/summary'
@@ -18,7 +19,7 @@ import { SummarizationError } from '../../../utils/summary/summarizer'
  * compare-and-swap below only protects against that up to the fencing check;
  * it cannot undo provider spend already made.
  */
-const CLAIM_LEASE_MS = 4 * 60 * 60_000
+const CLAIM_LEASE_MS = SUMMARIZE_CLAIM_LEASE_MS
 
 /**
  * How long a failure must sit before it can be retried. Extraction is several

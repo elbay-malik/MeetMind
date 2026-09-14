@@ -40,6 +40,44 @@ export function titleFromFileName(fileName: string): string {
 }
 
 /**
+ * How long each route honours a claim before another caller may take it over.
+ *
+ * Shared rather than route-private because the CLIENT needs the same numbers:
+ * a meeting left in `transcribing`/`indexing` by a crashed, redeployed or
+ * evicted worker is recoverable only by calling the route again, and the retry
+ * routes are the only thing that ever calls them. Without a way to tell "a
+ * worker is running" from "a worker died holding this", the progress page
+ * showed a spinner and no action at all — forever, for up to four hours of
+ * lease and then indefinitely, because nothing was left to issue the request
+ * that would reclaim it.
+ *
+ * The server stays the authority: it re-checks staleness under a
+ * compare-and-swap and refuses with an accurate 409 if a worker really is
+ * still alive. These only decide whether the button is worth offering.
+ */
+export const TRANSCRIBE_CLAIM_LEASE_MS = 15 * 60_000
+export const SUMMARIZE_CLAIM_LEASE_MS = 4 * 60 * 60_000
+
+/** Statuses that mean a route is holding a claim on this meeting right now. */
+const IN_FLIGHT_LEASE: Partial<Record<Meeting['status'], number>> = {
+  transcribing: TRANSCRIBE_CLAIM_LEASE_MS,
+  indexing: SUMMARIZE_CLAIM_LEASE_MS,
+}
+
+/**
+ * Whether an in-flight claim is old enough that nothing can still be holding
+ * it, so asking the route again is a recovery rather than a duplicate request.
+ */
+export function claimLooksStale(
+  meeting: Pick<Meeting, 'status' | 'updatedAt'>,
+  now: number = Date.now(),
+): boolean {
+  const lease = IN_FLIGHT_LEASE[meeting.status]
+  if (lease === undefined) return false
+  return now - new Date(meeting.updatedAt).getTime() >= lease
+}
+
+/**
  * Transcription has run and found nothing, as opposed to not having run yet.
  * Extracted out of the progress page (rather than left as an inline
  * computed) so this — the one thing that decides whether "no speech was

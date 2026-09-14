@@ -63,7 +63,7 @@ begin
     alter table public.meetings
       add constraint meetings_failed_stage_matches_status
       check (
-        (failed_stage in ('transcription', 'summarization') or failed_stage is null)
+        (failed_stage in ('transcription', 'summarization', 'upload') or failed_stage is null)
         and (status = 'failed') = (failed_stage is not null)
       );
   end if;

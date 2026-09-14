@@ -105,12 +105,26 @@ psql -q -c "insert into public.meetings (id,title,status,source_file_name,source
             values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_transcription',10,'transcription');"
 psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
             values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_summarization',10,'summarization');"
-check "failed_stage accepts null and both real stages" \
-  "select bool_and(ok) from (
-     select failed_stage is null as ok from public.meetings where audio_key='stage_null'
-     union all select failed_stage='transcription' from public.meetings where audio_key='stage_transcription'
-     union all select failed_stage='summarization' from public.meetings where audio_key='stage_summarization'
-   ) t"
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
+            values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_upload',10,'upload');"
+# Every stage the TypeScript union declares, read from the type itself rather
+# than hard-coded here: a stage added in code and forgotten in the migration
+# otherwise passes this file while failing against the real database.
+STAGES=$(grep -E "^  failedStage:" shared/types/meeting.ts \
+  | grep -o "'[a-z]*'" | tr -d "'" | tr '\n' ' ')
+# Loudly, not silently: an extraction that quietly matches nothing would turn
+# this whole block into a no-op that still prints nothing and passes.
+[ -n "${STAGES// /}" ] || fail "could not read failedStage's declared values from shared/types/meeting.ts"
+echo "  (failed_stage values declared in shared/types/meeting.ts: ${STAGES})"
+for stage in $STAGES; do
+  psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
+              values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_decl_${stage}',10,'${stage}')
+              on conflict do nothing;" >/dev/null
+  check "failed_stage accepts '${stage}', which shared/types/meeting.ts declares" \
+    "select failed_stage = '${stage}' from public.meetings where audio_key = 'stage_decl_${stage}'"
+done
+check "failed_stage accepts null outside failed" \
+  "select failed_stage is null from public.meetings where audio_key='stage_null'"
 check "a legacy failed row with no transcript is backfilled to transcription" \
   "select failed_stage = 'transcription' from public.meetings where audio_key = 'legacy_failed_no_transcript'"
 check "a legacy failed row that already has a transcript is backfilled to summarization, not transcription" \
@@ -119,7 +133,7 @@ check "a legacy failed row that already has a transcript is backfilled to summar
 # assume an otherwise-empty transcript_segments table still hold.
 psql -q -c "delete from public.meetings
             where audio_key in ('legacy_failed_no_transcript', 'legacy_failed_has_transcript');"
-reject "failed_stage outside the two real stages is refused" \
+reject "failed_stage outside the declared stages is refused" \
   "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage)
    values (gen_random_uuid(),'x','failed','a.mp4',1,'stage_bad',10,'indexing');" \
   "violates check"

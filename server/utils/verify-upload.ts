@@ -43,9 +43,14 @@ export async function failMeetingUpload(
     const detail = err instanceof Error ? err.message : String(err)
     errorMessage = `${reason}; object could not be deleted and needs sweeping (${detail})`
   }
-  // Retrying this lands in transcribe.post.ts, which re-checks the audio
-  // against storage — the closest available recovery for an upload that
-  // failed before transcription ever ran.
-  await repo.update(meeting.id, { status: 'failed', errorMessage, failedStage: 'transcription' })
+  // `'upload'`, not `'transcription'`: this function has just DELETED the
+  // object (or failed to, in which case it is still the wrong one), so there
+  // is no audio for any route to work from. Recording it as a transcription
+  // failure made the progress page offer "Try transcription again", which
+  // could only ever return "The meeting audio is missing from storage" — the
+  // same 409 on every attempt, with no other action offered and no way back
+  // to `pending_upload`. Naming the stage that actually failed lets both
+  // retry routes decline it and lets the UI say so.
+  await repo.update(meeting.id, { status: 'failed', errorMessage, failedStage: 'upload' })
   return errorMessage
 }

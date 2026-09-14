@@ -23,14 +23,49 @@ const segments = computed(() => transcriptData.value?.segments ?? [])
 const transcribing = ref(false)
 const stepError = ref<{ step: string, message: string } | null>(null)
 const justFinished = ref(false)
+const justSummarized = ref(false)
+
+/**
+ * Re-read on every poll so `claimLooksStale` below actually changes answer as
+ * time passes: it depends on the wall clock, which is not reactive, so without
+ * this a page left open would never notice a claim going stale.
+ */
+const now = ref(Date.now())
+
+/** The footer, so focus can be put back on the action after a step finishes
+ * (see restoreActionFocus). Queried rather than a component ref: what needs
+ * focusing is the real <button>, whatever the UI library wraps it in. */
+const footer = ref<HTMLElement | null>(null)
 
 async function reloadAll() {
   await Promise.all([refresh(), refreshTranscript()])
+  now.value = Date.now()
+}
+
+/**
+ * Put focus back on the action after a step finishes.
+ *
+ * Each step swaps which action is offered, and the button the user just
+ * activated stops being the right one. Keeping ONE button element across those
+ * transitions (see primaryAction) means the browser does not drop focus to
+ * <body> merely because a v-if branch changed — but a step that ends with no
+ * action at all, or with the button briefly disabled while loading, still can.
+ * Measured before this: focus landed on <body> twice in a normal run, once
+ * after transcription and once after extraction.
+ */
+async function restoreActionFocus() {
+  await nextTick()
+  if (document.activeElement && document.activeElement !== document.body) return
+  footer.value?.querySelector('button')?.focus()
 }
 
 const summarizing = ref(false)
 
 async function startSummary() {
+  // Guarded rather than disabled: a disabled button loses focus, which is the
+  // behaviour restoreActionFocus exists to undo. Re-entry is what actually
+  // needed preventing.
+  if (summarizing.value) return
   summarizing.value = true
   stepError.value = null
   // Otherwise the completion announcement from transcription survives into
@@ -41,6 +76,7 @@ async function startSummary() {
   justFinished.value = false
   try {
     await $fetch(`/api/meetings/${meetingId.value}/summarize`, { method: 'POST' })
+    justSummarized.value = true
   }
   catch (err) {
     stepError.value = { step: 'Extraction failed', message: describeError(err) }
@@ -48,13 +84,16 @@ async function startSummary() {
   finally {
     summarizing.value = false
     await reloadAll()
+    await restoreActionFocus()
   }
 }
 
 async function startTranscription() {
+  if (transcribing.value) return
   transcribing.value = true
   stepError.value = null
   justFinished.value = false
+  justSummarized.value = false
   try {
     await $fetch(`/api/meetings/${meetingId.value}/transcribe`, { method: 'POST' })
     justFinished.value = true
@@ -65,7 +104,24 @@ async function startTranscription() {
   finally {
     transcribing.value = false
     await reloadAll()
+    await restoreActionFocus()
   }
+}
+
+/**
+ * Ask the route that owns this meeting to take it over again.
+ *
+ * A meeting left in `transcribing`/`indexing` by a crashed, redeployed or
+ * evicted worker is exactly what each route's stale-lease reclaim exists to
+ * recover — but that reclaim only runs inside the POST, and this page was the
+ * only thing that ever sent one, for statuses it offered no button for. The
+ * result was a spinner that polled forever with nothing able to move it. The
+ * server still decides: if a worker is genuinely alive, it refuses with a 409
+ * saying so, which lands in stepError like any other failure.
+ */
+async function resumeStalled() {
+  if (meeting.value.status === 'transcribing') return startTranscription()
+  return startSummary()
 }
 
 // A meeting can be left mid-transcription by another tab, or by a request that
@@ -75,6 +131,10 @@ const POLL_MS = 5000
 let poller: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   poller = setInterval(() => {
+    // Always advance the clock, even when nothing is reloaded: canResume below
+    // is a function of elapsed time, and a page left open on a dead claim has
+    // nothing else that would ever re-evaluate it.
+    now.value = Date.now()
     if (meeting.value.status === 'transcribing' && !transcribing.value) void reloadAll()
     if (meeting.value.status === 'indexing' && !summarizing.value) void reloadAll()
   }, POLL_MS)
@@ -162,6 +222,47 @@ const canSummarize = computed(() =>
   meeting.value.status === 'summarizing'
   || (meeting.value.status === 'failed' && meeting.value.failedStage === 'summarization'))
 
+/** An in-flight claim nothing can still be holding — see claimLooksStale. */
+const canResume = computed(() => claimLooksStale(meeting.value, now.value))
+
+/** The failure with no retry at all: the audio was rejected and removed. */
+const uploadWasRejected = computed(() =>
+  meeting.value.status === 'failed' && meeting.value.failedStage === 'upload')
+
+/**
+ * The one action this meeting can take, as data rather than a chain of v-if
+ * branches in the template. One button element then survives every transition,
+ * so activating it does not drop keyboard focus to <body> when the next step
+ * replaces which action is offered.
+ */
+const primaryAction = computed(() => {
+  if (canTranscribe.value) {
+    return {
+      icon: 'i-lucide-captions',
+      label: meeting.value.errorMessage ? 'Try transcription again' : 'Start transcription',
+      busy: transcribing.value,
+      run: startTranscription,
+    }
+  }
+  if (canSummarize.value) {
+    return {
+      icon: 'i-lucide-list-checks',
+      label: meeting.value.errorMessage ? 'Try extraction again' : 'Extract decisions & action items',
+      busy: summarizing.value,
+      run: startSummary,
+    }
+  }
+  if (canResume.value) {
+    return {
+      icon: 'i-lucide-rotate-ccw',
+      label: meeting.value.status === 'transcribing' ? 'Resume transcription' : 'Resume extraction',
+      busy: meeting.value.status === 'transcribing' ? transcribing.value : summarizing.value,
+      run: resumeStalled,
+    }
+  }
+  return null
+})
+
 /**
  * What the card is doing, as one string in one live region. Screen readers only
  * announce a region that stays mounted, so the completion message has to appear
@@ -170,11 +271,27 @@ const canSummarize = computed(() =>
 const activityLabel = computed(() => {
   if (summarizing.value) return 'Extracting decisions and action items.'
   if (transcribing.value) return 'Transcribing. This can take a moment.'
+  // A claim nothing can still be holding is not "running", and saying so left
+  // the only message on the card actively misleading for as long as the page
+  // stayed open.
+  if (canResume.value) {
+    return meeting.value.status === 'transcribing'
+      ? 'Transcription stopped before it finished. Resume it to try again.'
+      : 'Extraction stopped before it finished. Resume it to try again.'
+  }
   if (meeting.value.status === 'transcribing') return 'Transcription is running.'
   // Another tab, or a request that outlived its page, can leave a meeting
   // claimed here with nothing visibly running on THIS page.
   if (meeting.value.status === 'indexing') return 'Extraction is running.'
+  // Both completions are announced, not just transcription's: this region is
+  // the only thing a screen reader hears, and it used to go from "Extracting
+  // decisions and action items." straight to empty, which announces nothing
+  // at all — the one moment the user is waiting to be told about.
+  if (justSummarized.value) return 'Extraction finished. Decisions and action items are ready.'
   if (justFinished.value) return `Transcription finished with ${segments.value.length} segments.`
+  if (uploadWasRejected.value) {
+    return 'The uploaded audio was rejected and removed. Upload the recording again.'
+  }
   if (canTranscribe.value) return 'Transcription runs on demand until the pipeline is automated.'
   return ''
 })
@@ -233,7 +350,11 @@ const activityLabel = computed(() => {
               <template v-if="stage.key === 'upload' && stage.reached(meeting.status)">
                 {{ formatMegabytes(meeting.audioBytes) }} of 16&nbsp;kHz mono Opus.
               </template>
-              <template v-if="stage.key === 'transcribe' && segments.length">
+              <!-- Only once the stage is actually reached: rendering "7
+                   segments." under a grey, not-reached stage contradicts the
+                   tick beside it, which is the shape a failed-at-transcription
+                   meeting that still has an older transcript produces. -->
+              <template v-if="stage.key === 'transcribe' && stage.reached(meeting.status) && segments.length">
                 {{ segments.length }} segments.
               </template>
             </p>
@@ -242,24 +363,20 @@ const activityLabel = computed(() => {
       </ol>
 
       <template #footer>
-        <div class="flex flex-wrap items-center gap-3">
+        <div
+          ref="footer"
+          class="flex flex-wrap items-center gap-3"
+        >
+          <!-- ONE button across every state, driven by primaryAction: a v-if
+               chain unmounts the focused control the moment a step finishes,
+               dropping keyboard focus to <body>. -->
           <UButton
-            v-if="canTranscribe"
-            :loading="transcribing"
-            :disabled="transcribing"
-            icon="i-lucide-captions"
-            @click="startTranscription"
+            v-if="primaryAction"
+            :loading="primaryAction.busy"
+            :icon="primaryAction.icon"
+            @click="primaryAction.run()"
           >
-            {{ meeting.errorMessage ? 'Try transcription again' : 'Start transcription' }}
-          </UButton>
-          <UButton
-            v-else-if="canSummarize"
-            :loading="summarizing"
-            :disabled="summarizing"
-            icon="i-lucide-list-checks"
-            @click="startSummary"
-          >
-            {{ meeting.errorMessage ? 'Try extraction again' : 'Extract decisions & action items' }}
+            {{ primaryAction.label }}
           </UButton>
           <UIcon
             v-else-if="meeting.status === 'transcribing' || meeting.status === 'indexing'"
@@ -285,6 +402,18 @@ const activityLabel = computed(() => {
       icon="i-lucide-triangle-alert"
       :title="stepError.step"
       :description="stepError.message"
+    />
+    <!-- Before the generic failure alert: this one has no retry, so saying
+         only "Something went wrong" left the page with no next step at all
+         while the pipeline card offered an action that could never work. -->
+    <UAlert
+      v-else-if="uploadWasRejected"
+      role="alert"
+      color="error"
+      variant="subtle"
+      icon="i-lucide-file-x"
+      title="The audio was rejected and removed"
+      :description="`${meeting.errorMessage} This meeting cannot be transcribed — upload the recording again.`"
     />
     <UAlert
       v-else-if="meeting.errorMessage"
