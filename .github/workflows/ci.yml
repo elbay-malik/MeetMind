@@ -60,3 +60,52 @@ jobs:
       # Builds the app, then exercises the Nitro routes against the local
       # storage drivers — no cloud credentials needed.
       - run: pnpm test:e2e
+
+  # Applies every migration to a throwaway Postgres and asserts the schema
+  # invariants the app relies on. Supabase itself is never reachable from CI, so
+  # without this the SQL only ever ran when someone remembered to run the script
+  # by hand — and two of its checks turned out not to test what they claimed.
+  migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash scripts/verify-migrations.sh
+
+  # Headless Chromium against a real built server: in-browser extraction,
+  # upload, transcription, extraction, then real seeking, focus, scrolling and
+  # keyboard input on the player. None of that is observable from unit or e2e
+  # tests, and it is the only check that caught the scroll-centring and
+  # follow-playback bugs — which, until this job, nothing ran automatically.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install ffmpeg (generates the fixture, which is not committed)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: bash scripts/make-fixture.sh
+      - name: Install Chromium for playwright-core
+        run: pnpm exec playwright-core install --with-deps chromium
+      - run: pnpm build
+      - name: Drive the upload flow and the player
+        run: |
+          DATA_DIR=$(mktemp -d)
+          NUXT_DATA_DIR="$DATA_DIR" NUXT_UPLOAD_TOKEN_SECRET=ci-secret PORT=3000 \
+            node .output/server/index.mjs > server.log 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf http://localhost:3000/api/health >/dev/null && break
+            sleep 1
+          done
+          node scripts/drive-upload.mjs http://localhost:3000 fixtures/fixture-30s-720p.mp4 "$DATA_DIR" | tee upload.log
+          MEETING_ID=$(grep -oE 'landed on progress page for [0-9a-f-]{36}' upload.log | awk '{print $NF}')
+          test -n "$MEETING_ID" || { echo "no meeting id in upload output"; exit 1; }
+          node scripts/drive-player.mjs http://localhost:3000 "$MEETING_ID"
+      - name: Server log
+        if: failure()
+        run: cat server.log || true
+

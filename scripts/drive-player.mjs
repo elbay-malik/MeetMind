@@ -2,7 +2,8 @@
 // element, real seeking, real focus handling. None of that is observable from
 // unit tests.
 //
-// It does NOT prove range support. The committed fixture yields ~70 KB of audio,
+// It does NOT prove range support. The generated fixture (scripts/make-fixture.sh;
+// not committed) yields ~70 KB of audio,
 // which Chromium downloads in full and then seeks within from memory, so seeking
 // looks fine even against a server that ignores Range entirely — verified by
 // breaking the route deliberately and watching this script still pass. Range
