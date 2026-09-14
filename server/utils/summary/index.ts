@@ -18,7 +18,10 @@ function announce(kind: Summarizer['kind']) {
 // concurrent extractions for different meetings pace only against their own
 // requests without this — each individually paced, but together still able
 // to exceed the aggregate limit neither alone would hit.
-const sharedGroqPacer = createRequestPacer(60_000)
+// Exported because answering a question is a Groq request against the same
+// per-account allowance, so it has to wait in the same queue (ADR-0007
+// decision 7) rather than collide with an extraction chunk.
+export const sharedGroqPacer = createRequestPacer(60_000)
 
 /**
  * Pick the summarizer from runtime config: Groq when its key is present,

@@ -5,14 +5,16 @@ import { planChunks } from './plan'
 import { reconcile } from './reconcile'
 import { SummarizationError, type SummarizeInput, type Summarizer } from './summarizer'
 
-const ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions'
+// Exported for the question answerer (server/utils/qa/groq-answerer.ts), which
+// talks to the same model under the same per-account limit.
+export const ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions'
 
 /**
  * Only the gpt-oss models support strict structured outputs on Groq. The
  * playbook names llama-3.3-70b-versatile, which is still a current model but
  * cannot do the one thing this phase needs.
  */
-const MODEL = 'openai/gpt-oss-120b'
+export const MODEL = 'openai/gpt-oss-120b'
 
 /**
  * Transcript tokens allowed per request, leaving room inside the per-minute
@@ -27,7 +29,7 @@ export const CHUNK_BUDGET_TOKENS = 5000
  * Schema at large: every property must be required, objects must forbid extra
  * properties, and an optional field is expressed as a union with null.
  */
-function toStrictJsonSchema(schema: z.ZodType): Record<string, unknown> {
+export function toStrictJsonSchema(schema: z.ZodType): Record<string, unknown> {
   const json = z.toJSONSchema(schema, { target: 'draft-2020-12' }) as Record<string, unknown>
   return harden(json) as Record<string, unknown>
 }

@@ -1,0 +1,211 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { createLocalTranscriptIndexRepository } from '../../server/utils/db/windows-local'
+import type { Answerer, AnswerInput } from '../../server/utils/qa/answerer'
+import { askMeeting, TOP_K } from '../../server/utils/qa/ask'
+import { indexMeeting } from '../../server/utils/qa/indexing'
+import { createStubAnswerer } from '../../server/utils/qa/stub-answerer'
+import { createStubEmbedder } from '../../server/utils/qa/stub'
+import type { WireAnswer } from '../../shared/schemas/qa'
+import type { TranscriptSegment } from '../../shared/types/meeting'
+
+/**
+ * A meeting long enough to plan into many windows, with one distinctive
+ * exchange about the budget and one about hiring, far apart in time. The hiring
+ * line shares no word — stopwords included — with the budget questions asked
+ * below, since the stub embedder is a bag of tokens and would otherwise
+ * legitimately rank it above the filler.
+ */
+function meeting(): TranscriptSegment[] {
+  const filler = (i: number) => `general update number ${i} with nothing notable`
+  return Array.from({ length: 80 }, (_, i) => ({
+    idx: i,
+    startMs: i * 5_000,
+    endMs: i * 5_000 + 4_800,
+    text: i === 10
+      ? 'We agreed to cut the marketing budget by twenty percent next quarter.'
+      : i === 11
+        ? 'Finance will circulate the revised budget on Monday.'
+        : i === 60
+          ? 'Priya will interview two candidates for a design role.'
+          : filler(i),
+  }))
+}
+
+/** An answerer that returns a fixed reply and records what it was shown. */
+function scriptedAnswerer(reply: WireAnswer) {
+  const seen: AnswerInput[] = []
+  const answerer: Answerer = {
+    kind: 'stub',
+    async answer(input) {
+      seen.push(input)
+      return reply
+    },
+  }
+  return { answerer, seen }
+}
+
+let dataDir: string
+beforeAll(async () => {
+  dataDir = await mkdtemp(join(tmpdir(), 'meetmind-ask-'))
+})
+afterAll(() => rm(dataDir, { recursive: true, force: true }))
+
+const embedder = createStubEmbedder()
+const repo = () => createLocalTranscriptIndexRepository({ dataDir })
+
+async function indexed(meetingId: string, segments = meeting()) {
+  await indexMeeting({ meetingId, segments, embedder, repo: repo() })
+  return segments
+}
+
+const ask = (meetingId: string, question: string, segments: TranscriptSegment[], answerer: Answerer) =>
+  askMeeting({ meetingId, question, segments, embedder, repo: repo(), answerer })
+
+describe('askMeeting', () => {
+  it('answers from the retrieved lines, citing the one that supports it with its timestamp', async () => {
+    const segments = await indexed('a1')
+    const answer = await ask('a1', 'What did we decide about the marketing budget?', segments, createStubAnswerer())
+
+    expect(answer.found).toBe(true)
+    if (!answer.found) return
+    expect(answer.citations).toEqual([{
+      quote: 'We agreed to cut the marketing budget by twenty percent next quarter.',
+      segmentIdx: 10,
+      startMs: 50_000,
+    }])
+  })
+
+  it('shows the answering model only the retrieved lines, not the whole meeting', async () => {
+    const segments = await indexed('a2')
+    const { answerer, seen } = scriptedAnswerer({ citations: [], answer: '' })
+    await ask('a2', 'What did we decide about the marketing budget?', segments, answerer)
+
+    const shown = seen[0]!.segments.map(s => s.idx)
+    expect(shown).toContain(10)
+    expect(shown.length).toBeLessThan(segments.length)
+    // At most TOP_K windows' worth, contiguous runs in transcript order.
+    expect(shown).toEqual([...shown].sort((a, b) => a - b))
+    expect(new Set(shown).size).toBe(shown.length)
+    expect(TOP_K).toBeGreaterThan(0)
+  })
+
+  it('drops a fabricated citation and withholds an answer left with none', async () => {
+    // The whole point: a fluent answer whose evidence nobody said is not shown.
+    const segments = await indexed('a3')
+    const { answerer } = scriptedAnswerer({
+      citations: [{ quote: 'We agreed to double the marketing budget immediately.', segmentIdx: 10 }],
+      answer: 'The budget was doubled.',
+    })
+    expect(await ask('a3', 'What happened to the marketing budget?', segments, answerer))
+      .toEqual({ found: false, answer: null, citations: [] })
+  })
+
+  it('drops a real quote from a line that was never retrieved', async () => {
+    // Line 60 exists in the meeting, but a budget question does not retrieve
+    // it — so the model cannot have read it, and citing it is invention even
+    // though the words are genuine. The check runs against the retrieved lines
+    // only, not the whole transcript.
+    const segments = await indexed('a4')
+    const { answerer, seen } = scriptedAnswerer({
+      citations: [{ quote: 'Priya will interview two candidates for a design role.', segmentIdx: 60 }],
+      answer: 'Priya is interviewing.',
+    })
+    const answer = await ask('a4', 'What did we decide about the marketing budget?', segments, answerer)
+    expect(seen[0]!.segments.map(s => s.idx)).not.toContain(60)
+    expect(answer).toEqual({ found: false, answer: null, citations: [] })
+  })
+
+  it('keeps the supported citations when only some are fabricated, in time order, once each', async () => {
+    const segments = await indexed('a5')
+    const { answerer } = scriptedAnswerer({
+      citations: [
+        { quote: 'Finance will circulate the revised budget on Monday.', segmentIdx: 11 },
+        { quote: 'the budget was never discussed', segmentIdx: 11 },
+        { quote: 'We agreed to cut the marketing budget by twenty percent next quarter.', segmentIdx: 10 },
+        { quote: 'We agreed to cut the marketing budget by twenty percent next quarter.', segmentIdx: 10 },
+      ],
+      answer: '  The marketing budget is being cut by twenty percent, with a revised budget on Monday.  ',
+    })
+    const answer = await ask('a5', 'What did we decide about the marketing budget?', segments, answerer)
+    expect(answer).toEqual({
+      found: true,
+      answer: 'The marketing budget is being cut by twenty percent, with a revised budget on Monday.',
+      citations: [
+        { quote: 'We agreed to cut the marketing budget by twenty percent next quarter.', segmentIdx: 10, startMs: 50_000 },
+        { quote: 'Finance will circulate the revised budget on Monday.', segmentIdx: 11, startMs: 55_000 },
+      ],
+    })
+  })
+
+  it('withholds an empty answer even when its citations check out', async () => {
+    const segments = await indexed('a6')
+    const { answerer } = scriptedAnswerer({
+      citations: [{ quote: 'We agreed to cut the marketing budget by twenty percent next quarter.', segmentIdx: 10 }],
+      answer: '   ',
+    })
+    expect((await ask('a6', 'What about the marketing budget?', segments, answerer)).found).toBe(false)
+  })
+
+  it('refuses to answer before the meeting is indexed, without spending any call', async () => {
+    const { answerer, seen } = scriptedAnswerer({ citations: [], answer: '' })
+    await expect(ask('a7', 'What about the budget?', meeting(), answerer))
+      .rejects.toMatchObject({ statusCode: 409, message: expect.stringMatching(/not been indexed/) })
+    expect(seen).toHaveLength(0)
+  })
+
+  it('refuses to answer from an index made stale by a replaced transcript', async () => {
+    await indexed('a8')
+    const replaced = meeting().map(s => s.idx === 10 ? { ...s, text: 'We agreed to keep the budget unchanged.' } : s)
+    const { answerer, seen } = scriptedAnswerer({ citations: [], answer: '' })
+    await expect(ask('a8', 'What about the budget?', replaced, answerer))
+      .rejects.toMatchObject({ statusCode: 409, message: expect.stringMatching(/out of date/) })
+    expect(seen).toHaveLength(0)
+  })
+
+  it('refuses a window whose text changed between the status check and retrieval', async () => {
+    // The race the retrieval-time hash check exists for: the transcript is
+    // replaced after the index reads as ready but before search runs. Status
+    // alone cannot catch it, so this repository reports current keys while its
+    // search hands back a window carrying a stale hash.
+    const segments = await indexed('a11')
+    const real = repo()
+    const racing = {
+      ...real,
+      async search(...args: Parameters<typeof real.search>) {
+        const matches = await real.search(...args)
+        return matches.map((m, i) => i === 0 ? { ...m, contentHash: '0'.repeat(64) } : m)
+      },
+    }
+    const { answerer, seen } = scriptedAnswerer({ citations: [], answer: '' })
+    await expect(askMeeting({
+      meetingId: 'a11', question: 'What about the marketing budget?', segments, embedder, repo: racing, answerer,
+    })).rejects.toMatchObject({ statusCode: 409, message: expect.stringMatching(/changed after it was indexed/) })
+    expect(seen).toHaveLength(0)
+  })
+
+  it('refuses a question with no words in it', async () => {
+    const segments = await indexed('a9')
+    await expect(ask('a9', ' ?! ', segments, createStubAnswerer()))
+      .rejects.toMatchObject({ statusCode: 400 })
+  })
+
+  it('does not let the stub answerer treat a shared short word as an answer', async () => {
+    // Stub-only behaviour, but it is what every demo without a key shows: a
+    // question sharing only "the" with an unrelated line must come back not
+    // found, not as a confident citation of the wrong decision.
+    const segments = await indexed('a12')
+    const answer = await ask('a12', 'Which vendors bid for the office lease?', segments, createStubAnswerer())
+    expect(answer).toEqual({ found: false, answer: null, citations: [] })
+  })
+
+  it('reports not found, without calling the model, for a meeting with nothing in it', async () => {
+    await indexed('a10', [])
+    const { answerer, seen } = scriptedAnswerer({ citations: [], answer: '' })
+    expect(await ask('a10', 'What about the budget?', [], answerer))
+      .toEqual({ found: false, answer: null, citations: [] })
+    expect(seen).toHaveLength(0)
+  })
+})

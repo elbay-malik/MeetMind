@@ -145,3 +145,22 @@ export interface SearchIndexStatus {
   /** The embedding model the index is (or would be) built with. */
   model: string
 }
+
+/** A line of the transcript an answer rests on, checked before it is returned. */
+export interface Citation {
+  quote: string
+  segmentIdx: number
+  startMs: number
+}
+
+/**
+ * The answer to a question about one meeting.
+ *
+ * `found: false` means no citation survived the check against the transcript,
+ * and then there is no `answer` at all: an uncited claim is withheld rather than
+ * shown (ADR-0007 decision 3). It does not prove the meeting never discussed the
+ * subject, only that nothing retrieved supported an answer.
+ */
+export type QuestionAnswer
+  = | { found: true, answer: string, citations: Citation[] }
+    | { found: false, answer: null, citations: [] }

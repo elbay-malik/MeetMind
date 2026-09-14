@@ -1,5 +1,9 @@
 import type { H3Event } from 'h3'
 import { requireAllOrNone } from '../storage'
+import { sharedGroqPacer } from '../summary'
+import type { Answerer } from './answerer'
+import { createGroqAnswerer } from './groq-answerer'
+import { createStubAnswerer } from './stub-answerer'
 import type { Embedder } from './embedder'
 import { createGeminiEmbedder } from './gemini'
 import { createStubEmbedder } from './stub'
@@ -26,4 +30,23 @@ export function useEmbedder(event: H3Event): Embedder {
     : createStubEmbedder()
   announce(embedder.kind)
   return embedder
+}
+
+let answererAnnounced = false
+
+/**
+ * Pick the answerer: Groq when its key is present, sharing extraction's pacer
+ * because both spend one per-account allowance; otherwise a deterministic stub.
+ */
+export function useAnswerer(event: H3Event): Answerer {
+  const config = useRuntimeConfig(event)
+  const groqReady = requireAllOrNone('Groq', { NUXT_GROQ_API_KEY: config.groqApiKey })
+  const answerer = groqReady
+    ? createGroqAnswerer({ apiKey: config.groqApiKey, pacer: sharedGroqPacer })
+    : createStubAnswerer()
+  if (!answererAnnounced && answerer.kind === 'stub') {
+    answererAnnounced = true
+    console.info('[meetmind] answers: stub (set NUXT_GROQ_API_KEY to use Groq)')
+  }
+  return answerer
 }
