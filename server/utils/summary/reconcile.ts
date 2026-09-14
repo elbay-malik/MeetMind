@@ -23,14 +23,35 @@ import { NO_SPACE_SCRIPT } from './plan'
  * sequences back to their precomposed form anyway; `\p{M}` covers what NFC
  * does not (no precomposed form exists for every combination).
  *
+ * Punctuation BETWEEN DIGITS is the exception, spelled out as a word instead
+ * of flattened to a space: a separator is what distinguishes a value from a
+ * range, and dropping it made "3.5 percent" and "3-5 percent" identical, so a
+ * quote could state a range the transcript never mentioned (or the reverse)
+ * and still attest. Spelling it keeps both sides comparable — the transcript
+ * and the quote get the same treatment — while leaving the two distinguishable.
+ *
  * Exported so every place that needs to check "does this text support that
  * quote" — reconciliation itself, and the e2e/driver checks that verify its
  * output over the real route — uses the identical rule rather than a raw
  * substring check that would reject a validly-stored, punctuation-normalized
  * citation.
  */
+const DIGIT_SEPARATOR_WORDS: Record<string, string> = {
+  '.': ' point ',
+  ',': ' comma ',
+  '-': ' to ',
+  '–': ' to ',
+  '/': ' slash ',
+  ':': ' colon ',
+}
+
 export function normalise(text: string): string {
-  return text.normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ').trim()
+  return text
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/(?<=\p{Nd})[.,\-–/:](?=\p{Nd})/gu, match => DIGIT_SEPARATOR_WORDS[match] ?? ' ')
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ')
+    .trim()
 }
 
 /**
@@ -107,8 +128,7 @@ export function occurs(haystack: string, needle: string): boolean {
  * Shortest FRAGMENT worth attesting; below this a match is likely accidental
  * and, more to the point, proves too little to back a specific claim — a short
  * generic phrase ("the vendor", "next week") occurs constantly and can be
- * paired with a decision it has nothing to do with. Counted in characters, so
- * for scripts written without spaces this is a longer phrase than it looks.
+ * paired with a decision it has nothing to do with.
  *
  * A quote that is the cited segment's ENTIRE text is exempted down to
  * {@link MIN_FULL_SEGMENT_QUOTE_CHARS}: there is no larger context it could be
@@ -117,6 +137,44 @@ export function occurs(haystack: string, needle: string): boolean {
  */
 const MIN_QUOTE_CHARS = 20
 const MIN_FULL_SEGMENT_QUOTE_CHARS = 2
+
+/**
+ * What one character of a no-space script is worth against the floor above.
+ *
+ * A raw character count is not a comparable measure of "how specific is this
+ * quote" across scripts, and treating it as one made the floor a far stricter
+ * rule for Japanese, Chinese, Thai, Khmer, Lao, Burmese and Tibetan than for
+ * Latin rather than the "longer phrase than it looks" the old comment here
+ * claimed. Twenty characters of English is three or four words; twenty
+ * characters of Japanese is a whole sentence. Measured against the real
+ * implementation, 来週までに新しい見積もりを提出すること — nineteen characters, a
+ * complete and entirely specific clause — was rejected, so a CJK meeting
+ * produced citations only when the model happened to quote a segment in full.
+ *
+ * 2.5 is a judgement, not a measurement: one such character is roughly a
+ * morpheme, so equal SPECIFICITY would argue for a weight near 5 (four
+ * characters ≈ four English words). This deliberately stops well short of
+ * that, buying back the clearly-specific clauses without lowering the bar to
+ * the two- or three-character phrases that really are generic.
+ */
+const NO_SPACE_CHAR_WEIGHT = 2.5
+
+/**
+ * Length of a quote in units comparable across scripts — see
+ * {@link NO_SPACE_CHAR_WEIGHT}.
+ *
+ * Code points, not `.length`: a supplementary-plane character (a real if
+ * uncommon Han ideograph) is ONE character but TWO UTF-16 units, so counting
+ * units would let it clear a floor it should not — plan.ts counts the same way
+ * for the same reason.
+ */
+function weightedLength(text: string): number {
+  let total = 0
+  for (const character of text) {
+    total += NO_SPACE_SCRIPT.test(character) ? NO_SPACE_CHAR_WEIGHT : 1
+  }
+  return total
+}
 
 export interface Attested {
   segmentIdx: number
@@ -160,11 +218,17 @@ export function attestQuote(
   const needle = normalise(quote)
   if (!needle) return null
   const needleKey = tokenKey(needle)
-  // Unicode CODE POINTS, not `.length` (UTF-16 code units): a single
-  // supplementary-plane character (a real if uncommon Han ideograph) is ONE
-  // character but TWO UTF-16 units, so `.length` alone would let it slip
-  // through the 2-character full-match floor as if it were two characters —
-  // plan.ts counts the same way for the same reason.
+  // Two different questions, so two different measures.
+  //
+  // The FRAGMENT floor asks "is this specific enough to pin a claim to", which
+  // is not comparable across scripts by raw character count — see
+  // weightedLength and NO_SPACE_CHAR_WEIGHT.
+  const needleWeighted = weightedLength(needle)
+  // The FULL-SEGMENT floor asks only "is this a real utterance at all", since
+  // a whole segment cannot have been cherry-packed out of a larger context.
+  // Raw characters are the right measure there, in Unicode CODE POINTS rather
+  // than `.length`: one supplementary-plane character is a single character but
+  // TWO UTF-16 units, and would otherwise clear a floor of 2 on its own.
   const needleCodePoints = [...needle].length
 
   const candidates: Candidate[] = []
@@ -179,8 +243,9 @@ export function attestQuote(
     candidates.push({ segment, distance: Math.abs(segment.idx - claimedIdx), full })
   }
 
-  const usable = candidates.filter(c =>
-    needleCodePoints >= (c.full ? MIN_FULL_SEGMENT_QUOTE_CHARS : MIN_QUOTE_CHARS))
+  const usable = candidates.filter(c => c.full
+    ? needleCodePoints >= MIN_FULL_SEGMENT_QUOTE_CHARS
+    : needleWeighted >= MIN_QUOTE_CHARS)
   if (usable.length === 0) return null
 
   usable.sort((a, b) => (a.full === b.full ? a.distance - b.distance : Number(b.full) - Number(a.full)))

@@ -38,6 +38,11 @@ describe('driver citation matcher parity', () => {
     ['punctuation differs', 'We agreed, finally, to ship it.', 'We agreed finally to ship it'],
     ['unrelated text', 'We agreed to ship the billing change.', 'we cancelled the project'],
     ['empty needle', 'We agreed to ship it.', '   '],
+    ['decimal vs range', 'Revenue grew by 3.5 percent this quarter.', 'grew by 3-5 percent'],
+    ['decimal matching itself', 'Revenue grew by 3.5 percent this quarter.', 'grew by 3.5 percent'],
+    ['thousands separators', 'That caps exposure at 1,000,000 dollars total.', 'at 1,000,000 dollars'],
+    ['separator dropped entirely', 'That caps exposure at 1,000,000 dollars.', 'at 1000000 dollars'],
+    ['date-like separator', 'We ship on 3/5 regardless of the weather.', 'ship on 3-5 regardless'],
   ]
 
   it.each(cases)('agrees on %s', (_label, haystack, needle) => {
@@ -57,7 +62,11 @@ describe('driver citation matcher parity', () => {
   it('agrees across a randomised corpus, not just the cases someone thought of', () => {
     // A drift that only shows up on an input nobody wrote a case for is
     // exactly the kind that has slipped through twice.
-    const alphabet = [...'abcdef ', '東', '京', 'ก', 'ក', 'ກ', 'က', '.', ',', '-', 'é',
+    // Digits matter as much as letters here: normalise treats punctuation
+    // BETWEEN digits differently from punctuation anywhere else, and the first
+    // version of this corpus had no digits at all — so it sat green through a
+    // real change to that very rule, which is the drift it exists to catch.
+    const alphabet = [...'abcdef 0123 ', '東', '京', 'ก', 'ក', 'ກ', 'က', '.', ',', '-', '/', ':', 'é',
       'é', String.fromCodePoint(0x20000)]
     let seed = 1337
     const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648

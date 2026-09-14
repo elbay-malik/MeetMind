@@ -23,8 +23,24 @@ export const NO_SPACE_SCRIPT
 
 const NO_SPACE_SCRIPT_GLOBAL = new RegExp(NO_SPACE_SCRIPT.source, 'gu')
 
+// Punctuation between digits is spelled out rather than flattened, so a value
+// and a range stay distinguishable ("3.5" vs "3-5"). Mirrors reconcile.ts.
+const DIGIT_SEPARATOR_WORDS = {
+  '.': ' point ',
+  ',': ' comma ',
+  '-': ' to ',
+  '\u2013': ' to ',
+  '/': ' slash ',
+  ':': ' colon ',
+}
+
 export const normalise = text =>
-  text.normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ').trim()
+  text
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/(?<=\p{Nd})[.,\-\u2013/:](?=\p{Nd})/gu, match => DIGIT_SEPARATOR_WORDS[match] ?? ' ')
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ')
+    .trim()
 
 export function tokenize(text) {
   return text

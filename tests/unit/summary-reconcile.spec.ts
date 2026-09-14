@@ -113,6 +113,16 @@ describe('attestQuote', () => {
     expect(attestQuote('disapproved by everyone', 0, disagreed)).toMatchObject({ segmentIdx: 0 })
   })
 
+  it('does not match a fabrication that ENDS mid-word either', () => {
+    // Every mid-word test above probes the LEADING boundary. The trailing one
+    // was unguarded: dropping it from occurs() left the whole suite green,
+    // while this quote — 24 characters, clearing the fragment floor — went from
+    // rejected to attested despite being cut off inside "vendor".
+    const asked = [seg(0, 0, 'Has anyone reached out to the vendor about pricing yet?')]
+    expect(attestQuote('reached out to the vendo', 0, asked)).toBeNull()
+    expect(attestQuote('reached out to the vendor', 0, asked)).toMatchObject({ segmentIdx: 0 })
+  })
+
   it('does not fall back to substring matching just because the SEGMENT also contains an unrelated CJK word', () => {
     // A segment can legitimately mix scripts (an English sentence naming a
     // place in Japanese). The all-Latin fabricated quote must still be held
@@ -150,6 +160,25 @@ describe('attestQuote', () => {
     expect(attestQuote(text.normalize('NFC'), 0, decomposed)).toMatchObject({ segmentIdx: 0 })
   })
 
+  it('keeps combining marks NFC cannot precompose away', () => {
+    // The test above passes with \p{M} removed from the filter entirely: every
+    // accent in "Café est prêt" HAS a precomposed form, so NFC collapses the
+    // decomposed input before the filter ever sees a standalone mark, and the
+    // \p{M} half of that fix was never actually load-bearing.
+    //
+    // These have no precomposed form, so the marks survive NFC and the filter
+    // is the only thing standing between them and being stripped as
+    // punctuation. Devanagari, and a Latin base carrying two stacked marks.
+    const hindi = 'हमने शुक्रवार को चालान भेजने पर सहमति दी'
+    expect(attestQuote(hindi, 0, [seg(0, 0, `${hindi}।`)])).toMatchObject({ segmentIdx: 0 })
+
+    const stacked = 'the q̣̇ sample was approved today'
+    expect(attestQuote(stacked, 0, [seg(0, 0, `Yes, ${stacked}.`)])).toMatchObject({ segmentIdx: 0 })
+    // Dropping one of the two marks is a different word, and must not attest.
+    expect(attestQuote('the q̇ sample was approved today', 0, [seg(0, 0, `Yes, ${stacked}.`)]))
+      .toBeNull()
+  })
+
   it('counts the fragment/full-match floor by Unicode code point, not UTF-16 code unit', () => {
     // A single supplementary-plane character is ONE code point but TWO
     // UTF-16 code units (a surrogate pair) -- `.length` alone would let a
@@ -163,6 +192,53 @@ describe('attestQuote', () => {
   it('refuses quotes too short to match anything but by accident', () => {
     expect(attestQuote('the', 0, segments)).toBeNull()
     expect(attestQuote('', 0, segments)).toBeNull()
+  })
+
+  it('pins the fragment floor exactly, so it cannot drift unnoticed', () => {
+    // The floor was assertable only somewhere in a wide band before this:
+    // the nearest fixtures were 10 characters (rejected) and 24 (accepted),
+    // so anything from 11 to 24 could be substituted without a test noticing.
+    // Both needles end on a word boundary, so only the LENGTH differs — a
+    // mid-word slice would be rejected by the token-boundary rule instead and
+    // prove nothing about the floor.
+    const justUnder = 'alpha bravo charlie'
+    const justAt = 'alpha bravo charlies'
+    expect(justUnder).toHaveLength(19)
+    expect(justAt).toHaveLength(20)
+    expect(attestQuote(justUnder, 0, [seg(0, 0, `Right, ${justUnder} it is.`)])).toBeNull()
+    expect(attestQuote(justAt, 0, [seg(0, 0, `Right, ${justAt} it is.`)]))
+      .toMatchObject({ segmentIdx: 0 })
+  })
+
+  it('applies the fragment floor comparably across scripts, not by raw character count', () => {
+    // 20 characters of English is three or four words; 20 characters of
+    // Japanese is a whole sentence, so counting raw characters made the floor a
+    // far stricter rule for CJK than for Latin. Measured before the fix, this
+    // 19-character clause — complete and entirely specific — was rejected, so
+    // a Japanese meeting yielded citations only when the model quoted a whole
+    // segment.
+    const japanese = [seg(0, 0, '田中さんが来週までに新しい見積もりを提出することで合意しました。')]
+    const clause = '来週までに新しい見積もりを提出すること'
+    expect([...clause]).toHaveLength(19)
+    expect(attestQuote(clause, 0, japanese)).toMatchObject({ segmentIdx: 0 })
+
+    // Still refuses the genuinely generic short phrase the floor exists for.
+    expect(attestQuote('来週', 0, japanese)).toBeNull()
+  })
+
+  it('keeps a value and a range distinguishable, rather than flattening the separator', () => {
+    // Punctuation between digits is what separates a value from a range, so
+    // dropping it to a space let a quote state a range the meeting never
+    // mentioned and still attest: "3.5" and "3-5" both normalised to "3 5".
+    const transcript = [seg(0, 0, 'Revenue grew by 3.5 percent this quarter, below the plan we set.')]
+    expect(attestQuote('Revenue grew by 3.5 percent this quarter', 0, transcript))
+      .toMatchObject({ segmentIdx: 0 })
+    expect(attestQuote('Revenue grew by 3-5 percent this quarter', 0, transcript)).toBeNull()
+
+    const range = [seg(0, 0, 'We expect 3-5 percent growth next quarter, maybe more.')]
+    expect(attestQuote('We expect 3-5 percent growth next quarter', 0, range))
+      .toMatchObject({ segmentIdx: 0 })
+    expect(attestQuote('We expect 3.5 percent growth next quarter', 0, range)).toBeNull()
   })
 
   it('reports the segment it actually found, not the one claimed', () => {
