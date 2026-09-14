@@ -74,7 +74,10 @@ export function normalise(text: string): string {
 // splitting every occurrence, not just the first, needs one that does.
 const NO_SPACE_SCRIPT_GLOBAL = new RegExp(NO_SPACE_SCRIPT.source, 'gu')
 
-function tokenize(text: string): string[] {
+// Exported for the stub embedder (server/utils/qa/stub.ts), which buckets the
+// same script-aware tokens so retrieval in credential-free tests behaves like
+// matching does here rather than like an unrelated tokenizer.
+export function tokenize(text: string): string[] {
   return text
     .replace(NO_SPACE_SCRIPT_GLOBAL, match => ` ${match} `)
     .trim()
