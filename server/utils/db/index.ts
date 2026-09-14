@@ -8,6 +8,9 @@ import type { TranscriptRepository } from './transcripts'
 import { createLocalSummaryRepository } from './summaries-local'
 import { createSupabaseSummaryRepository } from './summaries-supabase'
 import type { SummaryRepository } from './summaries'
+import { createLocalTranscriptIndexRepository } from './windows-local'
+import { createSupabaseTranscriptIndexRepository } from './windows-supabase'
+import type { TranscriptIndexRepository } from './windows'
 import { requireAllOrNone } from '../storage'
 
 let announced = false
@@ -58,4 +61,16 @@ export function useSummaryRepository(event: H3Event): SummaryRepository {
   return supabaseReady
     ? createSupabaseSummaryRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey })
     : createLocalSummaryRepository({ dataDir: config.dataDir })
+}
+
+/** The embedded-window index for Q&A, chosen the same way as the other repositories. */
+export function useTranscriptIndexRepository(event: H3Event): TranscriptIndexRepository {
+  const config = useRuntimeConfig(event)
+  const supabaseReady = requireAllOrNone('Supabase', {
+    NUXT_SUPABASE_URL: config.supabaseUrl,
+    NUXT_SUPABASE_SERVICE_KEY: config.supabaseServiceKey,
+  })
+  return supabaseReady
+    ? createSupabaseTranscriptIndexRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey })
+    : createLocalTranscriptIndexRepository({ dataDir: config.dataDir })
 }

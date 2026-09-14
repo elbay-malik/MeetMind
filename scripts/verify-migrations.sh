@@ -9,7 +9,9 @@ cd "$(dirname "$0")/.."
 
 CONTAINER=meetmind-migration-check
 PORT=55432
-IMAGE=postgres:17-alpine
+# pgvector's image, not stock Postgres: transcript_windows has a vector column,
+# and the stock image has no `vector` type to create it with.
+IMAGE=pgvector/pgvector:pg17
 
 cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -279,6 +281,96 @@ check "deleting a meeting removes its summary, decisions and action items" \
   "select (select count(*) from public.meeting_summaries)=0
       and (select count(*) from public.meeting_decisions)=0
       and (select count(*) from public.meeting_action_items)=0"
+
+# --- transcript_windows (ADR-0007) ------------------------------------------
+# Vectors are built from arrays in SQL: a unit vector along axis N is 767 zeros
+# and a single 1 at position N, which makes nearest-first ordering exact to
+# reason about.
+unit_vector() { # unit_vector <1-based axis>
+  echo "(select array_agg(case when i = $1 then 1 else 0 end order by i)::real[]::extensions.vector from generate_series(1,768) i)"
+}
+HASH_A=$(printf 'a%.0s' $(seq 1 64))
+HASH_B=$(printf 'b%.0s' $(seq 1 64))
+
+check "transcript_windows exists, has row-level security on, and has no policies" \
+  "select exists (select 1 from pg_class where oid = to_regclass('public.transcript_windows') and relrowsecurity)
+     and (select count(*) from pg_policies where schemaname='public' and tablename='transcript_windows') = 0"
+
+check "transcript_windows.embedding is a 768-dimension vector" \
+  "select format_type(atttypid, atttypmod) = 'extensions.vector(768)'
+   from pg_attribute where attrelid='public.transcript_windows'::regclass and attname='embedding'"
+
+check "a transcript window is keyed by (meeting_id, idx), in that order" \
+  "select array_agg(att.attname::text order by k.ord) = array['meeting_id','idx']
+   from pg_constraint con
+   cross join unnest(con.conkey) with ordinality as k(attnum, ord)
+   join pg_attribute att on att.attrelid=con.conrelid and att.attnum = k.attnum
+   where con.conrelid='public.transcript_windows'::regclass and con.contype='p'"
+
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+            values ('33333333-3333-3333-3333-333333333333','w','ready','a.mp4',1,'windows_a',10),
+                   ('44444444-4444-4444-4444-444444444444','w','ready','a.mp4',1,'windows_b',10);"
+insert_window() { # insert_window <meeting uuid> <idx> <axis> <model> <hash>
+  psql -q -c "insert into public.transcript_windows
+      (meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, model, embedding)
+    values ('$1', $2, $2, $2 + 1, $2 * 1000, $2 * 1000 + 999, 'window $2', '$5', '$4', $(unit_vector "$3"));"
+}
+# Meeting A: windows along axes 1, 2 and 3, one of them from a different model.
+insert_window 33333333-3333-3333-3333-333333333333 0 1 gemini-embedding-2 "$HASH_A"
+insert_window 33333333-3333-3333-3333-333333333333 1 2 gemini-embedding-2 "$HASH_A"
+insert_window 33333333-3333-3333-3333-333333333333 2 3 some-other-model "$HASH_A"
+# Meeting B holds the single best match for the query — it must never leak into A's results.
+insert_window 44444444-4444-4444-4444-444444444444 0 2 gemini-embedding-2 "$HASH_B"
+
+# A query leaning towards axis 2, then axis 1.
+QUERY="(select array_agg(case when i = 2 then 0.9 when i = 1 then 0.4 else 0 end order by i)::real[]::extensions.vector from generate_series(1,768) i)"
+check "match_transcript_windows returns the nearest window first, within one meeting" \
+  "select array_agg(idx order by ord) = array[1, 0]
+   from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, 'gemini-embedding-2', 5)
+        with ordinality as m(idx, a, b, c, d, e, f, g, ord)"
+check "match_transcript_windows never returns another meeting's windows" \
+  "select not exists (select 1
+     from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, 'gemini-embedding-2', 5) m
+     where m.content_hash = '$HASH_B')"
+check "match_transcript_windows ignores windows embedded by a different model" \
+  "select not exists (select 1
+     from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, 'gemini-embedding-2', 5) m
+     where m.idx = 2)"
+check "match_transcript_windows reports cosine similarity (1 for an identical vector)" \
+  "select abs(similarity - 1) < 1e-6
+   from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $(unit_vector 1), 'gemini-embedding-2', 1)"
+check "match_transcript_windows clamps a zero or negative limit up to one row" \
+  "select (select count(*) from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, 'gemini-embedding-2', 0)) = 1
+      and (select count(*) from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, 'gemini-embedding-2', -5)) = 1"
+check "match_transcript_windows pins its search_path" \
+  "select exists (select 1 from pg_proc
+     where proname = 'match_transcript_windows'
+       and proconfig @> array['search_path=public, extensions'])"
+
+reject "a window with a vector of the wrong dimension is refused" \
+  "insert into public.transcript_windows
+     (meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, model, embedding)
+   values ('33333333-3333-3333-3333-333333333333', 9, 0, 1, 0, 1, 'x', '$HASH_A', 'gemini-embedding-2',
+           array_fill(0.1::real, array[767])::extensions.vector);" \
+  "expected 768 dimensions, not 767"
+reject "a window whose content hash is not SHA-256 hex is refused" \
+  "insert into public.transcript_windows
+     (meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, model, embedding)
+   values ('33333333-3333-3333-3333-333333333333', 9, 0, 1, 0, 1, 'x', 'not-a-hash', 'gemini-embedding-2', $(unit_vector 1));" \
+  "violates check constraint \"transcript_windows_content_hash_check\""
+reject "a window whose range ends before it starts is refused" \
+  "insert into public.transcript_windows
+     (meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, model, embedding)
+   values ('33333333-3333-3333-3333-333333333333', 9, 5, 4, 0, 1, 'x', '$HASH_A', 'gemini-embedding-2', $(unit_vector 1));" \
+  "violates check constraint \"transcript_windows_check\""
+
+psql -q -c "delete from public.meetings where audio_key='windows_a';"
+check "deleting a meeting removes its windows, and only its windows" \
+  "select (select count(*) from public.transcript_windows
+           where meeting_id='33333333-3333-3333-3333-333333333333') = 0
+      and (select count(*) from public.transcript_windows
+           where meeting_id='44444444-4444-4444-4444-444444444444') = 1"
+psql -q -c "delete from public.meetings where audio_key='windows_b';"
 
 # updated_at must advance on update. now() is transaction-scoped, so the insert
 # and the update have to happen in separate transactions or this always passes.

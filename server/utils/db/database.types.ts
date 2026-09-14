@@ -1,6 +1,7 @@
 import type { MeetingRow } from './meetings'
 import type { TranscriptSegmentRow } from './transcripts'
 import type { ActionItemRow, DecisionRow, SummaryRow } from './summaries'
+import type { TranscriptWindowRow, WindowMatchRow } from './windows'
 
 /**
  * Hand-written Supabase schema typing for the tables the server touches.
@@ -42,9 +43,27 @@ export interface Database {
         Update: Partial<ActionItemRow>
         Relationships: []
       }
+      transcript_windows: {
+        Row: TranscriptWindowRow
+        Insert: Omit<TranscriptWindowRow, 'created_at' | 'updated_at'>
+          & Partial<Pick<TranscriptWindowRow, 'created_at' | 'updated_at'>>
+        Update: Partial<TranscriptWindowRow>
+        Relationships: []
+      }
     }
     Views: Record<string, never>
-    Functions: Record<string, never>
+    Functions: {
+      match_transcript_windows: {
+        Args: {
+          p_meeting_id: string
+          /** A vector literal, '[0.1,0.2,…]'. */
+          p_query: string
+          p_model: string
+          p_match_count: number
+        }
+        Returns: WindowMatchRow[]
+      }
+    }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>
   }
