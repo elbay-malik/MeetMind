@@ -104,7 +104,11 @@ describe('POST /api/meetings/:id/summarize', () => {
     )
 
     const byIdx = new Map(segments.map(s => [s.idx, s]))
-    for (const item of [...summary.decisions, ...summary.actionItems]) {
+    const items = [...summary.decisions, ...summary.actionItems]
+    // Without this the loop below is skipped entirely on an empty summary, so a
+    // regression that drops EVERY item — attestQuote always null — passed.
+    expect(items.length).toBeGreaterThan(0)
+    for (const item of items) {
       const cited = byIdx.get(item.segmentIdx)
       expect(cited, `cited segment ${item.segmentIdx} does not exist`).toBeDefined()
       expect(item.startMs).toBe(cited!.startMs)
@@ -127,12 +131,20 @@ describe('POST /api/meetings/:id/summarize', () => {
     const { summary } = await summarize(meeting.id)
     const texts = [...summary.decisions.map(d => d.decision), ...summary.actionItems.map(a => a.task)]
     expect(texts.some(t => t.includes('[canary]'))).toBe(false)
+    // And the drop must be SELECTIVE. `[].some()` is false, so a regression
+    // that rejected every citation — the opposite failure — passed this test
+    // too. The stub's real, verbatim quotes have to survive alongside it.
+    expect(summary.decisions.length).toBeGreaterThan(0)
+    expect(summary.decisions.every(d => d.decision.startsWith('[stub]'))).toBe(true)
   })
 
   it('numbers items gaplessly and in time order', async () => {
     const meeting = await transcribedMeeting()
     const { summary } = await summarize(meeting.id)
     for (const list of [summary.decisions, summary.actionItems]) {
+      // `[]` equals `[]` and the ordering loop never runs on fewer than two
+      // items, so without this an empty result passed as "ordered".
+      expect(list.length).toBeGreaterThanOrEqual(2)
       expect(list.map(i => i.idx)).toEqual(list.map((_, i) => i))
       for (let i = 1; i < list.length; i++) {
         expect(list[i]!.startMs).toBeGreaterThanOrEqual(list[i - 1]!.startMs)
@@ -150,8 +162,15 @@ describe('POST /api/meetings/:id/summarize', () => {
   it('is idempotent: a second call returns the stored summary', async () => {
     const meeting = await transcribedMeeting()
     const first = await summarize(meeting.id)
+    // The stub is deterministic, so recomputing from scratch would produce an
+    // identical object and pass a plain equality check. Change what is STORED
+    // and require the second call to hand that back, not a fresh extraction.
+    const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+    const marked = { ...first.summary, summary: 'marker: served from storage' }
+    await storage.setItem(`summaries/${meeting.id}`, marked)
+
     const second = await summarize(meeting.id)
-    expect(second.summary).toEqual(first.summary)
+    expect(second.summary.summary).toBe('marker: served from storage')
     expect(second.meeting.status).toBe('ready')
   })
 
@@ -175,16 +194,28 @@ describe('POST /api/meetings/:id/summarize', () => {
     expect(after.errorMessage).toBeNull()
   })
 
-  it('lets exactly one of several concurrent callers do the work', async () => {
+  it('converges concurrent callers on one stored summary, refusing the rest with 409', async () => {
+    // Renamed from "lets exactly one of several concurrent callers do the
+    // work", which it never checked: the provider runs in the server process,
+    // so how many callers actually extracted is not observable from here, and
+    // both "one did the work" and "all three did" left `status === 'ready'`.
+    // What IS observable is asserted instead. That exactly one claim can win is
+    // proven where it can be — meeting-claim.spec.ts, against the CAS itself.
     const meeting = await transcribedMeeting()
     const attempts = await Promise.allSettled([
       summarize(meeting.id), summarize(meeting.id), summarize(meeting.id),
     ])
+    const winners = attempts.filter(a => a.status === 'fulfilled')
+    expect(winners.length).toBeGreaterThanOrEqual(1)
     for (const loser of attempts.filter(a => a.status === 'rejected')) {
       expect((loser as PromiseRejectedResult).reason?.statusCode).toBe(409)
     }
     const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('ready')
+    const { summary: stored } = await $fetch<{ summary: MeetingSummary }>(`/api/meetings/${meeting.id}/summary`)
+    for (const winner of winners) {
+      expect((winner as PromiseFulfilledResult<{ summary: MeetingSummary }>).value.summary).toEqual(stored)
+    }
   })
 
   it('does not hand out a stale summary while a fresh extraction is genuinely in progress', async () => {
@@ -201,6 +232,11 @@ describe('POST /api/meetings/:id/summarize', () => {
 
     const res = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
     expect(res.status).toBe(409)
+    // A 409 for any unrelated reason passed before. Require the refusal to be
+    // the in-progress one, and the stale summary to be nowhere in the body.
+    const text = await res.text()
+    expect(text).toMatch(/already running/i)
+    expect(text).not.toContain('[stub] Placeholder decision')
   })
 
   it('finishes a silent recording with an empty summary instead of getting stuck in summarizing', async () => {

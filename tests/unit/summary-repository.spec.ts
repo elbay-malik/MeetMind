@@ -93,7 +93,7 @@ describe('local summary repository', () => {
 describe('supabase summary repository', () => {
   const repo = createSupabaseSummaryRepository({ url: 'https://p.supabase.co', serviceKey: 'k' })
 
-  interface Call { method: string, table: string, url: URL, body: unknown }
+  interface Call { method: string, table: string, url: URL, body: unknown, prefer: string }
 
   /** Capture every request, replying per-table so replaceForMeeting's several
    * calls to different tables can each get a sensible response. */
@@ -104,7 +104,10 @@ describe('supabase summary repository', () => {
       const url = new URL(request.url)
       const table = url.pathname.replace('/rest/v1/', '')
       const raw = await request.clone().text()
-      calls.push({ method: request.method, table, url, body: raw ? JSON.parse(raw) : undefined })
+      calls.push({
+        method: request.method, table, url, body: raw ? JSON.parse(raw) : undefined,
+        prefer: request.headers.get('prefer') ?? '',
+      })
       const payload = perTable[table] ?? []
       return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } })
     })
@@ -121,6 +124,13 @@ describe('supabase summary repository', () => {
     expect(byTable('meeting_decisions').map(c => c.method)).toEqual(['DELETE', 'POST'])
     expect(byTable('meeting_action_items').map(c => c.method)).toEqual(['DELETE', 'POST'])
     expect(byTable('meeting_summaries').map(c => c.method)).toEqual(['POST'])
+    // An UPSERT, not an insert. supabase-js sends POST for both; only this
+    // header tells them apart, and meeting_summaries.meeting_id is the primary
+    // key — so an insert fails with 23505 on every SECOND extraction of the
+    // same meeting (the ready-repair path, any re-run). Swapping upsert for
+    // insert used to leave the entire suite green.
+    const summaryWrite = byTable('meeting_summaries')[0]!
+    expect(summaryWrite.prefer).toMatch(/resolution=merge-duplicates/)
 
     const decisionInsert = byTable('meeting_decisions').find(c => c.method === 'POST')!
     expect(decisionInsert.body).toEqual([decisionToRow('m1', decision)])
@@ -137,11 +147,28 @@ describe('supabase summary repository', () => {
     expect(calls.filter(c => c.table === 'meeting_action_items')).toHaveLength(1) // delete only
   })
 
-  it('surfaces a database error from any of the writes', async () => {
-    vi.stubGlobal('fetch', async () => new Response(
-      JSON.stringify({ code: '23503', message: 'violates foreign key constraint', details: '', hint: '' }),
-      { status: 409, headers: { 'content-type': 'application/json' } },
-    ))
+  it.each([
+    ['meeting_decisions', 'DELETE'],
+    ['meeting_action_items', 'DELETE'],
+    ['meeting_summaries', 'POST'],
+    ['meeting_decisions', 'POST'],
+    ['meeting_action_items', 'POST'],
+  ])('surfaces a database error from the %s %s, not just the first write', async (failTable, failMethod) => {
+    // Failing EVERY request — what this used to do — only ever proves the
+    // first write's error path; swallowing the error on any later write would
+    // still pass. Fail exactly one write and let the others succeed.
+    vi.stubGlobal('fetch', async (input: string | Request, init?: RequestInit) => {
+      const request = typeof input === 'string' ? new Request(input, init) : input
+      const table = new URL(request.url).pathname.replace('/rest/v1/', '')
+      if (table === failTable && request.method === failMethod) {
+        return new Response(
+          JSON.stringify({ code: '23503', message: 'violates foreign key constraint', details: '', hint: '' }),
+          { status: 409, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      const payload = table === 'meeting_summaries' ? [{}] : []
+      return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } })
+    })
     await expect(repo.replaceForMeeting('m1', summary)).rejects.toThrow(/23503/)
   })
 

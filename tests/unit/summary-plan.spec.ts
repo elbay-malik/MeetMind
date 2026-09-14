@@ -17,9 +17,11 @@ describe('estimateTokens', () => {
     expect(estimateTokens(Array.from({ length: words }, () => 'word').join(' '))).toBeGreaterThan(words * 1.3)
   })
 
-  it('handles empty and whitespace text', () => {
-    expect(estimateTokens('')).toBeGreaterThanOrEqual(0)
-    expect(estimateTokens('   ')).toBeGreaterThanOrEqual(0)
+  it('costs empty and whitespace-only text nothing', () => {
+    // Was `>= 0`, which only rules out NaN: deleting the empty-text guard made
+    // this cost 4 tokens (the fixed overhead) and it still passed.
+    expect(estimateTokens('')).toBe(0)
+    expect(estimateTokens('   ')).toBe(0)
   })
 
   it('scales with character count for scripts with no whitespace between words', () => {

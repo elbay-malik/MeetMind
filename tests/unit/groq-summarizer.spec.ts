@@ -40,10 +40,24 @@ const goodPayload = {
   }],
 }
 
+/** When each stubbed request was actually SENT, for the pacing tests. */
+let sentAt: number[] = []
+
+/**
+ * Gaps between consecutive requests. The pacing tests used to assert on the
+ * total wall time of summarize() instead, which passes just as well when both
+ * requests fire back to back and the wait lands AFTER the last one — measured:
+ * moving pacer.wait() after the request left two of those tests green while
+ * the exact behaviour they name was broken.
+ */
+const requestGaps = () => sentAt.slice(1).map((time, i) => time - sentAt[i]!)
+
 function stubFetch(responses: (Response | (() => never))[]) {
   const calls: Request[] = []
   const queue = [...responses]
+  sentAt = []
   vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+    sentAt.push(Date.now())
     calls.push(new Request(url, init))
     const next = queue.shift()
     if (typeof next === 'function') return next()
@@ -139,11 +153,11 @@ describe('response', () => {
       reply({ summary: '', decisions: [], actionItems: [] }),
     ])
 
-    const startedAt = Date.now()
     await paced.summarize({ segments: bigSegments })
 
     expect(calls).toHaveLength(2)
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180)
+    expect(requestGaps()).toHaveLength(1)
+    expect(Math.min(...requestGaps())).toBeGreaterThanOrEqual(180)
   })
 
   it('paces a within-chunk retry exactly like a new chunk', async () => {
@@ -156,11 +170,10 @@ describe('response', () => {
       reply({ summary: '', decisions: [], actionItems: [] }),
     ])
 
-    const startedAt = Date.now()
     await paced.summarize({ segments })
 
     expect(calls).toHaveLength(2)
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180)
+    expect(Math.min(...requestGaps())).toBeGreaterThanOrEqual(180)
   })
 
   it('paces across summarizer instances that share a pacer, since the rate limit is per account', async () => {
@@ -177,11 +190,11 @@ describe('response', () => {
       reply({ summary: '', decisions: [], actionItems: [] }),
     ])
 
-    const startedAt = Date.now()
     await meetingA.summarize({ segments })
     await meetingB.summarize({ segments })
 
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(180)
+    expect(requestGaps()).toHaveLength(1)
+    expect(Math.min(...requestGaps())).toBeGreaterThanOrEqual(180)
   })
 
   it('serializes TRULY concurrent callers of a shared pacer, not just sequentially-awaited ones', async () => {

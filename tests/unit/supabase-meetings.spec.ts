@@ -178,3 +178,35 @@ describe('update', () => {
     expect(await repo.update(row.id, { status: 'failed', failedStage: 'transcription' })).toBeNull()
   })
 })
+
+describe('status/failedStage pairing', () => {
+  // The same validation the local driver runs, refused before any request is
+  // sent. It had no test on this driver at all: deleting every validation call
+  // from supabase.ts left the entire suite green, even though the commit that
+  // added them claimed both drivers enforced the identical contract.
+  const newMeeting = {
+    id: row.id, title: 't', status: 'pending_upload' as const, sourceFileName: 'a.mp4', sourceBytes: 1,
+    sourceMime: null, durationSec: null, audioKey: row.audio_key, audioBytes: 1, audioMime: 'audio/ogg',
+    uploadedAt: null, errorMessage: null, failedStage: null,
+  }
+
+  it('refuses an update to failed without a stage, before sending anything', async () => {
+    const calls = stubPostgrest([row])
+    await expect(repo.update(row.id, { status: 'failed' })).rejects.toThrow(/failedStage/)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('refuses a claim that pairs a stage with a non-failed status, before sending anything', async () => {
+    const calls = stubPostgrest([row])
+    await expect(repo.claim(row.id, 'uploaded', { status: 'transcribing', failedStage: 'transcription' }))
+      .rejects.toThrow(/failedStage/)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('refuses to create a meeting whose status and stage disagree, before sending anything', async () => {
+    const calls = stubPostgrest(row, { status: 201 })
+    await expect(repo.create({ ...newMeeting, status: 'failed', errorMessage: 'boom', failedStage: null }))
+      .rejects.toThrow(/failedStage/)
+    expect(calls).toHaveLength(0)
+  })
+})
