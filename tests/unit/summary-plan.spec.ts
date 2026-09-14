@@ -44,6 +44,47 @@ describe('estimateTokens', () => {
     const supplementaryHan = String.fromCodePoint(0x20000).repeat(200)
     expect(estimateTokens(supplementaryHan)).toBeGreaterThan(100)
   })
+
+  it('prices EVERY no-space script per character, not just the CJK ones', () => {
+    // The detector listed Han/Hiragana/Katakana/Thai only. Khmer, Lao,
+    // Burmese and Tibetan are written without spaces between words too, and
+    // Whisper transcribes all of them — so each collapsed to a single
+    // whitespace-delimited "word" and priced at 6 tokens however long it was.
+    // Measured before the fix: one hour of Thai planned to 9 chunks and the
+    // same volume of Khmer to 1, carrying identical character counts.
+    const perScript = {
+      Thai: 'ก',
+      Khmer: 'ក',
+      Lao: 'ກ',
+      Burmese: 'က',
+      Tibetan: 'ཀ',
+      Japanese: 'あ',
+      Chinese: '中',
+    }
+    for (const [script, character] of Object.entries(perScript)) {
+      const long = character.repeat(200)
+      expect(estimateTokens(long), `${script} must be priced per character`).toBeGreaterThan(100)
+    }
+  })
+
+  it('cannot under-price a long run of text that simply has no spaces in it', () => {
+    // The general form of the bug above, and the safety net for the script
+    // list being incomplete AGAIN: whitespace-delimited counting prices any
+    // single unbroken run as one word, so 5,000 characters cost 6 tokens
+    // whatever script they are in. A per-character floor makes an unlisted
+    // script inaccurate rather than catastrophic.
+    const runOn = 'x'.repeat(5000)
+    expect(estimateTokens(runOn)).toBeGreaterThan(1000)
+    expect(estimateTokens('x'.repeat(10_000))).toBeGreaterThan(estimateTokens(runOn))
+  })
+
+  it('still prices ordinary spaced prose by its words, not the floor', () => {
+    // The floor must not quietly become the estimator for English, which
+    // would over-chunk every ordinary meeting and multiply the request count
+    // the chunk budget exists to hold down.
+    const english = Array.from({ length: 100 }, () => 'word').join(' ')
+    expect(estimateTokens(english)).toBe(Math.ceil(100 * 1.4) + 4)
+  })
 })
 
 describe('planChunks', () => {

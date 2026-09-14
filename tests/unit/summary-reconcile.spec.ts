@@ -49,6 +49,27 @@ describe('attestQuote', () => {
       .toMatchObject({ segmentIdx: 0 })
   })
 
+  it('attests a FRAGMENT of a no-space script, not only a whole segment', () => {
+    // tokenize() splits each no-space-script character into its own token so a
+    // run of them compares like a substring search. A script missing from
+    // NO_SPACE_SCRIPT gets the opposite treatment: the whole sentence becomes
+    // ONE token, so occurs() degenerates into whole-run equality and every
+    // fragment citation is silently dropped — only a byte-exact whole-segment
+    // quote survives, via the full-segment exemption. Khmer, Lao, Burmese and
+    // Tibetan were all in that state; each of these fails against the old
+    // four-script list.
+    const cases: Array<[string, string, string]> = [
+      ['Khmer', 'យើងបានយល់ព្រមផ្ញើការផ្លាស់ប្តូរវិក្កយបត្រនៅថ្ងៃសុក្រ។', 'ផ្ញើការផ្លាស់ប្តូរវិក្កយបត្រ'],
+      ['Lao', 'ພວກເຮົາຕົກລົງທີ່ຈະສົ່ງການປ່ຽນແປງໃບແຈ້ງໜີ້ໃນວັນສຸກ.', 'ສົ່ງການປ່ຽນແປງໃບແຈ້ງໜີ້'],
+      ['Burmese', 'ကျွန်ုပ်တို့သည် ငွေတောင်းခံလွှာပြောင်းလဲမှုကို ပေးပို့ရန် သဘောတူခဲ့သည်။', 'ငွေတောင်းခံလွှာပြောင်းလဲမှု'],
+      ['Thai', 'เราตกลงกันว่าจะส่งการเปลี่ยนแปลงใบแจ้งหนี้ในวันศุกร์', 'ส่งการเปลี่ยนแปลงใบแจ้งหนี้'],
+    ]
+    for (const [script, text, fragment] of cases) {
+      expect(attestQuote(fragment, 0, [seg(0, 0, text)]), `${script} fragment must attest`)
+        .toMatchObject({ segmentIdx: 0 })
+    }
+  })
+
   it('matches accented Latin on the accents actually written', () => {
     // Documents the behaviour rather than guarding the regression: stripping
     // accents mangles both quote and segment the same way, so this case passes
