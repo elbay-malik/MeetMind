@@ -578,6 +578,118 @@ which is what caught both of these against a real browser; a JSDOM/happy-dom
 mount would not have, since neither computes real layout for
 `getBoundingClientRect()`.
 
+### 8. What a review of this branch found that ten rounds of automated review did not.
+
+Copilot's review quota ran out mid-series, so the branch was reviewed again by
+hand, with four independent adversarial passes and every load-bearing claim
+checked against the code. Most of what it found were not new kinds of bug.
+They were the same kinds this ADR already records fixing, in places the earlier
+fixes had not reached.
+
+**The citation guard was never reviewable.** From the tokenize-based rewrite
+onward, `reconcile.ts` held a literal NUL byte as its token separator. Git
+classifies any file containing NUL as binary, so every diff of it, including
+this PR's, read "Binary files differ". Five review rounds passed over the one
+file where model output becomes stored data without being able to see it. The
+NUL was also fragile in a fail-open direction. A tool that strips control
+characters would turn the separator into `''`, and joining tokens with an empty
+string accepts "approved by everyone" as evidence drawn from "disapproved by
+everyone". The separator is now a space, which behaves identically.
+`tests/unit/source-hygiene.spec.ts` fails on any control character in a tracked
+text file.
+
+**Four no-space scripts were missing.** Decision 2's fix for CJK listed
+Han/Hiragana/Katakana/Thai. Whisper also transcribes Khmer, Lao, Burmese and
+Tibetan. One hour of Thai planned to 9 chunks, and the same volume of Khmer
+planned to 1. Citation matching failed the same way for those languages, since
+each whole sentence became a single token. The scripts are added. Text in any
+other script now also gets a per-character pricing floor, so the next omission
+makes an estimate inaccurate rather than catastrophic.
+
+**The fragment floor meant different things in different scripts.** Twenty
+characters of English is three or four words. Twenty characters of Japanese is
+a sentence. A complete 19-character Japanese clause was rejected, so CJK
+meetings got citations only when a model quoted a whole segment. Every
+"non-Latin" test reached the full-segment exemption, and none reached the
+fragment path. No-space characters now weigh 2.5 against the floor. That weight
+is a judgement: equal specificity would argue for about 5. Only the fragment
+floor is weighted. The full-segment floor asks whether text is a real utterance
+at all, and raw code points are the right measure for that. Punctuation between
+digits is also spelled out rather than flattened, so "3.5 percent" and "3-5
+percent" are no longer the same quote.
+
+**The quote was never shown.** Decision 3 rests on the quote being the
+evidence, and the meeting page did not render it. The check proves that words
+were said, not that they support the claim. A real "Yeah." clears the
+two-character full-segment floor and can be paired with any decision. The
+quote now appears under every item. That is the actual mitigation for two
+findings deliberately left unfixed in the matcher:
+
+- **A quote can splice across a sentence boundary.** Blocking this needs
+  sentence segmentation, and the obvious rule breaks real citations, because a
+  period between digits or in an abbreviation is not a sentence end.
+- **A quote can drop a leading negation.** "I do not think we should sign"
+  quoted as "think we should sign" clears every check, and no
+  substring-shaped guard can see it.
+
+**Two dead ends were reachable from the UI.** Both had the shape this ADR
+already records fixing at the API level.
+
+- **A refused upload offered a retry that could never succeed.**
+  `failMeetingUpload` deletes the object, then recorded `'transcription'`, so
+  the page offered to retry transcription on audio that no longer existed.
+  `failedStage` gains `'upload'`. Neither retry route reclaims that stage, so
+  the impossible button is gone by construction.
+- **A claim whose holder died was unrecoverable.** Each route's stale-lease
+  reclaim runs only inside its POST, and the progress page never sent one for
+  `transcribing` or `indexing`. The result was a spinner that polled forever.
+  The leases moved to `#shared/utils/meeting`, and the page offers Resume once
+  a claim is older than its lease. The server still re-checks under the
+  compare-and-swap.
+
+**The repository validation checked the wrong thing.** Decision 7's pairing
+check validated the patch. Postgres constrains the merged row. `{ status:
+'uploaded' }` is a consistent patch and still produces a forbidden row when it
+lands on a failed meeting, and `complete.post.ts` writes exactly that shape.
+The local driver now validates the merged row, and `complete.post.ts` clears
+the stage under a compare-and-swap.
+
+**Tests claimed more than they proved.** For a fix with two mechanisms, the
+regression test was proven against reverting both at once, so neither half was
+shown to be guarded on its own. Six mutations survived the whole suite:
+
+- `upsert` to `insert` in the Supabase summary writer. That is a live 23505 on
+  any second extraction, and e2e only runs the local driver.
+- Dropping the trailing token boundary.
+- Dropping `\p{M}` from `normalise`.
+- Deleting every Supabase validation call.
+- Dropping the route-level fence argument.
+- Moving `MIN_QUOTE_CHARS` anywhere in 11-24.
+
+Three e2e assertions passed on an empty summary. The pacing tests measured
+total wall time, not the gap between requests. Two `verify-migrations.sh`
+labels overstated their checks. "Audio cap matches MAX_AUDIO_BYTES" used
+`LIKE '%25000000%'`, which a cap ten times too large satisfies. The RLS check
+passed with two of its three tables missing. Each is fixed and proven by
+re-running the mutation that previously survived. CI now also runs the
+migration check and both browser drivers. The drivers are the only thing that
+caught the scroll-centring and follow-playback bugs, and until now nothing ran
+them automatically.
+
+Two limitations are stated rather than fixed:
+
+- **Cooldown fences are not independently tested.** Both routes now fence
+  their cooldown-gated `failed` reclaim. That the route passes the fence cannot
+  be observed without the race it exists to lose. The repository's enforcement
+  of a fence is tested.
+- **The claim lease is not an upper bound under concurrency.** See
+  `CLAIM_LEASE_MS` in `summarize.post.ts`. The shared pacer's queue is
+  unbounded, so enough concurrent worst-case extractions push a still-waiting
+  run past its lease. Data stays consistent, because the reclaimed run's
+  fenced writes fail, but its quota is wasted. That comment's earlier
+  arithmetic (2h39m) also double-counted pacing that overlaps request time.
+  The real single-run bound is about 2h.
+
 ## Consequences
 
 - A long meeting costs several sequential, PACED requests — not merely
@@ -641,9 +753,30 @@ mount would not have, since neither computes real layout for
   characters of a quote against its segment, which would not catch a future
   regression that only checked a prefix the same way — both now check the
   complete normalized quote.
-- `reconcile()`'s `normalise()` is exported and reused everywhere a check needs
-  to know "does this text support that quote" — the e2e citation assertions and
-  `drive-upload.mjs`'s standalone one (duplicated there by hand, since it is a
-  plain Node script, not a place a TypeScript server module can be imported
-  into). A raw case-insensitive substring check accepts less than reconciliation
-  does, so it can reject a citation that was correctly stored.
+- `reconcile()`'s `normalise()` and `occurs()` are exported and reused by every
+  check that needs to know whether text supports a quote.
+  - The e2e citation assertions import them directly.
+  - The browser driver cannot import a TypeScript server module, so it uses a
+    plain-JS copy. That copy drifted from the original twice when it was a
+    block pasted inside `drive-upload.mjs`. It now lives in
+    `scripts/lib/citation-match.mjs`, and
+    `tests/unit/driver-citation-parity.spec.ts` holds it to the real
+    implementation over a case list and 2,000 randomised pairs.
+  - The parity test's first draft had no digits in its fuzz alphabet, so it
+    passed through a real change to the digit rule. It has digits now.
+- Known limitations, recorded rather than fixed:
+  - **The local fencing token has millisecond resolution.** The local
+    driver's `updatedAt` often repeats on consecutive writes. That is safe
+    today, because every place a second writer can appear is gated behind a
+    15-minute or 4-hour staleness check. Supabase's token comes from `now()`
+    at microsecond resolution.
+  - **The local driver has no citation foreign key.** Supabase cascades a
+    stale citation away when a transcript is replaced. The local driver, which
+    every e2e test and both drivers use, leaves the citation pointing at a
+    segment index that may no longer exist. Nothing re-transcribes an
+    already-transcribed meeting yet.
+  - **`MAX_CHUNKS` is defensive only.** 40 chunks at 5,000 estimated tokens is
+    about 200k tokens, which the 25 MB audio cap cannot produce for
+    whitespace-delimited text. Its dead-end fix still matters: an unlisted
+    script mispriced below the floor, or a change to either limit, could
+    reach it.

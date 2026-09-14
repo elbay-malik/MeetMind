@@ -9,15 +9,30 @@ import { planChunks } from '../../../utils/summary/plan'
 import { SummarizationError } from '../../../utils/summary/summarizer'
 
 /**
- * How long a claim is honoured before another caller may take it over. Sized
- * to the worst case this route can actually take, not a guess: MAX_CHUNKS
- * requests, each retried once (createGroqSummarizer's default maxAttempts),
- * each bounded by its 90s request timeout, PLUS the pacing wait before every
- * chunk after the first (createGroqSummarizer's default minRequestIntervalMs)
- * — 40 * 2 * 90s + 39 * 60s = a little over 2h39m, plus margin. A shorter
- * lease could reclaim a caller that is still legitimately running, and the
- * compare-and-swap below only protects against that up to the fencing check;
- * it cannot undo provider spend already made.
+ * How long a claim is honoured before another caller may take it over.
+ *
+ * For ONE extraction on its own, the worst case is about two hours: MAX_CHUNKS
+ * chunks, each retried once (createGroqSummarizer's default maxAttempts), is 80
+ * requests, each bounded by its 90s timeout. Pacing does not add to that. The
+ * pacer reserves each slot from the previous request's START, so a request that
+ * runs the full 90s has already used its 60s interval and the next one waits
+ * nothing; pacing only adds time when requests finish FASTER than the interval,
+ * and then the total is 79 * 60s, which is less. This comment used to sum the
+ * two (40 * 2 * 90s + 39 * 60s = 2h39m), double-counting time that overlaps —
+ * and 39 was wrong too, since retries take pacing slots like chunks do. The
+ * lease stands: four hours is comfortably above the real bound.
+ *
+ * It is NOT an upper bound under concurrency, and nothing here makes it one.
+ * The pacer is shared across every extraction in the process (see
+ * summary/index.ts), because Groq's rate limit is per account. A run queued
+ * behind other meetings' reservations waits for all of them, and that queue is
+ * unbounded: three worst-case meetings at once reach the edge of this lease,
+ * and more push a run past it while it is still legitimately waiting. Its claim
+ * then goes stale, another caller reclaims it and joins the same queue, and the
+ * original's later fenced writes correctly fail — so data stays consistent, but
+ * the quota the first run spent is wasted. Accepted at this app's scale (one
+ * user triggering extraction by hand); bounding it needs the Phase 9
+ * orchestrator's job queue, not a longer lease. See ADR-0006.
  */
 const CLAIM_LEASE_MS = SUMMARIZE_CLAIM_LEASE_MS
 
