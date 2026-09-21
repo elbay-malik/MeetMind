@@ -34,10 +34,13 @@ uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
 │   transcript segment that is verified before storage        │
 │ gemini-embedding-2 (768d) ─► Supabase pgvector; questions   │
 │   answered by gpt-oss, citations verified like summaries    │
+│ cross-meeting search: same embeddings, no meeting filter,   │
+│   capped per meeting via a LATERAL join, no HNSW yet         │
 └───────────────┬──────────────────────────────────────────────┘
                 ▼
    Transcript ↔ player over a byte-range route (click-to-seek both ways),
-   semantic Q&A with clickable timestamp citations
+   semantic Q&A with clickable timestamp citations, search across meetings
+   linking straight to the moment a passage was said
 ```
 
 The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
@@ -53,6 +56,7 @@ The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 | [0005](docs/adr/0005-audio-playback-and-transcript-sync.md) | Playback: same-origin byte-range route, native player before a waveform |
 | [0006](docs/adr/0006-structured-summaries.md) | Summaries: chunked extraction, citations checked against the transcript |
 | [0007](docs/adr/0007-semantic-qa.md) | Semantic Q&A: windowed Gemini embeddings, answers held to the same citation check |
+| [0008](docs/adr/0008-cross-meeting-search.md) | Cross-meeting search: passages across meetings, not a synthesized answer; still no HNSW |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -143,20 +147,24 @@ quota; the UI reports it as such.
 | `pnpm test:services` | Exercises the real R2, Supabase and Groq services; each is skipped unless its keys are set |
 | `node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: drop → extract → upload → progress page, then inspects storage |
 | `node scripts/drive-player.mjs <url> <meetingId>` | Headless Chromium: click-to-seek, active-line highlight, transcript keyboard navigation |
+| `node scripts/drive-search.mjs <url> <dataDir>` | Headless Chromium: search across two indexed meetings, click a result, confirm it seeks the right meeting's player |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
 
 ## Roadmap
 
-Phases 0-7 of the [playbook](docs/PLAYBOOK.md) are done: scaffold, FFmpeg spike,
+Phases 0-8 of the [playbook](docs/PLAYBOOK.md) are done: scaffold, FFmpeg spike,
 in-browser extraction, upload & storage, transcription, the transcript viewer with
-click-to-seek playback, structured summaries with decisions and action items, and
-semantic Q&A over a meeting with verified, clickable citations.
+click-to-seek playback, structured summaries with decisions and action items,
+semantic Q&A over a meeting with verified, clickable citations, and search across
+every indexed meeting.
 Several playbook instructions were changed after re-checking their premises — see
 [ADR-0004](docs/adr/0004-transcription.md),
 [ADR-0005](docs/adr/0005-audio-playback-and-transcript-sync.md),
-[ADR-0006](docs/adr/0006-structured-summaries.md) and
-[ADR-0007](docs/adr/0007-semantic-qa.md). Next: archive & cross-meeting search,
-pipeline orchestration, rate limiting, Cloudflare Workers.
+[ADR-0006](docs/adr/0006-structured-summaries.md),
+[ADR-0007](docs/adr/0007-semantic-qa.md) and
+[ADR-0008](docs/adr/0008-cross-meeting-search.md). Next: pipeline orchestration,
+rate limiting (which cross-meeting search's open endpoint makes more pressing —
+see ADR-0008), Cloudflare Workers.
 
 ## License
 
