@@ -3,8 +3,12 @@ import type { Database } from './database.types'
 import type { SupabaseOptions } from './supabase'
 import {
   clampLimit,
+  clampMeetingLimit,
+  clampPerMeetingLimit,
+  rowToCrossMeetingMatch,
   rowToMatch,
   windowToRow,
+  type CrossMeetingMatchRow,
   type TranscriptIndexRepository,
   type WindowMatchRow,
 } from './windows'
@@ -84,6 +88,17 @@ export function createSupabaseTranscriptIndexRepository(options: SupabaseOptions
       })
       if (error) fail('windows search', error)
       return (data as WindowMatchRow[]).map(rowToMatch)
+    },
+
+    async searchAcrossMeetings(query, { model, meetingLimit, perMeetingLimit }) {
+      const { data, error } = await clientFor(options).rpc('match_transcript_windows_across_meetings', {
+        p_query: JSON.stringify(query),
+        p_model: model,
+        p_meeting_limit: clampMeetingLimit(meetingLimit),
+        p_per_meeting_limit: clampPerMeetingLimit(perMeetingLimit),
+      })
+      if (error) fail('cross-meeting windows search', error)
+      return (data as CrossMeetingMatchRow[]).map(rowToCrossMeetingMatch)
     },
   }
 }

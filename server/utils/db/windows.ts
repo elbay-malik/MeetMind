@@ -18,8 +18,25 @@ export interface WindowMatch extends TranscriptWindow {
   similarity: number
 }
 
-/** Upper bound on windows one search may return, on both drivers. */
+/**
+ * A search hit from across every meeting: everything {@link WindowMatch}
+ * carries, plus which meeting it came from. Needed because a window's `idx`
+ * and segment range are only unique WITHIN a meeting — pooling matches from
+ * several meetings without tagging them would let one meeting's window
+ * collide with another's by coincidence of index.
+ */
+export interface CrossMeetingMatch extends WindowMatch {
+  meetingId: string
+}
+
+/** Upper bound on windows one per-meeting search may return, on both drivers. */
 export const MAX_MATCHES = 20
+
+/** Upper bound on distinct meetings one cross-meeting search may return. */
+export const MAX_MEETINGS = 20
+
+/** Upper bound on windows any one meeting may contribute to a cross-meeting search. */
+export const MAX_MATCHES_PER_MEETING = 5
 
 export interface TranscriptIndexRepository {
   readonly kind: 'supabase' | 'local'
@@ -34,6 +51,19 @@ export interface TranscriptIndexRepository {
    * first, ties broken by index. `limit` is clamped to 1..MAX_MATCHES.
    */
   search(meetingId: string, query: number[], options: { model: string, limit: number }): Promise<WindowMatch[]>
+  /**
+   * The nearest windows to `query` across every meeting with a matching
+   * model, grouped by meeting: at most `meetingLimit` meetings — the ones
+   * whose own single best match is nearest — each contributing at most
+   * `perMeetingLimit` windows, nearest first within a meeting and meetings
+   * ordered by their own best match. A separate method from {@link search},
+   * not a widened version of it: `search`'s "within one meeting" contract is
+   * exactly what its existing callers and tests already rely on (ADR-0008).
+   */
+  searchAcrossMeetings(
+    query: number[],
+    options: { model: string, meetingLimit: number, perMeetingLimit: number },
+  ): Promise<CrossMeetingMatch[]>
 }
 
 export type TranscriptWindowRow = {
@@ -62,6 +92,8 @@ export type WindowMatchRow = {
   content_hash: string
   similarity: number
 }
+
+export type CrossMeetingMatchRow = WindowMatchRow & { meeting_id: string }
 
 export function windowToRow(
   meetingId: string,
@@ -94,10 +126,29 @@ export function rowToMatch(row: WindowMatchRow): WindowMatch {
   }
 }
 
+export function rowToCrossMeetingMatch(row: CrossMeetingMatchRow): CrossMeetingMatch {
+  return { ...rowToMatch(row), meetingId: row.meeting_id }
+}
+
+/** Clamp `value` into 1..`max`, treating anything non-finite (including NaN) as 1. */
+function clampTo(value: number, max: number): number {
+  if (!Number.isFinite(value)) return 1
+  return Math.min(Math.max(Math.trunc(value), 1), max)
+}
+
 /** The same clamp the SQL function applies, so both drivers agree at the edges. */
 export function clampLimit(limit: number): number {
-  if (!Number.isFinite(limit)) return 1
-  return Math.min(Math.max(Math.trunc(limit), 1), MAX_MATCHES)
+  return clampTo(limit, MAX_MATCHES)
+}
+
+/** The same clamp the cross-meeting SQL function applies to its meeting count. */
+export function clampMeetingLimit(limit: number): number {
+  return clampTo(limit, MAX_MEETINGS)
+}
+
+/** The same clamp the cross-meeting SQL function applies to its per-meeting count. */
+export function clampPerMeetingLimit(limit: number): number {
+  return clampTo(limit, MAX_MATCHES_PER_MEETING)
 }
 
 /**

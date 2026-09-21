@@ -1,7 +1,7 @@
 import type { MeetingRow } from './meetings'
 import type { TranscriptSegmentRow } from './transcripts'
 import type { ActionItemRow, DecisionRow, SummaryRow } from './summaries'
-import type { TranscriptWindowRow, WindowMatchRow } from './windows'
+import type { CrossMeetingMatchRow, TranscriptWindowRow, WindowMatchRow } from './windows'
 
 /**
  * Hand-written Supabase schema typing for the tables the server touches.
@@ -62,6 +62,16 @@ export interface Database {
           p_match_count: number
         }
         Returns: WindowMatchRow[]
+      }
+      match_transcript_windows_across_meetings: {
+        Args: {
+          /** A vector literal, '[0.1,0.2,…]'. */
+          p_query: string
+          p_model: string
+          p_meeting_limit: number
+          p_per_meeting_limit: number
+        }
+        Returns: CrossMeetingMatchRow[]
       }
     }
     Enums: Record<string, never>

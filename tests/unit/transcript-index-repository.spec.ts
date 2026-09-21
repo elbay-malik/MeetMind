@@ -1,11 +1,16 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   clampLimit,
+  clampMeetingLimit,
+  clampPerMeetingLimit,
   cosineSimilarity,
   MAX_MATCHES,
+  MAX_MATCHES_PER_MEETING,
+  MAX_MEETINGS,
+  rowToCrossMeetingMatch,
   rowToMatch,
   windowToRow,
   type EmbeddedWindow,
@@ -71,6 +76,18 @@ describe('shared helpers', () => {
     expect(clampLimit(1_000)).toBe(MAX_MATCHES)
   })
 
+  it('clamps a cross-meeting search\'s meeting and per-meeting limits independently', () => {
+    expect(clampMeetingLimit(0)).toBe(1)
+    expect(clampMeetingLimit(Number.NaN)).toBe(1)
+    expect(clampMeetingLimit(1_000)).toBe(MAX_MEETINGS)
+    expect(clampPerMeetingLimit(0)).toBe(1)
+    expect(clampPerMeetingLimit(Number.NaN)).toBe(1)
+    expect(clampPerMeetingLimit(1_000)).toBe(MAX_MATCHES_PER_MEETING)
+    // Different ceilings: a value between them clamps on one and passes the other.
+    expect(clampMeetingLimit(MAX_MATCHES_PER_MEETING + 1)).toBe(MAX_MATCHES_PER_MEETING + 1)
+    expect(clampPerMeetingLimit(MAX_MATCHES_PER_MEETING + 1)).toBe(MAX_MATCHES_PER_MEETING)
+  })
+
   it('maps a window to a row and a search row back to a match', () => {
     const w = window(3, axis(0), { contentHash: hash('c') })
     expect(windowToRow('m1', w)).toEqual({
@@ -81,6 +98,17 @@ describe('shared helpers', () => {
       idx: 3, first_segment_idx: 3, last_segment_idx: 4, start_ms: 3000, end_ms: 3999,
       content: 'window 3', content_hash: hash('c'), similarity: 0.75,
     })).toEqual({
+      idx: 3, firstSegmentIdx: 3, lastSegmentIdx: 4, startMs: 3000, endMs: 3999,
+      text: 'window 3', contentHash: hash('c'), similarity: 0.75,
+    })
+  })
+
+  it('maps a cross-meeting search row to a match tagged with its meeting', () => {
+    expect(rowToCrossMeetingMatch({
+      meeting_id: 'm3', idx: 3, first_segment_idx: 3, last_segment_idx: 4, start_ms: 3000, end_ms: 3999,
+      content: 'window 3', content_hash: hash('c'), similarity: 0.75,
+    })).toEqual({
+      meetingId: 'm3',
       idx: 3, firstSegmentIdx: 3, lastSegmentIdx: 4, startMs: 3000, endMs: 3999,
       text: 'window 3', contentHash: hash('c'), similarity: 0.75,
     })
@@ -182,6 +210,90 @@ describe('local transcript index repository', () => {
     await Promise.all(Array.from({ length: 10 }, (_, i) => repo.upsertWindows('m9', [window(i, axis(i))])))
     expect((await repo.listKeys('m9')).map(k => k.idx)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
   })
+
+  describe('searchAcrossMeetings', () => {
+    // A fresh directory PER TEST, not shared even within this block: a
+    // cross-meeting search legitimately sees every meeting in whatever
+    // directory it is given, so a directory reused across tests (as `dataDir`
+    // above is, deliberately, for the single-meeting tests) would make each
+    // test's results depend on every earlier test's leftover meetings rather
+    // than on what that one test sets up.
+    let crossDataDir: string
+    beforeEach(async () => {
+      crossDataDir = await mkdtemp(join(tmpdir(), 'meetmind-windows-cross-'))
+    })
+    afterEach(() => rm(crossDataDir, { recursive: true, force: true }))
+
+    it('ranks meetings by their own best match, tagging every result with its meeting', async () => {
+      const repo = createLocalTranscriptIndexRepository({ dataDir: crossDataDir })
+      // xm1's best window (axis 1) is nearer the query than xm2's (axis 1
+      // blended toward axis 0), so xm1 must lead despite having fewer windows.
+      await repo.upsertWindows('xm1', [window(0, axis(1))])
+      await repo.upsertWindows('xm2', [window(0, axis(1, { n: 0, weight: 0.6 }))])
+      const matches = await repo.searchAcrossMeetings(axis(1), {
+        model: 'gemini-embedding-2', meetingLimit: 5, perMeetingLimit: 5,
+      })
+      expect(matches.map(m => m.meetingId)).toEqual(['xm1', 'xm2'])
+      expect(matches[0]).not.toHaveProperty('embedding')
+    })
+
+    it('caps how many windows one meeting contributes, keeping its own nearest', async () => {
+      const repo = createLocalTranscriptIndexRepository({ dataDir: crossDataDir })
+      await repo.upsertWindows('xm3', [
+        window(0, axis(1)),
+        window(1, axis(1, { n: 0, weight: 0.1 })),
+        window(2, axis(1, { n: 0, weight: 0.2 })),
+      ])
+      const matches = await repo.searchAcrossMeetings(axis(1), {
+        model: 'gemini-embedding-2', meetingLimit: 5, perMeetingLimit: 2,
+      })
+      expect(matches.map(m => m.idx)).toEqual([0, 1])
+    })
+
+    it('caps how many meetings are returned, keeping the nearest ones', async () => {
+      const repo = createLocalTranscriptIndexRepository({ dataDir: crossDataDir })
+      await repo.upsertWindows('xm4', [window(0, axis(1))])
+      await repo.upsertWindows('xm5', [window(0, axis(1, { n: 0, weight: 0.3 }))])
+      await repo.upsertWindows('xm6', [window(0, axis(1, { n: 0, weight: 0.6 }))])
+      const matches = await repo.searchAcrossMeetings(axis(1), {
+        model: 'gemini-embedding-2', meetingLimit: 2, perMeetingLimit: 5,
+      })
+      expect(matches.map(m => m.meetingId)).toEqual(['xm4', 'xm5'])
+    })
+
+    it('drops a meeting with no window of the given model entirely, rather than an empty entry', async () => {
+      const repo = createLocalTranscriptIndexRepository({ dataDir: crossDataDir })
+      await repo.upsertWindows('xm7', [window(0, axis(1), { model: 'stub-hashed-tokens-v1' })])
+      await repo.upsertWindows('xm8', [window(0, axis(1))])
+      const matches = await repo.searchAcrossMeetings(axis(1), {
+        model: 'gemini-embedding-2', meetingLimit: 5, perMeetingLimit: 5,
+      })
+      expect(matches.map(m => m.meetingId)).toEqual(['xm8'])
+    })
+
+    it('ranks a meeting whose best window is zero-norm behind one with real negative similarity', async () => {
+      // The same NaN-sorts-last fix search() has, generalised to the
+      // meeting-ranking pass: a meeting's zero-vector window must not
+      // outrank another meeting's genuinely negative one. Meeting ids are
+      // chosen so the zero-vector meeting enumerates FIRST alphabetically
+      // (verified: unstorage's fs driver returns getKeys in that order,
+      // regardless of write order) — with that starting position, a
+      // regression that swaps the explicit rank() ordering key back for raw
+      // `.similarity` genuinely produces the WRONG order here (confirmed by
+      // temporarily reintroducing exactly that regression while writing this
+      // test), rather than an accidental pass some other starting position
+      // could produce from a stable sort's NaN-as-tie behaviour.
+      const repo = createLocalTranscriptIndexRepository({ dataDir: crossDataDir })
+      const opposite = axis(1).map(v => -v)
+      await repo.upsertWindows('xm-a-zero', [window(0, new Array(DIMS).fill(0))])
+      await repo.upsertWindows('xm-b-neg', [window(0, opposite)])
+      await repo.upsertWindows('xm-c-pos', [window(0, axis(1))])
+      const matches = await repo.searchAcrossMeetings(axis(1), {
+        model: 'gemini-embedding-2', meetingLimit: 5, perMeetingLimit: 5,
+      })
+      expect(matches.map(m => m.meetingId)).toEqual(['xm-c-pos', 'xm-b-neg', 'xm-a-zero'])
+    })
+  })
 })
 
 describe('supabase transcript index repository', () => {
@@ -276,11 +388,37 @@ describe('supabase transcript index repository', () => {
     }])
   })
 
+  it('searches across meetings through the cross-meeting SQL function, with both limits clamped', async () => {
+    const calls = stub(() => [{
+      meeting_id: 'm7', idx: 1, first_segment_idx: 1, last_segment_idx: 2, start_ms: 1000, end_ms: 1999,
+      content: 'window 1', content_hash: hash('a'), similarity: 0.9,
+    }])
+    const query = axis(1)
+    const matches = await repo.searchAcrossMeetings(query, {
+      model: 'gemini-embedding-2', meetingLimit: 500, perMeetingLimit: 500,
+    })
+
+    expect(calls[0]!.method).toBe('POST')
+    expect(calls[0]!.url.pathname).toBe('/rest/v1/rpc/match_transcript_windows_across_meetings')
+    expect(calls[0]!.body).toEqual({
+      p_query: JSON.stringify(query),
+      p_model: 'gemini-embedding-2',
+      p_meeting_limit: MAX_MEETINGS,
+      p_per_meeting_limit: MAX_MATCHES_PER_MEETING,
+    })
+    expect(matches).toEqual([{
+      meetingId: 'm7',
+      idx: 1, firstSegmentIdx: 1, lastSegmentIdx: 2, startMs: 1000, endMs: 1999,
+      text: 'window 1', contentHash: hash('a'), similarity: 0.9,
+    }])
+  })
+
   it.each([
     ['listKeys', () => repo.listKeys('m1')],
     ['upsertWindows', () => repo.upsertWindows('m1', [window(0, axis(0))])],
     ['deleteExcept', () => repo.deleteExcept('m1', [0])],
     ['search', () => repo.search('m1', axis(0), { model: 'm', limit: 1 })],
+    ['searchAcrossMeetings', () => repo.searchAcrossMeetings(axis(0), { model: 'm', meetingLimit: 1, perMeetingLimit: 1 })],
   ])('surfaces a database error from %s', async (_name, run) => {
     vi.stubGlobal('fetch', async () => new Response(
       JSON.stringify({ code: '42501', message: 'permission denied', details: '', hint: '' }),

@@ -364,6 +364,7 @@ reject "a window whose range ends before it starts is refused" \
    values ('33333333-3333-3333-3333-333333333333', 9, 5, 4, 0, 1, 'x', '$HASH_A', 'gemini-embedding-2', $(unit_vector 1));" \
   "violates check constraint \"transcript_windows_check\""
 
+
 psql -q -c "delete from public.meetings where audio_key='windows_a';"
 check "deleting a meeting removes its windows, and only its windows" \
   "select (select count(*) from public.transcript_windows
@@ -371,6 +372,63 @@ check "deleting a meeting removes its windows, and only its windows" \
       and (select count(*) from public.transcript_windows
            where meeting_id='44444444-4444-4444-4444-444444444444') = 1"
 psql -q -c "delete from public.meetings where audio_key='windows_b';"
+
+# --- match_transcript_windows_across_meetings (ADR-0008) --------------------
+# Meeting Y holds the query's dominant axis exactly (best possible match) plus
+# a second, weaker window, to check the per-meeting cap. Meeting X holds a
+# weaker real match AND a wrong-model window at the query's BEST axis — if the
+# wrong-model window counted, X would incorrectly outrank Y. Meeting Z is
+# orthogonal to the query entirely, to check the meeting cap excludes it once
+# two better meetings exist.
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+            values ('55555555-5555-5555-5555-555555555555','y','ready','a.mp4',1,'windows_y',10),
+                   ('66666666-6666-6666-6666-666666666666','x','ready','a.mp4',1,'windows_x',10),
+                   ('77777777-7777-7777-7777-777777777777','z','ready','a.mp4',1,'windows_z',10);"
+insert_window 55555555-5555-5555-5555-555555555555 0 2 gemini-embedding-2 "$HASH_A"
+insert_window 55555555-5555-5555-5555-555555555555 1 1 gemini-embedding-2 "$HASH_A"
+insert_window 66666666-6666-6666-6666-666666666666 0 1 gemini-embedding-2 "$HASH_A"
+insert_window 66666666-6666-6666-6666-666666666666 1 2 some-other-model "$HASH_A"
+insert_window 77777777-7777-7777-7777-777777777777 0 6 gemini-embedding-2 "$HASH_A"
+
+check "match_transcript_windows_across_meetings ranks meetings by their own best match, meeting Y first" \
+  "select array_agg(meeting_id order by first_ord) = array['55555555-5555-5555-5555-555555555555'::uuid, '66666666-6666-6666-6666-666666666666'::uuid]
+   from (
+     select meeting_id, min(ord) as first_ord
+     from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 2, 5)
+          with ordinality as m(meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, similarity, ord)
+     group by meeting_id
+   ) ranked"
+check "match_transcript_windows_across_meetings tags every row with the meeting it actually belongs to" \
+  "select bool_and(
+     (meeting_id = '55555555-5555-5555-5555-555555555555' and idx in (0,1))
+     or (meeting_id = '66666666-6666-6666-6666-666666666666' and idx = 0))
+   from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 3, 5)
+   where meeting_id in ('55555555-5555-5555-5555-555555555555', '66666666-6666-6666-6666-666666666666')"
+check "match_transcript_windows_across_meetings ignores a window embedded by a different model, even at the best axis" \
+  "select not exists (select 1
+     from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 5, 5) m
+     where m.meeting_id = '66666666-6666-6666-6666-666666666666' and m.idx = 1)"
+check "match_transcript_windows_across_meetings caps how many meetings are returned" \
+  "select count(distinct meeting_id) = 2
+   from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 2, 5) m
+   where m.meeting_id in ('55555555-5555-5555-5555-555555555555','66666666-6666-6666-6666-666666666666','77777777-7777-7777-7777-777777777777')"
+check "match_transcript_windows_across_meetings caps how many windows one meeting contributes" \
+  "select count(*) = 1
+   from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 5, 1) m
+   where m.meeting_id = '55555555-5555-5555-5555-555555555555'"
+check "match_transcript_windows_across_meetings clamps a zero or negative meeting limit up to one meeting" \
+  "select (select count(distinct meeting_id) from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 0, 5)) = 1
+      and (select count(distinct meeting_id) from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', -5, 5)) = 1"
+check "match_transcript_windows_across_meetings clamps a zero or negative per-meeting limit up to one row" \
+  "select (select count(*) from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 1, 0)) = 1
+      and (select count(*) from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 1, -5)) = 1"
+check "match_transcript_windows_across_meetings pins its search_path" \
+  "select exists (select 1 from pg_proc
+     where proname = 'match_transcript_windows_across_meetings'
+       and proconfig @> array['search_path=public, extensions'])"
+
+psql -q -c "delete from public.meetings where audio_key in ('windows_y','windows_x','windows_z');"
+
 
 # updated_at must advance on update. now() is transaction-scoped, so the insert
 # and the update have to happen in separate transactions or this always passes.
