@@ -164,3 +164,28 @@ export interface Citation {
 export type QuestionAnswer
   = | { found: true, answer: string, citations: Citation[] }
     | { found: false, answer: null, citations: [] }
+
+/**
+ * One passage a cross-meeting search retrieved (ADR-0008), tagged with the
+ * meeting it came from — unlike {@link Citation}, which never needs a meeting
+ * id because it is always read in the context of one already-known meeting.
+ */
+export interface MeetingSearchMatch {
+  meetingId: string
+  meetingTitle: string
+  quote: string
+  segmentIdx: number
+  startMs: number
+}
+
+/**
+ * Cross-meeting search results, ordered by each meeting's own best match.
+ * Only covers meetings that have been indexed for questions (ADR-0007
+ * decision 6: indexing is a manual, per-meeting step) — the UI says so as a
+ * standing caption rather than this reporting exactly which meetings were
+ * skipped, which would need every meeting's own index status computed on
+ * every search.
+ */
+export interface MeetingSearchResult {
+  results: MeetingSearchMatch[]
+}
