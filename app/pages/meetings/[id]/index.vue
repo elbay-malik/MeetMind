@@ -252,6 +252,25 @@ const emptyTranscript = computed(() => {
 
 const audioSrc = computed(() => `/api/meetings/${meetingId.value}/audio`)
 const hasAudio = computed(() => meeting.value.status !== 'pending_upload')
+
+/**
+ * A cross-meeting search result deep-links here as `?t=<startMs>&seg=<segmentIdx>`
+ * (app/pages/meetings/index.vue). Both must be present and numeric, or this is
+ * some other visit to the page, not a followed link — a half-formed query
+ * string should render the page normally, not half-seek it.
+ */
+onMounted(() => {
+  const startMs = Number(route.query.t)
+  const segmentIdx = Number(route.query.seg)
+  if (!Number.isFinite(startMs) || !Number.isFinite(segmentIdx)) return
+  const trySeek = () => seekToCitation(startMs, segmentIdx)
+  const audio = player.value
+  if (audio && Number.isFinite(audio.duration) && audio.duration > 0) trySeek()
+  // Metadata (and so a real duration) loads asynchronously; seeking before
+  // then is what audioError's "not ready yet" guard exists for, but a
+  // followed link should just work rather than surface that as a failure.
+  else audio?.addEventListener('loadedmetadata', trySeek, { once: true })
+})
 </script>
 
 <template>
