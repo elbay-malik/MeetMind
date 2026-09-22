@@ -234,11 +234,11 @@ function onKeydown(event: KeyboardEvent, index: number) {
 
 /** What to say when there are no segments, which means different things by status. */
 const emptyTranscript = computed(() => {
-  const { status, failedStage } = meeting.value
+  const { status } = meeting.value
   if (transcribedButEmpty(meeting.value, 0)) {
     return { title: 'No speech was found', description: 'Transcription ran and returned nothing. The recording may be silent.' }
   }
-  if (status === 'failed' && failedStage === 'upload') {
+  if (uploadWasRejected(meeting.value)) {
     return { title: 'No audio to transcribe', description: 'The uploaded audio was rejected and removed. Upload the recording again.' }
   }
   if (status === 'transcribing') {
@@ -251,7 +251,11 @@ const emptyTranscript = computed(() => {
 })
 
 const audioSrc = computed(() => `/api/meetings/${meetingId.value}/audio`)
-const hasAudio = computed(() => meeting.value.status !== 'pending_upload')
+// Not just `pending_upload`: a rejected upload had its object deleted, so
+// mounting a player for it only ever produces "Audio unavailable" above
+// this page's own correct explanation that the recording was removed.
+const hasAudio = computed(() =>
+  meeting.value.status !== 'pending_upload' && !uploadWasRejected(meeting.value))
 
 /**
  * A cross-meeting search result deep-links here as `?t=<startMs>&seg=<segmentIdx>`

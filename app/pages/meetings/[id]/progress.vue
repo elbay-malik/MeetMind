@@ -283,8 +283,6 @@ const canSummarize = computed(() =>
 const canResume = computed(() => claimLooksStale(meeting.value, now.value))
 
 /** The failure with no retry at all: the audio was rejected and removed. */
-const uploadWasRejected = computed(() =>
-  meeting.value.status === 'failed' && meeting.value.failedStage === 'upload')
 
 /**
  * The one action this meeting can take, as data rather than a chain of v-if
@@ -346,7 +344,7 @@ const activityLabel = computed(() => {
   // at all — the one moment the user is waiting to be told about.
   if (justSummarized.value) return 'Extraction finished. Decisions and action items are ready.'
   if (justFinished.value) return `Transcription finished with ${segments.value.length} segments.`
-  if (uploadWasRejected.value) {
+  if (uploadWasRejected(meeting.value)) {
     return 'The uploaded audio was rejected and removed. Upload the recording again.'
   }
   if (canTranscribe.value) return 'Transcription runs on demand until the pipeline is automated.'
@@ -510,7 +508,7 @@ const activityLabel = computed(() => {
          only "Something went wrong" left the page with no next step at all
          while the pipeline card offered an action that could never work. -->
     <UAlert
-      v-else-if="uploadWasRejected"
+      v-else-if="uploadWasRejected(meeting)"
       role="alert"
       color="error"
       variant="subtle"

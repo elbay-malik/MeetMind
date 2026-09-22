@@ -109,3 +109,20 @@ export function transcriptionFinished(meeting: Pick<Meeting, 'status' | 'failedS
   return ['summarizing', 'indexing', 'ready'].includes(meeting.status)
     || (meeting.status === 'failed' && meeting.failedStage === 'summarization')
 }
+
+/**
+ * Whether verification rejected this meeting's upload and DELETED the stored
+ * object (see verify-upload.ts). The audio is gone, so anything that would
+ * fetch or play it has nothing to fetch.
+ *
+ * Shared rather than repeated inline, which is how the two pages drifted:
+ * `'upload'` arrived with Phase 6, the progress page and the meeting page's
+ * empty-transcript message both learned about it, and the meeting page's
+ * `hasAudio` — written in Phase 5, when the only audio-less state was
+ * `pending_upload` — did not. It went on mounting a player pointing at a
+ * deleted object, so the page showed "Audio unavailable" directly above its
+ * own correct explanation that the recording had been removed.
+ */
+export function uploadWasRejected(meeting: Pick<Meeting, 'status' | 'failedStage'>): boolean {
+  return meeting.status === 'failed' && meeting.failedStage === 'upload'
+}

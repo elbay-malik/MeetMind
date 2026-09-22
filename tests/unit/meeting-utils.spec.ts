@@ -9,6 +9,7 @@ import {
   claimLooksStale,
   titleFromFileName,
   transcribedButEmpty,
+  uploadWasRejected,
 } from '../../shared/utils/meeting'
 
 describe('meeting limits', () => {
@@ -72,6 +73,20 @@ describe('transcribedButEmpty', () => {
 
   it('is false for a failed meeting whose failure was in transcription', () => {
     expect(transcribedButEmpty({ status: 'failed', failedStage: 'transcription' }, 0)).toBe(false)
+  })
+})
+
+describe('uploadWasRejected', () => {
+  it('is true only when verification rejected the upload and deleted the object', () => {
+    expect(uploadWasRejected({ status: 'failed', failedStage: 'upload' })).toBe(true)
+  })
+
+  it('is false for every other failure and every non-failed status', () => {
+    expect(uploadWasRejected({ status: 'failed', failedStage: 'transcription' })).toBe(false)
+    expect(uploadWasRejected({ status: 'failed', failedStage: 'summarization' })).toBe(false)
+    for (const status of ['pending_upload', 'uploaded', 'transcribing', 'summarizing', 'indexing', 'ready'] as const) {
+      expect(uploadWasRejected({ status, failedStage: null }), status).toBe(false)
+    }
   })
 })
 
