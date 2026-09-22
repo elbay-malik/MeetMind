@@ -52,7 +52,7 @@ const searchStatus = computed(() => {
   if (!searchResults.value) return ''
   return searchResults.value.length
     ? `${searchResults.value.length} result${searchResults.value.length === 1 ? '' : 's'} found.`
-    : 'No matches found in your indexed meetings.'
+    : 'No matches in what has been indexed so far.'
 })
 
 /** A window's own start, not a more specific line within it — see searchMeetings' doc comment for why. */
@@ -102,12 +102,16 @@ function seekTarget(match: MeetingSearchMatch): string {
         </UButton>
       </form>
 
-      <!-- Always true, not computed per search: an honest floor on what a
-           result list can promise without recomputing every meeting's own
-           index status (indexing is a manual, per-meeting step — ADR-0007
-           decision 6) on every search just to report it precisely. -->
+      <!-- Deliberately says "what has been indexed", not "your indexed
+           meetings": indexing is a manual, per-meeting step (ADR-0007
+           decision 6) AND it can stop partway when the embedding quota runs
+           out, keeping what it already paid for. This search reads whatever
+           is stored without checking either, so a meeting can be searched
+           only as far as its indexing got. Claiming to have searched
+           "your indexed meetings" reads as completeness this cannot deliver
+           — see ADR-0008. -->
       <p class="mt-2 text-xs text-muted">
-        Searches only meetings indexed for questions.
+        Searches the passages indexed so far — a partly-indexed meeting only as far as it got.
       </p>
 
       <!-- Always mounted: see `searchStatus`. A span, not a p, so the text stays

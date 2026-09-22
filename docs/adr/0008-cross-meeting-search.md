@@ -210,6 +210,47 @@ split across two phases.
   Phase 8 step 3, but Phase 10 already owns the rest of "make the demo work
   without uploading," and splitting that across two phases serves no one.
 
+## Addendum (2026-09-22): search has no freshness guard, and the copy claimed otherwise
+
+A whole-system audit after this shipped found that cross-meeting search is the
+only reader of the window index with **no freshness check at all**.
+`askMeeting` has two — `indexStatus(...) !== 'ready'` and a per-match
+content-hash re-check, both returning 409 — and decision 1 above actually
+cites that machinery as a reason to defer cross-meeting Q&A. It never noticed
+that plain search needs the same thing for a weaker but real reason.
+
+Two cases, one of them live today:
+
+- **A partly-indexed meeting returns wrong negatives.** Indexing stores each
+  batch as it lands (ADR-0007 decision 5) precisely so a quota stop keeps what
+  it paid for. A meeting whose indexing stopped at window 100 of 120 is
+  searched over those 100 only. Search then reports no match for something
+  said in the last quarter of the meeting, with no hint that it only looked at
+  part of it. This needs nothing unusual — a Gemini 429 partway through is the
+  most likely provider failure in the app.
+- **A stale window would quote text that is no longer in the transcript.**
+  `indexMeeting` deliberately keeps a window whose hash no longer matches, so
+  a resumed run can reuse it; `ask` refuses such a match, search returns
+  `match.text` verbatim with a deep link into the *current* transcript. Not
+  reachable today — no route replaces a finished meeting's transcript, since
+  `PAST_TRANSCRIPTION` blocks re-transcription for every status a meeting can
+  be in once it has an index — but that invariant is undocumented and
+  untested, and Phase 9's orchestration redesign is the phase most likely to
+  break it.
+
+What changed here: only the UI copy, which asserted a completeness this design
+cannot deliver ("Searches only meetings indexed for questions", "No matches
+found in your indexed meetings"). It now says it searched the passages indexed
+so far.
+
+What deliberately did NOT change: no freshness check was added. Detecting the
+live case means knowing every meeting's index status, which costs a transcript
+read plus a full window re-plan *per meeting, per search* — the whole corpus,
+not just the meetings that matched, because the symptom is a meeting silently
+missing from the results. That is a real design decision (an index-completeness
+marker cheap enough to filter on, most likely), not a patch, and it belongs
+with Phase 9's orchestration work rather than being improvised here.
+
 ## Follow-ups
 
 - **Revisit `match_transcript_windows_across_meetings`'s access the moment
