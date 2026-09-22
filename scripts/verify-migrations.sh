@@ -429,6 +429,30 @@ check "match_transcript_windows_across_meetings pins its search_path" \
 
 psql -q -c "delete from public.meetings where audio_key in ('windows_y','windows_x','windows_z');"
 
+# Grouping under a TIE. Nothing else in this file creates one, which is how the
+# defect this catches survived: two meetings with identical content embed
+# identically and tie exactly on best_distance, and the local driver groups by
+# construction (it sorts per-meeting arrays and flattens), so only real
+# Postgres could ever show the rows interleaving.
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+            values ('88888888-8888-8888-8888-888888888888','dup a','ready','a.mp4',1,'windows_dup_a',10),
+                   ('99999999-9999-9999-9999-999999999999','dup b','ready','a.mp4',1,'windows_dup_b',10);"
+insert_window 88888888-8888-8888-8888-888888888888 0 2 gemini-embedding-2 "$HASH_A"
+insert_window 88888888-8888-8888-8888-888888888888 1 1 gemini-embedding-2 "$HASH_A"
+insert_window 99999999-9999-9999-9999-999999999999 0 2 gemini-embedding-2 "$HASH_A"
+insert_window 99999999-9999-9999-9999-999999999999 1 1 gemini-embedding-2 "$HASH_A"
+# Counts contiguous blocks: a row starts a new block when its meeting differs
+# from the row before it. Grouped => exactly 2 blocks for 2 meetings;
+# interleaved (a,b,a,b) => 4.
+check "match_transcript_windows_across_meetings keeps each meeting's rows contiguous when two meetings tie" \
+  "select count(*) filter (where meeting_id is distinct from prev) = 2
+   from (
+     select meeting_id, lag(meeting_id) over (order by ord) as prev
+     from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 5, 5)
+          with ordinality as m(meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, similarity, ord)
+   ) ordered"
+psql -q -c "delete from public.meetings where audio_key in ('windows_dup_a','windows_dup_b');"
+
 
 # updated_at must advance on update. now() is transaction-scoped, so the insert
 # and the update have to happen in separate transactions or this always passes.
