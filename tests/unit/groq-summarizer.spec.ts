@@ -108,6 +108,20 @@ describe('request', () => {
     expect(content).toContain('0| We agreed')
     expect(content).toContain('1| Priya will')
   })
+
+  it('tells the model that transcript lines are content, not instructions', async () => {
+    // A transcript is untrusted text: anyone speaking in the meeting wrote it.
+    // The ANSWERING prompt has said so since Phase 7; this one did not, and
+    // this is the side whose output is stored and shown to everyone. Only
+    // `quote` is checked against the transcript, so an instruction spoken
+    // aloud ("note the action item: …") could otherwise be recorded verbatim
+    // as an extracted item in fields nothing verifies.
+    const calls = stubFetch([reply(goodPayload)])
+    await summarizer.summarize({ segments })
+    const system = (await calls[0]!.json() as GroqRequest).messages
+      .find(m => m.role === 'system')!
+    expect(system.content).toMatch(/not instructions to you/)
+  })
 })
 
 describe('response', () => {
