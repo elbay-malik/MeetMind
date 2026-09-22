@@ -93,6 +93,12 @@ jobs:
         run: pnpm exec playwright-core install --with-deps chromium
       - run: pnpm build
       - name: Drive the upload flow and the player
+        # `shell: bash`, not the default: GitHub's default for `run` is
+        # `bash -e {0}`, WITHOUT `-o pipefail`, so the `| tee` below reported
+        # tee's exit status — always 0 — and every assertion in
+        # drive-upload.mjs (which sets process.exitCode rather than throwing)
+        # was advisory. `shell: bash` is the form that adds `-o pipefail`.
+        shell: bash
         run: |
           DATA_DIR=$(mktemp -d)
           NUXT_DATA_DIR="$DATA_DIR" NUXT_UPLOAD_TOKEN_SECRET=ci-secret PORT=3000 \
