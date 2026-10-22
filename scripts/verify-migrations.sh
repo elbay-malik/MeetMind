@@ -19,12 +19,24 @@ cleanup
 
 echo "starting ${IMAGE} ..."
 docker run -d --name "$CONTAINER" -e POSTGRES_PASSWORD=pg -p "$PORT:5432" "$IMAGE" >/dev/null
-for _ in $(seq 1 40); do
-  docker exec "$CONTAINER" pg_isready -U postgres >/dev/null 2>&1 && break
-  sleep 2
-done
 
 psql() { docker exec -i "$CONTAINER" psql -U postgres -v ON_ERROR_STOP=1 "$@"; }
+
+# Wait for a real query to succeed, NOT for `pg_isready`.
+#
+# The postgres image starts a temporary server so it can run initdb and any
+# init scripts, then shuts it down and starts the real one. `pg_isready`
+# reports ready during that first window, so a loop that breaks on it can
+# proceed into the shutdown and die with "connection to server on socket
+# .s.PGSQL.5432 failed: No such file or directory" — which is exactly what it
+# did, intermittently, until this was changed. Running an actual query is the
+# precondition every line below actually needs, so it is the thing to wait on.
+ready=0
+for _ in $(seq 1 60); do
+  if psql -q -c 'select 1' >/dev/null 2>&1; then ready=1; break; fi
+  sleep 1
+done
+[ "$ready" = 1 ] || { echo "FAIL: Postgres never accepted a query in 60s"; docker logs "$CONTAINER" | tail -20; exit 1; }
 
 # Applied separately, below: it needs a legacy row inserted right before it to
 # prove its backfill actually runs against data that predates the column.
