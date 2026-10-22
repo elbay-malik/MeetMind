@@ -96,8 +96,9 @@ independent).
 
 Once real keys are in place, `pnpm test:services` checks each one against the driver
 that uses it — presigned uploads and CORS on R2, the schema and triggers on Supabase,
-and whether Groq's response really has the shape the parser assumes. Those contracts
-are the one thing the offline tests cannot prove.
+whether Groq's response really has the shape the parser assumes, and that Gemini
+honours the 768-dimension request and ranks a question nearer the passage answering
+it. Those contracts are the one thing the offline tests cannot prove.
 
 ### Storage setup (Cloudflare R2)
 
@@ -131,8 +132,12 @@ quota; the UI reports it as such.
 
 ### Database setup (Supabase)
 
-1. Create a Supabase project and apply `supabase/migrations/*.sql` (Supabase CLI
-   `supabase db push`, or paste into the SQL editor).
+1. Create a Supabase project, put its **Session pooler** connection string in
+   `SUPABASE_DB_URL` (dashboard -> Connect; the port must be 5432, and the
+   `[YOUR-PASSWORD]` placeholder has to be replaced by hand), then run
+   `pnpm db:migrate`. It applies `supabase/migrations/*.sql` in timestamp order
+   -- which matters, since later migrations backfill and replace what earlier
+   ones create -- and records each one so a re-run is a no-op.
 2. Set `NUXT_SUPABASE_URL` and `NUXT_SUPABASE_SERVICE_KEY` (the **service-role** key —
    it stays on the server; the table has RLS enabled with no policies).
 
@@ -145,11 +150,12 @@ quota; the UI reports it as such.
 | `pnpm typecheck` | `nuxt typecheck` (vue-tsc, strict) |
 | `pnpm test` / `pnpm test:watch` | Vitest unit + Nuxt-runtime tests |
 | `pnpm test:e2e` | Builds the app, then tests the Nitro routes against the local drivers |
-| `pnpm test:services` | Exercises the real R2, Supabase and Groq services; each is skipped unless its keys are set |
+| `pnpm test:services` | Exercises the real R2, Supabase, Groq and Gemini services; each group is skipped unless its keys are set, and the banner names which ones skipped |
 | `node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: drop → extract → upload → progress page, then inspects storage |
 | `node scripts/drive-player.mjs <url> <meetingId>` | Headless Chromium: click-to-seek, active-line highlight, transcript keyboard navigation |
 | `node scripts/drive-search.mjs <url> <dataDir>` | Headless Chromium: search across two indexed meetings, click a result, confirm it seeks the right meeting's player |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
+| `pnpm db:migrate` | Applies `supabase/migrations/` to the real project at `SUPABASE_DB_URL`, in order, skipping what a ledger says is already there. Run `verify-migrations.sh` first; pass `--dry-run` to see what is pending |
 | `pnpm ci:local` | Runs every job in `.github/workflows/ci.yml` on this machine — a PR can be judged green without waiting on GitHub. A job it cannot run counts as a failure, not a skip |
 
 ## Roadmap

@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:e2e": "nuxt build && vitest run --config vitest.e2e.config.ts",
     "test:services": "vitest run --config vitest.services.config.ts",
+    "db:migrate": "bash scripts/apply-migrations.sh",
     "ci:local": "bash scripts/ci-local.sh",
     "test:watch": "vitest"
   },

@@ -20,17 +20,28 @@ cleanup
 echo "starting ${IMAGE} ..."
 docker run -d --name "$CONTAINER" -e POSTGRES_PASSWORD=pg -p "$PORT:5432" "$IMAGE" >/dev/null
 
-psql() { docker exec -i "$CONTAINER" psql -U postgres -v ON_ERROR_STOP=1 "$@"; }
+# Everything talks TCP (-h localhost), never the unix socket, and that is the
+# whole readiness fix — see the loop below. TCP needs a password where the
+# local socket is trusted, hence PGPASSWORD.
+psql() { docker exec -i -e PGPASSWORD=pg "$CONTAINER" \
+  psql -U postgres -h localhost -v ON_ERROR_STOP=1 "$@"; }
 
-# Wait for a real query to succeed, NOT for `pg_isready`.
+# Wait for a query to succeed OVER TCP, not for `pg_isready` and not for a
+# query over the unix socket.
 #
 # The postgres image starts a temporary server so it can run initdb and any
 # init scripts, then shuts it down and starts the real one. `pg_isready`
 # reports ready during that first window, so a loop that breaks on it can
 # proceed into the shutdown and die with "connection to server on socket
-# .s.PGSQL.5432 failed: No such file or directory" — which is exactly what it
-# did, intermittently, until this was changed. Running an actual query is the
-# precondition every line below actually needs, so it is the thing to wait on.
+# .s.PGSQL.5432 failed: No such file or directory".
+#
+# Waiting on a real `select 1` was the first attempt at a fix and is NOT
+# enough: the temporary server answers queries perfectly well, so the loop
+# still breaks early and the same error comes back intermittently. What
+# actually separates the two is that the temporary server is started with
+# `listen_addresses=''` and so is reachable only over the unix socket. A query
+# over TCP therefore cannot succeed until the real server is up. This is the
+# same discriminator the official docker-entrypoint uses internally.
 ready=0
 for _ in $(seq 1 60); do
   if psql -q -c 'select 1' >/dev/null 2>&1; then ready=1; break; fi
@@ -120,7 +131,8 @@ check "every MeetingStatus value is accepted" \
 # Rejections.
 reject() { # reject <description> <sql> <expected error fragment>
   local out
-  out=$(docker exec -i "$CONTAINER" psql -U postgres -c "$2" 2>&1 || true)
+  out=$(docker exec -i -e PGPASSWORD=pg "$CONTAINER" \
+    psql -U postgres -h localhost -c "$2" 2>&1 || true)
   echo "$out" | grep -q "$3" || fail "$1 — expected '$3', got: $out"
   echo "  ok: $1"
 }

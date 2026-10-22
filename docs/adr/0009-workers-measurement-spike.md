@@ -154,7 +154,46 @@ needs it.
   before any deploy, since nothing works without it.
 - Make the assets exclusion come from the build rather than a hand-written
   `.output/public/.assetsignore`.
-- `pnpm test:services` has never run and has no CI job. It is the only thing
-  that checks the R2, Supabase, Groq and Gemini contracts, and finding 4 means
-  real credentials are now a prerequisite for *any* Workers deploy, so it stops
-  being optional.
+- ~~`pnpm test:services` has never run~~ — it has now, see below. It still has
+  no CI job, and finding 4 means real credentials are a prerequisite for *any*
+  Workers deploy, so it stops being optional.
+
+## Addendum, 2026-10-22: the schema is live and the service contracts hold
+
+The Supabase project exists and all eight migrations are applied, so two of
+this ADR's own blockers are gone and `pnpm test:services` has run for the
+first time in the project's history: **10 passed, 6 skipped**.
+
+What that actually covered:
+
+| Group | Result | Note |
+| --- | --- | --- |
+| Supabase Postgres | 5 passed | row shape against `meetingSchema`, the `updated_at` trigger, the audio cap enforced in the database, segment ordering, cascade delete |
+| Groq Whisper | 2 passed | the response envelope really has the shape the parser assumes |
+| Gemini embeddings | 3 passed | `outputDimensionality` honoured at 768 rather than the 3,072 default, vectors unit-length, a question ranked nearer the passage that answers it |
+| R2 | 6 skipped | the four `NUXT_R2_*` variables are not set |
+
+Two things worth recording beyond the pass count.
+
+The migrations were applied by a new `pnpm db:migrate`
+(`scripts/apply-migrations.sh`), not by the Supabase CLI, which is not
+installed here. It keeps a ledger in its own `meetmind_migrations` schema, so a
+re-run is a no-op and an edit to an already-applied file is refused outright. It
+also fails with a named error for the three ways the connection string goes
+wrong, each of which Postgres otherwise mislabels: the dashboard's literal
+`[YOUR-PASSWORD]` placeholder (which surfaces as `password authentication
+failed`), the Direct connection (IPv6-only on new projects, unroutable from
+Docker's bridge), and the Transaction pooler on 6543 (which cannot run DDL).
+All three were hit in practice before the script existed.
+
+Gemini's three checks had been running and passing while the runner's own
+banner omitted Gemini from its detected-credentials list. Nothing was broken,
+but "10 passed, 6 skipped" does not distinguish a group skipped for want of a
+key from one that quietly stopped existing, so the banner now names the skipped
+groups too. That is the only defence this suite has against a false green,
+since it has no CI job to notice a group disappearing.
+
+Still open from this ADR: the two Workers numbers (CPU per route, subrequests
+per invocation) remain unmeasured — the credentials now exist, but R2 does not,
+and finding 4 means the data routes need every driver real before they execute
+under `workerd` at all.
