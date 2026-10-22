@@ -57,6 +57,7 @@ The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 | [0006](docs/adr/0006-structured-summaries.md) | Summaries: chunked extraction, citations checked against the transcript |
 | [0007](docs/adr/0007-semantic-qa.md) | Semantic Q&A: windowed Gemini embeddings, answers held to the same citation check |
 | [0008](docs/adr/0008-cross-meeting-search.md) | Cross-meeting search: passages across meetings, not a synthesized answer; still no HNSW |
+| [0009](docs/adr/0009-workers-measurement-spike.md) | Workers measurement spike before Phase 9: what the runtime actually does, measured rather than inferred |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 

@@ -1,0 +1,30 @@
+{
+  // Cloudflare Workers config for the Phase 13 target. Added during the
+  // measurement spike that precedes Phase 9 — see docs/adr/0009-*.
+  //
+  // NOT yet a deployment: nothing here has been published. Its job right now
+  // is to let `wrangler dev` run the real workerd runtime locally so CPU time
+  // and subrequest counts can be measured against the free plan's 10ms and 50
+  // limits, which is what decides Phase 9's orchestration primitive.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "meetmind",
+  "main": ".output/server/index.mjs",
+
+  // nodejs_compat is REQUIRED, not optional: the cloudflare_module build warns
+  // "Node.js compatibility is not enabled" without it, because every
+  // server/utils/db/*-local.ts driver imports node:path eagerly (ADR-0008's
+  // follow-up flags exactly this). Dated past 2024-09-23 so the v2 semantics
+  // apply.
+  "compatibility_date": "2026-10-22",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "assets": {
+    "directory": ".output/public",
+    "binding": "ASSETS"
+  },
+
+  "observability": {
+    // CPU time per invocation is the number this spike exists to get.
+    "enabled": true
+  }
+}
