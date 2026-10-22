@@ -149,6 +149,7 @@ quota; the UI reports it as such.
 | `node scripts/drive-player.mjs <url> <meetingId>` | Headless Chromium: click-to-seek, active-line highlight, transcript keyboard navigation |
 | `node scripts/drive-search.mjs <url> <dataDir>` | Headless Chromium: search across two indexed meetings, click a result, confirm it seeks the right meeting's player |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
+| `pnpm ci:local` | Runs every job in `.github/workflows/ci.yml` on this machine — a PR can be judged green without waiting on GitHub. A job it cannot run counts as a failure, not a skip |
 
 ## Roadmap
 
