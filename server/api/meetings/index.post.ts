@@ -4,9 +4,7 @@ import { AUDIO_MIME, audioObjectKey } from '#shared/utils/meeting'
 import { useAudioStore } from '../../utils/storage'
 import { useMeetingRepository } from '../../utils/db'
 import { badRequest } from '../../utils/http'
-
-/** How long the browser has to PUT the audio after registering the meeting. */
-const UPLOAD_URL_TTL_SEC = 15 * 60
+import { assertStorageBudget, UPLOAD_URL_TTL_SEC } from '../../utils/storage-budget'
 
 /**
  * The registration payload is a few hundred bytes. h3 buffers the whole body
@@ -33,6 +31,12 @@ export default defineEventHandler(async (event): Promise<CreateMeetingResponse> 
   const parsed = createMeetingBodySchema.safeParse(await readBody(event))
   if (!parsed.success) throw badRequest('Invalid meeting payload', parsed.error)
   const input = parsed.data
+
+  // Before minting the URL, not after: the presigned PUT is the capability that
+  // spends storage, so a refusal has to come first. Checked against the bytes
+  // this upload would add, so the ceiling cannot be stepped over by one large
+  // recording.
+  await assertStorageBudget(event, input.audioBytes)
 
   const id = crypto.randomUUID()
   const audioKey = audioObjectKey(id)

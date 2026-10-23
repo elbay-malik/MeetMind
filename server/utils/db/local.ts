@@ -5,6 +5,7 @@ import {
   assertValidMeetingRow,
   assertValidNewMeeting,
   assertValidStatusPatch,
+  audioIsStored,
   type MeetingPatch,
   type MeetingRepository,
   type NewMeeting,
@@ -104,6 +105,18 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
         .map(normalize)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
         .slice(0, limit)
+    },
+
+    async storedAudioBytes(window) {
+      const s = await storage()
+      const keys = await s.getKeys('meetings')
+      const items = await s.getItems<Meeting>(keys)
+      return items
+        .map(i => i.value)
+        .filter((m): m is Meeting => !!m)
+        .map(normalize)
+        .filter(m => audioIsStored(m, window))
+        .reduce((total, m) => total + m.audioBytes, 0)
     },
 
     async update(id, patch: MeetingPatch) {

@@ -73,6 +73,14 @@ export interface Database {
         }
         Returns: CrossMeetingMatchRow[]
       }
+      stored_audio_bytes: {
+        Args: {
+          p_retention_days: number
+          p_reservation_seconds: number
+        }
+        /** A bigint, which PostgREST sends as a number or a string. */
+        Returns: number | string
+      }
     }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>

@@ -182,6 +182,42 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
     const orphans = await client.from('transcript_segments').select().eq('meeting_id', id)
     expect(orphans.data).toHaveLength(0)
   })
+
+  it('answers the storage budget over PostgREST, as a number the app can add to', async () => {
+    // The only check on this path. The local tier's copy of the rule is unit
+    // tested and the SQL is tested in verify-migrations.sh, but neither proves
+    // the RPC is reachable or that a bigint survives the trip: PostgREST sends
+    // bigint as a JSON number when it fits and a STRING when it does not, and a
+    // string reaching arithmetic unnoticed would read as "nothing stored" and
+    // disable the budget exactly when the store is largest.
+    const client = await db()
+    const budgetId = crypto.randomUUID()
+    const { error: insertError } = await client.from('meetings').insert({
+      ...newRow(),
+      id: budgetId,
+      audio_key: `verify-budget-${budgetId}/audio.ogg`,
+      audio_bytes: 4096,
+      uploaded_at: new Date().toISOString(),
+    })
+    expect(insertError, `${insertError?.code}: ${insertError?.message}`).toBeNull()
+
+    try {
+      const { data, error } = await client.rpc('stored_audio_bytes', {
+        p_retention_days: 30,
+        p_reservation_seconds: 900,
+      })
+      expect(error, `${error?.code}: ${error?.message} — is the migration applied?`).toBeNull()
+
+      const total = typeof data === 'string' ? Number(data) : data
+      expect(typeof total, `expected a usable total, got ${JSON.stringify(data)}`).toBe('number')
+      expect(Number.isFinite(total as number)).toBe(true)
+      // The row just inserted is inside the retention window, so it counts.
+      expect(total as number).toBeGreaterThanOrEqual(4096)
+    }
+    finally {
+      await client.from('meetings').delete().eq('id', budgetId)
+    }
+  })
 })
 
 // ----------------------------------------------------------------------- Groq

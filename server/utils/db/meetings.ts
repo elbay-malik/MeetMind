@@ -31,6 +31,59 @@ export interface MeetingRepository {
    * straggler's own later write correctly fails instead of landing.
    */
   claim(id: string, from: MeetingStatus, patch: MeetingPatch, expectedUpdatedAt?: string): Promise<Meeting | null>
+  /**
+   * Bytes of audio the object store is expected to be holding, which is what
+   * the storage budget in `server/utils/storage-budget.ts` gates uploads on.
+   *
+   * Derived from the rows rather than kept in a counter, because a counter
+   * drifts in two directions that cannot be repaired: the bucket's lifecycle
+   * rule deletes objects without telling us, and a crash between storing bytes
+   * and incrementing loses them permanently.
+   *
+   * Counted: confirmed uploads whose object has neither been deleted nor
+   * expired, plus registrations whose presigned PUT is still live -- those bytes
+   * can arrive at any moment, so reserving them is what stops a burst of
+   * registrations from all passing the check and then all uploading.
+   */
+  storedAudioBytes(options: StorageUsageWindow): Promise<number>
+}
+
+/**
+ * The two durations that decide which rows still represent stored bytes.
+ * Both belong to things outside the database -- the bucket's lifecycle rule and
+ * the upload URL's lifetime -- so they are passed in rather than assumed.
+ */
+export interface StorageUsageWindow {
+  /** Days the bucket's lifecycle rule keeps an object. 0 or less means no rule. */
+  retentionDays: number
+  /** Seconds a presigned upload URL stays valid. */
+  reservationSeconds: number
+}
+
+/**
+ * Whether a meeting's audio should still be in the store, given when the row was
+ * created and uploaded.
+ *
+ * The single source of truth for the local tier, and a deliberate mirror of
+ * `public.stored_audio_bytes` in
+ * supabase/migrations/20261023120000_stored_audio_bytes.sql. The two are
+ * hand-written against each other, so
+ * tests/unit/storage-usage-parity.spec.ts pins them together.
+ */
+export function audioIsStored(
+  meeting: Pick<Meeting, 'status' | 'failedStage' | 'createdAt' | 'uploadedAt'>,
+  { retentionDays, reservationSeconds }: StorageUsageWindow,
+  nowMs: number = Date.now(),
+): boolean {
+  if (meeting.status === 'pending_upload') {
+    return Date.parse(meeting.createdAt) > nowMs - reservationSeconds * 1000
+  }
+  // failMeetingUpload deleted the object behind a rejected upload. This is
+  // `uploadWasRejected` in shared/utils/meeting.ts; the two must agree.
+  if (meeting.status === 'failed' && meeting.failedStage === 'upload') return false
+  if (!meeting.uploadedAt) return false
+  if (retentionDays <= 0) return true
+  return Date.parse(meeting.uploadedAt) > nowMs - retentionDays * 86_400_000
 }
 
 /**

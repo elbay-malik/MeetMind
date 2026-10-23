@@ -58,6 +58,7 @@ The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 | [0007](docs/adr/0007-semantic-qa.md) | Semantic Q&A: windowed Gemini embeddings, answers held to the same citation check |
 | [0008](docs/adr/0008-cross-meeting-search.md) | Cross-meeting search: passages across meetings, not a synthesized answer; still no HNSW |
 | [0009](docs/adr/0009-workers-measurement-spike.md) | Workers measurement spike before Phase 9: what the runtime actually does, measured rather than inferred |
+| [0010](docs/adr/0010-r2-cost-controls.md) | R2 cost controls: a lifecycle rule bounds growth, an application storage budget is the hard stop, per-request op metering rejected |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -126,7 +127,14 @@ it. Those contracts are the one thing the offline tests cannot prove.
 
    Do **not** add a bucket lock: it blocks the rule above and makes the bucket
    impossible to empty. Note a lifecycle rule bounds slow growth only — it does
-   nothing against a burst, which is what the server-side budget is for.
+   nothing against a burst.
+
+   The hard stop is server-side: `POST /api/meetings` answers **507** once the
+   stored bytes plus the incoming upload would cross `NUXT_R2_MAX_STORED_BYTES`
+   (default 8 GiB). Set `NUXT_R2_RETENTION_DAYS` to the **same number of days as
+   the lifecycle rule** — it is how the byte estimate knows which uploads
+   Cloudflare has already deleted, and nothing in the app can verify the two
+   agree. See [ADR-0010](docs/adr/0010-r2-cost-controls.md).
 
 4. Set `NUXT_R2_ACCOUNT_ID`, `NUXT_R2_ACCESS_KEY_ID`, `NUXT_R2_SECRET_ACCESS_KEY`,
    `NUXT_R2_BUCKET`. Scope the token to the one bucket with **Object Read & Write**

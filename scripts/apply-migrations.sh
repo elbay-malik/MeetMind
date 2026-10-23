@@ -162,7 +162,8 @@ missing=$(psql_url -At -c "
     ('table','meeting_summaries'), ('table','meeting_decisions'),
     ('table','meeting_action_items'), ('table','transcript_windows'),
     ('function','match_transcript_windows'),
-    ('function','match_transcript_windows_across_meetings')
+    ('function','match_transcript_windows_across_meetings'),
+    ('function','stored_audio_bytes')
   )
   select kind || ' ' || name from expected e
   where not exists (
@@ -192,4 +193,4 @@ if [ -n "$unprotected" ]; then
   exit 1
 fi
 
-echo "  all 6 tables and 2 functions present; RLS enabled on every public table."
+echo "  all 6 tables and 3 functions present; RLS enabled on every public table."

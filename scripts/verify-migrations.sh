@@ -485,6 +485,62 @@ psql -q -c "insert into public.meetings (id,title,status,source_file_name,source
 psql -q -c "update public.meetings set updated_at='2000-01-01' where id='22222222-2222-2222-2222-222222222222';"
 check "updated_at trigger overrides whatever the client sends" \
   "select updated_at > created_at from public.meetings where id='22222222-2222-2222-2222-222222222222'"
+psql -q -c "delete from public.meetings where audio_key='trigger_probe';"
+
+
+# stored_audio_bytes aggregates the WHOLE table, so unlike every check above it
+# cannot be scoped to its own rows by an audio_key filter. The earlier checks
+# leave rows behind, and those bytes would be counted here. They have all
+# asserted what they needed by now, so clear the table first -- without this the
+# expected totals below are off by whatever happens to remain, which is exactly
+# how this first failed.
+psql -q -c "delete from public.meetings;"
+
+# stored_audio_bytes is the whole storage budget, so each clause of its WHERE
+# gets its own row here. Every case below is a reason an object is or is not in
+# the bucket while its row stays behind, and getting any of them backwards makes
+# the budget either useless or permanently closed.
+psql -q -c "insert into public.meetings
+              (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,uploaded_at,failed_stage)
+            values
+              -- counted: a confirmed upload inside the retention window
+              (gen_random_uuid(),'t','uploaded','a.mp4',1,'sab_fresh',1000,now()-interval '1 day',null),
+              -- counted: failed, but not at the upload stage, so the object is still there
+              (gen_random_uuid(),'t','failed','a.mp4',1,'sab_failed_later',2000,now()-interval '1 day','transcription'),
+              -- NOT counted: the upload was rejected and failMeetingUpload deleted the object
+              (gen_random_uuid(),'t','failed','a.mp4',1,'sab_rejected',4000,now()-interval '1 day','upload'),
+              -- NOT counted: expired by the bucket lifecycle rule
+              (gen_random_uuid(),'t','uploaded','a.mp4',1,'sab_expired',8000,now()-interval '90 days',null);"
+# counted: registered moments ago, so its presigned PUT can still land
+psql -q -c "insert into public.meetings
+              (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+            values (gen_random_uuid(),'t','pending_upload','a.mp4',1,'sab_reserved',16000);"
+# NOT counted: registered long ago, so its upload URL has expired and cannot land
+psql -q -c "insert into public.meetings
+              (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,created_at)
+            values (gen_random_uuid(),'t','pending_upload','a.mp4',1,'sab_abandoned',32000,now()-interval '1 day');"
+
+check "stored_audio_bytes counts a fresh upload and a non-upload failure, and reserves a live registration" \
+  "select public.stored_audio_bytes(30, 900) = 1000 + 2000 + 16000"
+# Asserted as "the row is present AND its bytes are absent from the total".
+# `<> 23000` would have passed for any wrong answer at all, which is the way a
+# check like this quietly stops testing anything.
+check "stored_audio_bytes excludes a rejected upload, whose object was deleted" \
+  "select exists (select 1 from public.meetings where audio_key = 'sab_rejected')
+          and public.stored_audio_bytes(30, 900) = 1000 + 2000 + 16000"
+check "stored_audio_bytes excludes an upload the lifecycle rule has expired" \
+  "select public.stored_audio_bytes(30, 900) < public.stored_audio_bytes(0, 900)"
+check "stored_audio_bytes with no retention rule counts every surviving upload" \
+  "select public.stored_audio_bytes(0, 900) = 1000 + 2000 + 8000 + 16000"
+check "stored_audio_bytes stops reserving a registration whose upload URL has expired" \
+  "select public.stored_audio_bytes(30, 86400 * 2) = 1000 + 2000 + 16000 + 32000"
+check "stored_audio_bytes is zero, not null, when nothing is stored" \
+  "select public.stored_audio_bytes(30, 0) = 1000 + 2000"
+check "stored_audio_bytes pins its search_path" \
+  "select 'search_path=public' = any(proconfig) from pg_proc where proname = 'stored_audio_bytes'"
+psql -q -c "delete from public.meetings where audio_key like 'sab_%';"
+check "stored_audio_bytes returns 0 rather than null for an empty table" \
+  "select public.stored_audio_bytes(30, 900) = 0"
 
 echo
 echo "RESULT: PASS — $(ls supabase/migrations/*.sql | wc -l | tr -d ' ') migrations applied, all invariants hold"

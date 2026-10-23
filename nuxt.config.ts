@@ -15,6 +15,17 @@ export default defineNuxtConfig({
     r2AccessKeyId: '', // NUXT_R2_ACCESS_KEY_ID
     r2SecretAccessKey: '', // NUXT_R2_SECRET_ACCESS_KEY
     r2Bucket: '', // NUXT_R2_BUCKET
+    // Self-imposed storage ceiling, because R2 has none: past the free
+    // allowance Cloudflare bills rather than refusing, and storage is the
+    // charge that recurs every month for as long as an object exists. Default
+    // 8 GiB, under R2's 10 GB-month free tier with room for the estimate to be
+    // a little behind reality. 0 disables the check.
+    r2MaxStoredBytes: 8 * 1024 * 1024 * 1024, // NUXT_R2_MAX_STORED_BYTES
+    // Days the bucket's lifecycle rule keeps audio. MUST match the rule itself
+    // (see the R2 setup steps in the README) -- it is how the byte estimate
+    // knows which uploads Cloudflare has already deleted. 0 means no rule, so
+    // nothing is assumed to expire.
+    r2RetentionDays: 30, // NUXT_R2_RETENTION_DAYS
     // Local drivers only (dev/tests): HMAC secret for upload URLs and data root.
     uploadTokenSecret: '', // NUXT_UPLOAD_TOKEN_SECRET (random per process when empty)
     dataDir: '.data', // NUXT_DATA_DIR

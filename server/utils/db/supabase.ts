@@ -79,6 +79,23 @@ export function createSupabaseMeetingRepository(options: SupabaseOptions): Meeti
       return data ? rowToMeeting(data) : null
     },
 
+    async storedAudioBytes({ retentionDays, reservationSeconds }) {
+      const { data, error } = await clientFor(options).rpc('stored_audio_bytes', {
+        p_retention_days: retentionDays,
+        p_reservation_seconds: reservationSeconds,
+      })
+      if (error) fail('stored audio bytes', error)
+      // bigint crosses PostgREST as a JSON number when it fits and a string
+      // when it does not; sums here are far inside 2^53 either way, but reading
+      // it as a string first means a future bigger total cannot silently become
+      // NaN and read as "nothing stored".
+      const total = typeof data === 'string' ? Number(data) : data
+      if (typeof total !== 'number' || !Number.isFinite(total)) {
+        throw new Error(`Supabase stored audio bytes returned an unusable total: ${JSON.stringify(data)}`)
+      }
+      return total
+    },
+
     async update(id, patch: MeetingPatch) {
       assertValidStatusPatch(patch)
       const { data, error } = await table()
