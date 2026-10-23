@@ -1,6 +1,8 @@
 import { contentRangeHeader, parseByteRange, rangeLength } from '#shared/utils/byte-range'
 import { AUDIO_MIME } from '#shared/utils/meeting'
 import { useAudioStore } from '../../../utils/storage'
+import { RangeNotSatisfiableError } from '../../../utils/storage/audio-store'
+import type { OpenedAudio } from '../../../utils/storage/audio-store'
 import { useMeetingRepository } from '../../../utils/db'
 import { notFound, requireMeetingId } from '../../../utils/http'
 
@@ -35,19 +37,49 @@ export default defineEventHandler(async (event) => {
   if (meeting.status === 'pending_upload') throw notFound('This meeting has no audio yet')
 
   const store = useAudioStore(event)
-  const probe = await store.head(meeting.audioKey)
-  if (!probe) throw notFound('The meeting audio is missing from storage')
 
-  const requested = parseByteRange(getRequestHeader(event, 'range'), probe.size)
+  // The length comes from the row, not from a HEAD on every request.
+  //
+  // `complete.post.ts` HEADs the upload once and refuses to mark the meeting
+  // `uploaded` unless the stored object is exactly `audioBytes`
+  // (`inspectStoredAudio`), so a meeting past `pending_upload` carries a length
+  // that was verified against storage. HEADing again per request bought nothing
+  // and cost a second billable Class B operation against R2's 10-million-a-month
+  // allowance -- which, at two operations a request, halved what this route can
+  // serve for free -- plus a round-trip on the critical path of every seek.
+  //
+  // Correctness does not rest on that number being fresh. Every header below is
+  // built from what the GET actually returned: `openRange` takes the served
+  // window and the true size from Content-Range, never from the window asked
+  // for. A stale `audioBytes` can therefore only make the REQUESTED window
+  // wrong, which the store reports as 416 and which is handled below -- it
+  // cannot make a 200 or 206 describe itself incorrectly.
+  const requested = parseByteRange(getRequestHeader(event, 'range'), meeting.audioBytes)
   if (requested.kind === 'unsatisfiable') {
     return new Response(null, {
       status: 416,
-      headers: { 'content-range': `bytes */${probe.size}`, 'accept-ranges': 'bytes' },
+      headers: { 'content-range': `bytes */${meeting.audioBytes}`, 'accept-ranges': 'bytes' },
     })
   }
 
   const window = requested.kind === 'partial' ? requested.range : null
-  const opened = await store.openRange(meeting.audioKey, window)
+  let opened: OpenedAudio | null
+  try {
+    opened = await store.openRange(meeting.audioKey, window)
+  }
+  catch (error) {
+    // The object is shorter than the row claims. Possible because it stays
+    // writable for as long as its presigned PUT lives, so a length verified at
+    // completion can be overtaken. The store knows the true length; answer with
+    // it rather than failing the request.
+    if (error instanceof RangeNotSatisfiableError) {
+      return new Response(null, {
+        status: 416,
+        headers: { 'content-range': `bytes */${error.size}`, 'accept-ranges': 'bytes' },
+      })
+    }
+    throw error
+  }
   if (!opened) throw notFound('The meeting audio is missing from storage')
 
   const partial = requested.kind === 'partial'
@@ -70,7 +102,7 @@ export default defineEventHandler(async (event) => {
     // values we control: the stored content type is attacker-influenced on R2,
     // and putting it in a header would reflect untrusted text — quotes included
     // — into the response.
-    'etag': sanitiseEtag(probe.etag) ?? `"${meeting.id}-${opened.size}"`,
+    'etag': sanitiseEtag(opened.etag) ?? `"${meeting.id}-${opened.size}"`,
   })
   if (partial) headers.set('content-range', contentRangeHeader(opened.window, opened.size))
 

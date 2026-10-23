@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createR2AudioStore } from '../../server/utils/storage/r2'
+import { RangeNotSatisfiableError } from '../../server/utils/storage/audio-store'
 
 const store = createR2AudioStore({
   accountId: '0123456789abcdef',
@@ -172,6 +173,47 @@ describe('openRange', () => {
   it('throws on a server error rather than returning an empty stream', async () => {
     stubFetch([new Response(null, { status: 503 }), new Response(null, { status: 503 }), new Response(null, { status: 503 })])
     await expect(store.openRange(KEY, null)).rejects.toThrow(/503/)
+  })
+
+  // The audio route derives its window from the length on the meeting row
+  // instead of HEADing per request, which costs a second billable Class B
+  // operation. An object stays writable while its presigned PUT lives, so that
+  // length can go stale and the window can land past the end. R2 says 416, and
+  // only R2 knows the true length at that point.
+  it('reports a window past the end as unsatisfiable, carrying the true length', async () => {
+    stubFetch([new Response(null, { status: 416, headers: { 'content-range': 'bytes */100' } })])
+
+    const failure = await store.openRange(KEY, { start: 500, end: 999 }).catch((e: unknown) => e)
+
+    expect(failure).toBeInstanceOf(RangeNotSatisfiableError)
+    expect((failure as RangeNotSatisfiableError).size).toBe(100)
+  })
+
+  it('refuses a 416 with no usable Content-Range rather than inventing a length', async () => {
+    // Answering 416 without a length would make the route report NaN as the
+    // so there is nothing truthful to send and this has to fail loudly.
+    for (const headers of [{}, { 'content-range': 'bytes 0-99/100' }, { 'content-range': 'bytes */' }]) {
+      stubFetch([new Response(null, { status: 416, headers })])
+      const failure = await store.openRange(KEY, { start: 500, end: 999 }).catch((e: unknown) => e)
+      expect(failure, JSON.stringify(headers)).not.toBeInstanceOf(RangeNotSatisfiableError)
+      expect((failure as Error).message, JSON.stringify(headers)).toMatch(/416/)
+    }
+  })
+
+  it('carries the validator the GET already returned, on both a 206 and a 200', async () => {
+    // Why this exists at all: the route used to take its etag from a separate
+    // head(), and that head was the whole second operation per request.
+    stubFetch([new Response(body(), {
+      status: 206,
+      headers: { 'content-range': 'bytes 0-99/5000', 'etag': '"abc123"' },
+    })])
+    expect((await store.openRange(KEY, { start: 0, end: 99 }))!.etag).toBe('"abc123"')
+
+    stubFetch([new Response(body(), {
+      status: 200,
+      headers: { 'content-length': '5000', 'etag': '"whole"' },
+    })])
+    expect((await store.openRange(KEY, null))!.etag).toBe('"whole"')
   })
 })
 

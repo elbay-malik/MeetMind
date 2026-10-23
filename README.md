@@ -102,24 +102,36 @@ it. Those contracts are the one thing the offline tests cannot prove.
 
 ### Storage setup (Cloudflare R2)
 
-1. Create an R2 bucket and an R2 API token with object read & write on it.
-2. Add a CORS policy to the bucket (Dashboard → bucket → Settings → CORS Policy), so the
-   browser may PUT to presigned URLs:
+1. Create an R2 bucket.
+2. Add a CORS policy to the bucket, so the browser may PUT to presigned URLs.
+   Without it uploads fail **only in a real browser** — never in the tests.
 
-   ```json
-   [
-     {
-       "AllowedOrigins": ["http://localhost:3000", "https://your-app.example"],
-       "AllowedMethods": ["PUT"],
-       "AllowedHeaders": ["Content-Type"],
-       "ExposeHeaders": ["ETag"],
-       "MaxAgeSeconds": 3600
-     }
-   ]
+   ```bash
+   npx wrangler r2 bucket cors set <bucket> --file infra/r2-cors.json
    ```
 
-3. Set `NUXT_R2_ACCOUNT_ID`, `NUXT_R2_ACCESS_KEY_ID`, `NUXT_R2_SECRET_ACCESS_KEY`,
-   `NUXT_R2_BUCKET`.
+   Add the deployed origin to `infra/r2-cors.json` when there is one. Note the
+   dashboard (bucket → Settings → CORS Policy) takes a *different*, S3-style
+   shape for the same policy — `[{"AllowedOrigins": [...], "AllowedMethods":
+   [...]}]` — and wrangler rejects it. Each tool is right for itself; the
+   committed file is the wrangler one.
+
+3. Bound the cost. R2 has **no spending cap** — overage is billed, and the only
+   usage notification needs a Professional plan — so the limits have to be built:
+
+   ```bash
+   # Expire audio so storage cannot grow without bound. Scoped to the app's keys.
+   npx wrangler r2 bucket lifecycle add <bucket> expire-meeting-audio-30d meetings/ --expire-days 30
+   ```
+
+   Do **not** add a bucket lock: it blocks the rule above and makes the bucket
+   impossible to empty. Note a lifecycle rule bounds slow growth only — it does
+   nothing against a burst, which is what the server-side budget is for.
+
+4. Set `NUXT_R2_ACCOUNT_ID`, `NUXT_R2_ACCESS_KEY_ID`, `NUXT_R2_SECRET_ACCESS_KEY`,
+   `NUXT_R2_BUCKET`. Scope the token to the one bucket with **Object Read & Write**
+   — only the Object scopes can be bucket-scoped, and an Admin token could create
+   or delete buckets if it leaked.
 
 ### Transcription setup (Groq)
 

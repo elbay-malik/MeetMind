@@ -69,4 +69,29 @@ export interface OpenedAudio {
   contentType: string | null
   /** The window actually served, which may be the whole object. */
   window: ByteWindow
+  /**
+   * The store's validator for these bytes, as `head` reports it, or null when
+   * the store has none. Carried here so a caller serving a range does not need
+   * a separate `head` to put an entity tag on the response -- on R2 that is a
+   * second billable Class B operation for a value the GET already returned.
+   */
+  etag: string | null
+}
+
+/**
+ * The requested window starts at or past the end of the object.
+ *
+ * Thrown rather than returned as null, which already means "no such object":
+ * this is a live object whose length is not what the caller believed. An object
+ * stays writable for as long as its presigned PUT lives, so a length verified
+ * at upload can go stale.
+ *
+ * `size` is the object's true length, which is the one thing an HTTP 416 has to
+ * report and the caller therefore cannot supply itself.
+ */
+export class RangeNotSatisfiableError extends Error {
+  constructor(readonly size: number) {
+    super(`Requested range is not satisfiable; the object is ${size} bytes`)
+    this.name = 'RangeNotSatisfiableError'
+  }
 }

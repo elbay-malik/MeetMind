@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { createStorage, type Storage } from 'unstorage'
+import { RangeNotSatisfiableError } from './audio-store'
 import type {
   AudioStore,
   ByteWindow,
@@ -141,9 +142,27 @@ export function createLocalAudioStore(options: { dataDir: string, secret: string
       const info = await stat(path).catch(() => null)
       if (!info?.isFile()) return null
 
+      // A window starting at or past the end cannot be served. R2 answers 416
+      // here, and a caller that behaves differently per driver would make the
+      // local tier useless for proving the route -- so mirror it. An empty
+      // object is exempt: there is no satisfiable window at all, and the empty
+      // stream below is the honest answer.
+      if (window && info.size > 0 && window.start >= info.size) {
+        throw new RangeNotSatisfiableError(info.size)
+      }
+
       // end = -1 for an empty object: an inclusive window cannot say 'nothing'
       // any other way, and rounding it to one byte promises a byte we lack.
-      const served: ByteWindow = window ?? { start: 0, end: info.size - 1 }
+      //
+      // Clamped to the real end, because `served` is what the caller turns into
+      // content-length. createReadStream tolerates an `end` past EOF and simply
+      // stops early, so an unclamped window would announce more bytes than the
+      // stream ever sends -- a truncated response the client cannot tell from a
+      // dropped connection. R2 clamps for us by reporting Content-Range; here
+      // it has to be done by hand.
+      const served: ByteWindow = window
+        ? { start: window.start, end: Math.min(window.end, info.size - 1) }
+        : { start: 0, end: info.size - 1 }
       const meta = await (await storage()).getItem<ObjectMeta>(metaKey(key))
       // createReadStream rejects a negative end, so an empty window has to be
       // served as an empty stream rather than asked of the filesystem.
@@ -160,6 +179,9 @@ export function createLocalAudioStore(options: { dataDir: string, secret: string
         size: info.size,
         contentType: meta?.contentType ?? null,
         window: served,
+        // Same shape as `head`'s: modification time plus size, so a replacement
+        // of equal length is still a cache miss.
+        etag: `"${(info.mtime instanceof Date ? info.mtime.getTime() : 0).toString(36)}-${info.size}"`,
       }
     },
 

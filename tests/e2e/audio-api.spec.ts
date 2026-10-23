@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -187,5 +187,49 @@ describe('GET /api/meetings/:id/audio', () => {
       },
     })
     expect((await fetch(`/api/meetings/${meeting.id}/audio`)).status).toBe(404)
+  })
+
+  /**
+   * The route takes the object's length from the meeting row rather than HEADing
+   * storage on every request — on R2 that HEAD was a second billable Class B
+   * operation per request, halving what this route can serve inside the free
+   * allowance, and a round-trip on the critical path of every seek.
+   *
+   * `complete.post.ts` verified that length against storage, but an object stays
+   * writable for as long as its presigned PUT lives, so it can be replaced by
+   * something shorter afterwards. These two cover that divergence end to end;
+   * shrinking the file on disk is the local driver's equivalent of that
+   * replacement.
+   */
+  describe('when the stored object is shorter than the row says', () => {
+    async function shrunkTo(bytes: number): Promise<Meeting> {
+      const meeting = await uploadedMeeting()
+      await truncate(join(dataDir, 'audio', 'meetings', meeting.id, 'audio.ogg'), bytes)
+      return meeting
+    }
+
+    it('clamps a window that now runs past the end, and sends exactly what it promises', async () => {
+      const meeting = await shrunkTo(100)
+
+      const res = await fetch(audioUrl(meeting), { headers: { range: 'bytes=0-4999' } })
+
+      expect(res.status).toBe(206)
+      // Described by what was actually served, not by the stale length: a
+      // content-length over the real body is a truncated response the client
+      // cannot tell from a dropped connection.
+      expect(res.headers.get('content-range')).toBe('bytes 0-99/100')
+      expect(res.headers.get('content-length')).toBe('100')
+      expect((await res.arrayBuffer()).byteLength).toBe(100)
+    })
+
+    it('answers 416 with the true length for a seek past the real end, not a 500', async () => {
+      const meeting = await shrunkTo(100)
+
+      const res = await fetch(audioUrl(meeting), { headers: { range: 'bytes=500-999' } })
+
+      expect(res.status).toBe(416)
+      expect(res.headers.get('content-range')).toBe('bytes */100')
+      expect(res.headers.get('accept-ranges')).toBe('bytes')
+    })
   })
 })

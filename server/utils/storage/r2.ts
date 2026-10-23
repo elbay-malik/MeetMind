@@ -1,4 +1,5 @@
 import { AwsClient } from 'aws4fetch'
+import { RangeNotSatisfiableError } from './audio-store'
 import type {
   AudioStore,
   ByteWindow,
@@ -28,6 +29,17 @@ export interface R2AudioStore extends AudioStore {
 }
 
 /** Parse `bytes <start>-<end>/<size>`; null for anything else, including `*`. */
+/**
+ * The size out of a 416's Content-Range, whose form is `bytes` then an asterisk,
+ * a slash and the length. parseContentRange rejects that on purpose -- it names
+ * no window, so it cannot describe a 206 -- but it does carry the object's true
+ * length, which is the one thing a 416 exists to report.
+ */
+function parseUnsatisfiedRange(header: string | null): number | null {
+  const match = header && /^bytes\s+\*\/(\d+)$/.exec(header.trim())
+  return match ? Number(match[1]) : null
+}
+
 function parseContentRange(header: string | null): { start: number, end: number, size: number } | null {
   const match = header && /^bytes\s+(\d+)-(\d+)\/(\d+)$/.exec(header.trim())
   if (!match) return null
@@ -126,6 +138,17 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
       const headers = window ? { range: `bytes=${window.start}-${window.end}` } : undefined
       const res = await client.fetch(objectUrl(key).href, { method: 'GET', headers })
       if (res.status === 404) return null
+      // The window starts at or past the end, so the length the caller worked
+      // from is stale. R2 reports the true length here and nowhere else in this
+      // response, and without it no truthful 416 can be built -- hence the hard
+      // failure rather than a guess.
+      if (res.status === 416) {
+        const size = parseUnsatisfiedRange(res.headers.get('content-range'))
+        if (size === null) {
+          throw new Error(`R2 GET ${key} answered 416 without a usable Content-Range`)
+        }
+        throw new RangeNotSatisfiableError(size)
+      }
       if (!res.ok) throw new Error(`R2 GET ${key} failed with HTTP ${res.status}`)
       if (!res.body) throw new Error(`R2 GET ${key} returned no body`)
 
@@ -143,6 +166,7 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
           size: parsed.size,
           contentType: res.headers.get('content-type'),
           window: { start: parsed.start, end: parsed.end },
+          etag: res.headers.get('etag'),
         }
       }
 
@@ -156,6 +180,7 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
         contentType: res.headers.get('content-type'),
         // end = -1 when the object is empty; see the local driver.
         window: { start: 0, end: total - 1 },
+        etag: res.headers.get('etag'),
       }
     },
 

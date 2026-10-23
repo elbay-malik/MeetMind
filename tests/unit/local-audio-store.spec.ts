@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createLocalAudioStore } from '../../server/utils/storage/local'
+import { RangeNotSatisfiableError } from '../../server/utils/storage/audio-store'
 import { signToken } from '../../server/utils/signed-token'
 
 let dataDir: string
@@ -81,5 +82,83 @@ describe('createLocalAudioStore', () => {
   it('refuses keys that try to escape the store', async () => {
     const store = createLocalAudioStore({ dataDir, secret: 's3cret' })
     await expect(store.put('../escape.ogg', new Uint8Array([1]), 'audio/ogg')).rejects.toThrow()
+  })
+})
+
+/**
+ * The route no longer HEADs before reading a window: it derives the window from
+ * the length on the meeting row, which `complete.post.ts` verified against
+ * storage. That shifts two obligations onto this driver, because an object stays
+ * writable while its presigned PUT lives and so can outlive that length.
+ */
+describe('openRange', () => {
+  const bytes = new Uint8Array(1000).map((_, i) => i % 251)
+
+  async function drain(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+    const chunks: Uint8Array[] = []
+    const reader = stream.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) chunks.push(value)
+    }
+    const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0))
+    let at = 0
+    for (const chunk of chunks) {
+      out.set(chunk, at)
+      at += chunk.byteLength
+    }
+    return out
+  }
+
+  it('clamps a window running past the end, so the window cannot overstate the body', async () => {
+    // The returned window becomes the response's content-length. createReadStream
+    // tolerates an `end` past EOF and simply stops, so an unclamped window would
+    // promise bytes the stream never sends — a truncated response a client
+    // cannot distinguish from a dropped connection.
+    const store = createLocalAudioStore({ dataDir, secret: 's3cret' })
+    const key = 'meetings/clamp/audio.ogg'
+    await store.put(key, bytes, 'audio/ogg')
+
+    const opened = await store.openRange(key, { start: 900, end: 4999 })
+    expect(opened!.window).toEqual({ start: 900, end: 999 })
+    expect(opened!.size).toBe(1000)
+    expect((await drain(opened!.body)).byteLength).toBe(100)
+  })
+
+  it('refuses a window starting past the end, reporting the true length', async () => {
+    // R2 answers 416 with `bytes */<size>` here. The route turns that into a
+    // truthful 416, and it cannot source the length itself — the number it holds
+    // is the stale one.
+    const store = createLocalAudioStore({ dataDir, secret: 's3cret' })
+    const key = 'meetings/past-eof/audio.ogg'
+    await store.put(key, bytes, 'audio/ogg')
+    await store.put(key, bytes.slice(0, 100), 'audio/ogg')
+
+    const failure = await store.openRange(key, { start: 500, end: 999 }).catch((e: unknown) => e)
+    expect(failure).toBeInstanceOf(RangeNotSatisfiableError)
+    expect((failure as RangeNotSatisfiableError).size).toBe(100)
+  })
+
+  it('serves an empty object as an empty window rather than refusing it', async () => {
+    // No window is satisfiable, but `bytes 0--1/0` is the honest answer and the
+    // 416 path above must not swallow it.
+    const store = createLocalAudioStore({ dataDir, secret: 's3cret' })
+    const key = 'meetings/empty/audio.ogg'
+    await store.put(key, new Uint8Array(0), 'audio/ogg')
+
+    const opened = await store.openRange(key, { start: 0, end: 99 })
+    expect(opened!.size).toBe(0)
+    expect(opened!.window).toEqual({ start: 0, end: -1 })
+    expect((await drain(opened!.body)).byteLength).toBe(0)
+  })
+
+  it('carries a validator, so serving a range needs no second request', async () => {
+    const store = createLocalAudioStore({ dataDir, secret: 's3cret' })
+    const key = 'meetings/etag/audio.ogg'
+    await store.put(key, bytes, 'audio/ogg')
+
+    const opened = await store.openRange(key, { start: 0, end: 9 })
+    expect(opened!.etag).toMatch(/^"[a-z0-9]+-1000"$/)
   })
 })
