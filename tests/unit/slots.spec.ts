@@ -6,6 +6,7 @@ import { createLocalSlotRepository } from '../../server/utils/db/slots-local'
 import { reserveFrom, type SlotRepository, type SlotState } from '../../server/utils/db/slots'
 import { createGroqSummarizer, createSlotPacer, MAX_RATE_LIMIT_BLOCK_MS, ProviderBusyError, retryAfterMs } from '../../server/utils/summary/groq'
 import { createGroqAnswerer } from '../../server/utils/qa/groq-answerer'
+import { createStubAnswerer } from '../../server/utils/qa/stub-answerer'
 import type { SummarizationError } from '../../server/utils/summary/summarizer'
 
 let root: string
@@ -124,6 +125,12 @@ describe('a pacer with no slot inside its wait', () => {
     return createSlotPacer({ slots, provider: 'groq-chat', intervalMs: 0, maxWaitMs: 1000 })
   }
 
+  /** The block busyPacer sets, read back, so a refusal can be held to it. */
+  async function blockOf(pacer: Promise<ReturnType<typeof createSlotPacer>>) {
+    const before = Date.now()
+    return { pacer: await pacer, min: before + 600_000, max: () => Date.now() + 600_000 }
+  }
+
   it('refuses rather than sleeping past the caller\'s wait', async () => {
     await expect((await busyPacer()).wait()).rejects.toBeInstanceOf(ProviderBusyError)
   })
@@ -139,12 +146,40 @@ describe('a pacer with no slot inside its wait', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('makes the answerer refuse with a 429, without calling the provider', async () => {
+  it('makes the answerer refuse with a 429 saying when the slot frees, without calling the provider', async () => {
     const fetch = vi.fn()
     vi.stubGlobal('fetch', fetch)
-    await expect(createGroqAnswerer({ apiKey: 'k', pacer: await busyPacer() }).answer({ question: 'q', segments }))
-      .rejects.toMatchObject({ statusCode: 429, retryable: false })
+    const { pacer, min, max } = await blockOf(busyPacer())
+    const err = await createGroqAnswerer({ apiKey: 'k', pacer }).answer({ question: 'q', segments }).catch(e => e)
+    expect(err).toMatchObject({ statusCode: 429, retryable: false })
+    expect(err.retryAt.getTime()).toBeGreaterThanOrEqual(min)
+    expect(err.retryAt.getTime()).toBeLessThanOrEqual(max())
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('keeps the real failure when a retry cannot get its slot inside the question\'s wait', async () => {
+    // Production pacing: a minute between requests, a question waits 20 s. The
+    // first attempt takes the free slot and fails retryably; the retry's slot
+    // is a minute out. The user must hear what failed, and when to ask again --
+    // not that an extraction is hogging the model.
+    const fetch = vi.fn(async () => Response.json({ choices: [{ message: { content: 'not json' } }] }))
+    vi.stubGlobal('fetch', fetch)
+    const slots = createLocalSlotRepository({ dataDir: await freshDir() })
+    const pacer = createSlotPacer({ slots, provider: 'groq-chat', intervalMs: 60_000, maxWaitMs: 20_000 })
+    const before = Date.now()
+    const err = await createGroqAnswerer({ apiKey: 'k', pacer }).answer({ question: 'q', segments }).catch(e => e)
+    expect(err).toMatchObject({ statusCode: 429, retryable: false })
+    expect(err.message).toMatch(/invalid JSON/)
+    expect(err.message).not.toMatch(/busy/)
+    expect(err.retryAt.getTime()).toBeGreaterThanOrEqual(before + 60_000)
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('makes a paced stub answerer refuse the same way, so the route can be tested without a provider', async () => {
+    const { pacer, min } = await blockOf(busyPacer())
+    const err = await createStubAnswerer({ pacer }).answer({ question: 'billing change', segments }).catch(e => e)
+    expect(err).toMatchObject({ statusCode: 429, retryable: false })
+    expect(err.retryAt.getTime()).toBeGreaterThanOrEqual(min)
   })
 })
 
@@ -153,6 +188,13 @@ describe('createSlotPacer', () => {
     const slots = createLocalSlotRepository({ dataDir: await freshDir() })
     for (const bad of [Number.NaN, -1, 1.5]) {
       expect(() => createSlotPacer({ slots, provider: 'groq-chat', intervalMs: bad })).toThrow(/groq-chat/)
+    }
+  })
+
+  it('refuses a malformed wait when built, so a mistyped NUXT_ASK_MAX_SLOT_WAIT_MS fails loudly', async () => {
+    const slots = createLocalSlotRepository({ dataDir: await freshDir() })
+    for (const bad of [Number.NaN, -1, 1.5]) {
+      expect(() => createSlotPacer({ slots, provider: 'groq-chat', intervalMs: 0, maxWaitMs: bad })).toThrow(/slot wait/)
     }
   })
 

@@ -35,6 +35,10 @@ export default defineNuxtConfig({
     // (ADR-0012). One request a minute fits the free tier's 8,000 tokens per
     // minute for gpt-oss-120b. Lower only with a higher Groq tier.
     groqChatIntervalMs: 60_000, // NUXT_GROQ_CHAT_INTERVAL_MS
+    // How long a question waits for its Groq slot before it is refused with a
+    // 429 and Retry-After. Short, so a question never queues behind a whole
+    // extraction and the queue stays bounded (ADR-0012).
+    askMaxSlotWaitMs: 20_000, // NUXT_ASK_MAX_SLOT_WAIT_MS
     // Local drivers only (dev/tests): HMAC secret for upload URLs and data root.
     uploadTokenSecret: '', // NUXT_UPLOAD_TOKEN_SECRET (random per process when empty)
     dataDir: '.data', // NUXT_DATA_DIR
@@ -53,6 +57,10 @@ export default defineNuxtConfig({
     // summarization failure lands on a cooldown-gated `failed` state rather
     // than the ungated `summarizing` one. Never set outside tests.
     summaryStubFailOnceRetryable: false, // NUXT_SUMMARY_STUB_FAIL_ONCE_RETRYABLE
+    // Test-only: makes the stub answerer take a Groq slot like the real one,
+    // so tests can prove a question refused for a held slot gets a 429 with
+    // Retry-After over the real HTTP route. Never set outside tests.
+    answerStubPaced: false, // NUXT_ANSWER_STUB_PACED
     public: {},
   },
   routeRules: {

@@ -164,9 +164,10 @@ export class ProviderBusyError extends Error {
 }
 
 /**
- * How long a caller waits in-request for its slot. Long, for now: the routes
+ * How long extraction waits in-request for its slot. Long, for now: the routes
  * still run a whole extraction in one request and have nowhere else to wait.
  * ADR-0012's step-wise routes stop waiting server-side and return `retryAt`.
+ * Questions wait far less; see `askMaxSlotWaitMs` in nuxt.config.ts.
  */
 export const DEFAULT_MAX_SLOT_WAIT_MS = 10 * 60_000
 
@@ -198,6 +199,9 @@ export function createSlotPacer(options: {
   // NaN -- a NULL slot in SQL, and pacing silently off in the local driver.
   if (!Number.isInteger(options.intervalMs) || options.intervalMs < 0) {
     throw new Error(`The ${options.provider} request interval must be a whole number of milliseconds, got ${options.intervalMs}`)
+  }
+  if (!Number.isInteger(maxWaitMs) || maxWaitMs < 0) {
+    throw new Error(`The ${options.provider} slot wait must be a whole number of milliseconds, got ${maxWaitMs}`)
   }
   return {
     async wait() {

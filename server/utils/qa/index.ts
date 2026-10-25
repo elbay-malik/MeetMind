@@ -35,15 +35,19 @@ export function useEmbedder(event: H3Event): Embedder {
 let answererAnnounced = false
 
 /**
- * Pick the answerer: Groq when its key is present, sharing extraction's pacer
+ * Pick the answerer: Groq when its key is present, sharing extraction's slots
  * because both spend one per-account allowance; otherwise a deterministic stub.
+ * A question waits only `askMaxSlotWaitMs` for its slot, then is refused with
+ * when to try again (ADR-0012).
  */
 export function useAnswerer(event: H3Event): Answerer {
   const config = useRuntimeConfig(event)
   const groqReady = requireAllOrNone('Groq', { NUXT_GROQ_API_KEY: config.groqApiKey })
+  const pacer = () => useGroqChatPacer(event, { maxWaitMs: Number(config.askMaxSlotWaitMs) })
   const answerer = groqReady
-    ? createGroqAnswerer({ apiKey: config.groqApiKey, pacer: useGroqChatPacer(event) })
-    : createStubAnswerer()
+    ? createGroqAnswerer({ apiKey: config.groqApiKey, pacer: pacer() })
+    // Truthy, not === true: destr parses '1' to the number 1, not a boolean.
+    : createStubAnswerer({ pacer: config.answerStubPaced ? pacer() : undefined })
   if (!answererAnnounced && answerer.kind === 'stub') {
     answererAnnounced = true
     console.info('[meetmind] answers: stub (set NUXT_GROQ_API_KEY to use Groq)')

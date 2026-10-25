@@ -51,6 +51,20 @@ export default defineEventHandler(async (event): Promise<{ answer: QuestionAnswe
     if (err instanceof QuestionError) {
       throw createError({ statusCode: err.statusCode, statusMessage: 'Cannot answer', message: err.message })
     }
+    if (err instanceof AnswerError && err.retryAt) {
+      // "Not now", not "failed": say when, in the header for any client and in
+      // the body for the question form.
+      const seconds = Math.max(1, Math.ceil((err.retryAt.getTime() - Date.now()) / 1000))
+      setResponseHeader(event, 'retry-after', seconds)
+      throw createError({
+        statusCode: err.statusCode,
+        statusMessage: 'Answering failed',
+        message: err.message,
+        // Relative as well as absolute: the form holds off for `retryAfterSec`
+        // by its own clock, which need not agree with the server's.
+        data: { retryAt: err.retryAt.toISOString(), retryAfterSec: seconds },
+      })
+    }
     if (err instanceof EmbeddingError || err instanceof AnswerError) {
       throw createError({ statusCode: err.statusCode, statusMessage: 'Answering failed', message: err.message })
     }

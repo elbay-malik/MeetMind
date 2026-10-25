@@ -19,12 +19,15 @@ function announce(kind: Summarizer['kind']) {
  * alike, since both spend the same per-account allowance (ADR-0007 decision 7).
  * Its state lives in the slot ledger, not in this module: a module-level queue
  * is per isolate on Workers and paced nothing across them (ADR-0012).
+ * `maxWaitMs` is how long this caller will wait for its slot; omitted, it is
+ * extraction's long wait.
  */
-export function useGroqChatPacer(event: H3Event): RequestPacer {
+export function useGroqChatPacer(event: H3Event, options: { maxWaitMs?: number } = {}): RequestPacer {
   return createSlotPacer({
     slots: useSlotRepository(event),
     provider: 'groq-chat',
     intervalMs: Number(useRuntimeConfig(event).groqChatIntervalMs),
+    maxWaitMs: options.maxWaitMs,
   })
 }
 

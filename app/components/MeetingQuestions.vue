@@ -19,15 +19,44 @@ const result = ref<{ question: string, answer: QuestionAnswer } | null>(null)
 const failure = ref<string | null>(null)
 const answerHeading = ref<HTMLElement | null>(null)
 
+/**
+ * When a refused question can be asked again. The answering model's slot is
+ * shared with extraction (ADR-0012), so a question can be turned away for a
+ * while; the button stays off until then rather than inviting a repeat 429.
+ */
+const retryAt = ref<Date | null>(null)
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+onBeforeUnmount(() => clearTimeout(retryTimer))
+
+function holdUntil(at: Date) {
+  clearTimeout(retryTimer)
+  retryAt.value = at
+  retryTimer = setTimeout(() => {
+    retryAt.value = null
+  }, Math.max(0, at.getTime() - Date.now()))
+}
+
 /** The server's message when it gave one, rather than a generic failure. */
 function describeError(err: unknown): string {
   const data = (err as { data?: { message?: string } }).data
   return data?.message ?? (err instanceof Error ? err.message : String(err))
 }
 
+/**
+ * When the server said to try again, if it did -- by this browser's clock, from
+ * the relative delay, so a skewed clock neither holds too long nor not at all.
+ */
+function retryAtOf(err: unknown): Date | null {
+  const seconds = (err as { data?: { data?: { retryAfterSec?: unknown } } }).data?.data?.retryAfterSec
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return null
+  return new Date(Date.now() + seconds * 1000)
+}
+
+const formatClock = (at: Date) => at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
 async function ask() {
   const text = question.value.trim()
-  if (!text || asking.value) return
+  if (!text || asking.value || retryAt.value) return
   asking.value = true
   failure.value = null
   try {
@@ -43,7 +72,14 @@ async function ask() {
     answerHeading.value?.focus()
   }
   catch (err) {
-    failure.value = describeError(err)
+    const at = retryAtOf(err)
+    if (at) {
+      holdUntil(at)
+      failure.value = `${describeError(err)} Try again at ${formatClock(at)}.`
+    }
+    else {
+      failure.value = describeError(err)
+    }
     // A 409 here means the index went stale under us (a replaced transcript);
     // re-read it so the card offers the right next step instead of a form that
     // will keep failing.
@@ -62,8 +98,8 @@ async function ask() {
 const status = computed(() => {
   if (asking.value) {
     // Questions share the answering model's per-account allowance with
-    // extraction (ADR-0007 decision 7), so one can wait its turn.
-    return 'Finding an answer. If an extraction is running, this waits its turn and can take up to a minute.'
+    // extraction (ADR-0007 decision 7), so one can wait its turn -- briefly.
+    return 'Finding an answer. If an extraction is running, this waits its turn for up to 20 seconds.'
   }
   if (!result.value) return ''
   return result.value.answer.found
@@ -126,11 +162,17 @@ const status = computed(() => {
       <UButton
         type="submit"
         :loading="asking"
-        :disabled="!question.trim()"
+        :disabled="!question.trim() || !!retryAt"
         icon="i-lucide-message-circle-question"
       >
         Ask
       </UButton>
+      <p
+        v-if="retryAt"
+        class="text-sm text-muted"
+      >
+        Questions can be asked again at {{ formatClock(retryAt) }}.
+      </p>
     </form>
 
     <!-- Always mounted: see `status`. A span, not a p, so the text stays tight

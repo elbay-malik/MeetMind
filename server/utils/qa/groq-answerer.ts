@@ -5,13 +5,12 @@ import {
   ENDPOINT,
   isJsonValidationFailure,
   MODEL,
-  ProviderBusyError,
   REASONING_EFFORT,
   retryAfterMs,
   toStrictJsonSchema,
   type RequestPacer,
 } from '../summary/groq'
-import { AnswerError, type AnswerInput, type Answerer } from './answerer'
+import { AnswerError, AnswerSlotBusyError, awaitAnswerSlot, type AnswerInput, type Answerer } from './answerer'
 
 /**
  * Output budget per answer, reasoning included -- set for the same reason as
@@ -61,20 +60,7 @@ export function createGroqAnswerer(options: GroqAnswererOptions): Answerer {
   const jsonSchema = toStrictJsonSchema(wireAnswerSchema)
 
   async function askOnce(input: AnswerInput): Promise<WireAnswer> {
-    try {
-      await options.pacer.wait()
-    }
-    catch (err) {
-      if (err instanceof ProviderBusyError) {
-        throw new AnswerError(
-          `Questions are queued behind other requests. Try again after ${err.retryAt.toISOString()}.`,
-          429,
-          false,
-        )
-      }
-      console.warn('[meetmind] could not reserve a request slot:', err)
-      throw new AnswerError('Could not schedule the question. Try again shortly.', 503, true)
-    }
+    await awaitAnswerSlot(options.pacer)
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -103,8 +89,9 @@ export function createGroqAnswerer(options: GroqAnswererOptions): Answerer {
 
     if (!response.ok) {
       // Recorded before anything else, so every other caller waits it out too.
-      if (response.status === 429) await options.pacer.rateLimited(retryAfterMs(response.headers.get('retry-after')))
-      throw await describeFailure(response)
+      const blockMs = response.status === 429 ? retryAfterMs(response.headers.get('retry-after')) : 0
+      if (response.status === 429) await options.pacer.rateLimited(blockMs)
+      throw await describeFailure(response, blockMs)
     }
 
     const body = await response.json().catch(() => {
@@ -138,31 +125,35 @@ export function createGroqAnswerer(options: GroqAnswererOptions): Answerer {
   return {
     kind: 'groq',
     async answer(input) {
+      let previous: AnswerError | undefined
       for (let attempt = 1; ; attempt++) {
         try {
           return await askOnce(input)
         }
         catch (err) {
+          // A retry takes its own slot, which is usually a whole interval past
+          // the question's short wait. Refused, it must not read as "busy":
+          // what went wrong is the failure being retried.
+          if (previous && err instanceof AnswerSlotBusyError) {
+            throw new AnswerError(`${previous.message} Retrying needs the next request slot.`, 429, false, err.retryAt)
+          }
           if (!(err instanceof AnswerError && err.retryable) || attempt >= maxAttempts) throw err
+          previous = err
         }
       }
     },
   }
 }
 
-async function describeFailure(response: Response): Promise<AnswerError> {
+/** `blockMs` is how long a 429 holds every caller off, already clamped. */
+async function describeFailure(response: Response, blockMs: number): Promise<AnswerError> {
   // Classified on the whole body, quoted from a prefix of it.
   const body = await response.text().catch(() => '')
   const detail = body.slice(0, 300)
   if (response.status === 429) {
     // Not retried in place, for the same reason extraction does not: an
     // immediate retry spends the same exhausted allowance again.
-    const retryAfter = response.headers.get('retry-after')
-    return new AnswerError(
-      `Answering quota is exhausted for now.${retryAfter ? ` Try again in ${retryAfter}s.` : ''}`,
-      429,
-      false,
-    )
+    return new AnswerError('Answering quota is exhausted for now.', 429, false, new Date(Date.now() + blockMs))
   }
   if (response.status === 401 || response.status === 403) {
     return new AnswerError('The answering service rejected our credentials.', 502, false)

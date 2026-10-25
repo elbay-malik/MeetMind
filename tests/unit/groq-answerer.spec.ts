@@ -99,11 +99,14 @@ describe('groq answerer', () => {
   it('reports a quota refusal as a 429 and does not retry into it', async () => {
     const bodies = stubGroq([() => new Response('slow down', { status: 429, headers: { 'retry-after': '12' } })])
     const pacer = countingPacer()
+    const before = Date.now()
     const failure = await createGroqAnswerer({ apiKey: 'k', pacer })
       .answer({ question: 'q', segments }).catch(e => e)
     expect(failure).toBeInstanceOf(AnswerError)
     expect(failure).toMatchObject({ statusCode: 429, retryable: false })
-    expect(failure.message).toMatch(/12s/)
+    // When to ask again, for the route's Retry-After and the question form.
+    expect(failure.retryAt.getTime()).toBeGreaterThanOrEqual(before + 12_000)
+    expect(failure.retryAt.getTime()).toBeLessThanOrEqual(Date.now() + 12_000)
     expect(bodies).toHaveLength(1)
     // Recorded on the shared ledger, so extraction waits it out as well.
     expect(pacer.blocks).toEqual([12_000])

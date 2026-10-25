@@ -1,6 +1,7 @@
 import { NO_SPACE_SCRIPT } from '../summary/plan'
 import { normalise, tokenize } from '../summary/reconcile'
-import type { Answerer } from './answerer'
+import type { RequestPacer } from '../summary/groq'
+import { awaitAnswerSlot, type Answerer } from './answerer'
 
 /**
  * Common English function words that are long enough to survive the length
@@ -59,10 +60,17 @@ function meaningfulTokens(text: string): Set<string> {
  * meaningful word it cites nothing, which exercises the not-found path. It says in its own
  * text that it is a placeholder.
  */
-export function createStubAnswerer(): Answerer {
+export function createStubAnswerer(options: {
+  /**
+   * Test-only: take a slot like the real answerer does, so the busy path can be
+   * proven over HTTP without a provider. The stub otherwise spends no quota.
+   */
+  pacer?: RequestPacer
+} = {}): Answerer {
   return {
     kind: 'stub',
     async answer({ question, segments }) {
+      if (options.pacer) await awaitAnswerSlot(options.pacer)
       const wanted = meaningfulTokens(question)
       let best: { idx: number, text: string, overlap: number } | null = null
       for (const segment of segments) {
