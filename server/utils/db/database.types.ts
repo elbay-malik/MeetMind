@@ -124,12 +124,20 @@ export interface Database {
           p_lease_ms: number
           p_chunk_no: number | null
           p_new_run: boolean
+          p_reset_attempts: boolean
         }
         /** One row when granted, none when refused. */
         Returns: { step_token: string, run_id: string, run_cursor: Record<string, unknown>, attempts: number }[]
       }
       release_step: {
-        Args: { p_meeting: string, p_stage: string, p_token: string, p_error: string | null, p_retry_at: string | null }
+        Args: {
+          p_meeting: string
+          p_stage: string
+          p_token: string
+          p_error: string | null
+          p_retry_at: string | null
+          p_refund_attempt: boolean
+        }
         Returns: boolean
       }
       plan_chunks: {
@@ -138,7 +146,7 @@ export interface Database {
         Returns: boolean
       }
       record_chunk: {
-        Args: { p_meeting: string, p_token: string, p_chunk_no: number, p_result: unknown }
+        Args: { p_meeting: string, p_token: string, p_chunk_no: number, p_seg_from: number, p_seg_to: number, p_result: unknown }
         Returns: boolean
       }
       finalize_summary: {

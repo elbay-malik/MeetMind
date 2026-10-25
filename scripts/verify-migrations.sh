@@ -613,9 +613,9 @@ ledger_meeting() { # ledger_meeting <uuid> <status>
               insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
               select '$1', g, g * 1000, g * 1000 + 900, 'line ' || g from generate_series(0, 9) g;"
 }
-claim() { # claim <label> <meeting> <stage> <status> <lease_ms> [chunk_no|null] [new_run]
+claim() { # claim <label> <meeting> <stage> <status> <lease_ms> [chunk_no|null] [new_run] [reset_attempts]
   psql -q -c "insert into vl_c select '$1', step_token, run_id, attempts
-              from public.claim_step('$2', '$3', '$4', $5, ${6:-null}, ${7:-false});"
+              from public.claim_step('$2', '$3', '$4', $5, ${6:-null}, ${7:-false}, ${8:-false});"
 }
 tok() { echo "(select step_token from vl_c where label = '$1')"; }
 got() { echo "(select $2 from vl_c where label = '$1')"; }
@@ -659,7 +659,13 @@ check "claim_step re-claims an expired step under a new token, counting the kill
 
 check "release_step does nothing for a token that is not the live one" \
   "select not public.release_step('$L1', 'summarization', $(tok first), 'x', null)"
-psql -q -At -c "select public.release_step('$L1', 'summarization', $(tok reclaim), 'busy', '2030-01-01');" >/dev/null
+psql -q -At -c "select public.release_step('$L1', 'summarization', $(tok reclaim), null, null);" >/dev/null
+claim refundrun "$L1" summarization indexing 60000
+psql -q -At -c "select public.release_step('$L1', 'summarization', $(tok refundrun), 'slot', null, true);" >/dev/null
+check "release_step refunds a run claim's attempt when the step made no provider call" \
+  "select $(got refundrun attempts) = 3 and $(run_of "$L1" attempts) = 2"
+claim reclaim2 "$L1" summarization indexing 60000
+psql -q -At -c "select public.release_step('$L1', 'summarization', $(tok reclaim2), 'busy', '2030-01-01');" >/dev/null
 check "release_step ends the step and records why and when to try again" \
   "select $(run_of "$L1" step_token) is null and $(run_of "$L1" step_lease_until) is null
           and $(run_of "$L1" last_error) = 'busy' and $(run_of "$L1" retry_at) = '2030-01-01'"
@@ -679,13 +685,13 @@ check "plan_chunks writes the plan and keeps the step's claim" \
   "select (select count(*) from public.summary_chunks where meeting_id = '$L3' and result is null) = 2
           and $(run_of "$L3" step_token) = $(tok plan)"
 check "record_chunk records nothing for a chunk the plan does not have" \
-  "select not public.record_chunk('$L3', $(tok plan), 5, '$RESULT')"
-psql -q -At -c "select public.record_chunk('$L3', $(tok plan), 0, '$RESULT');" >/dev/null
+  "select not public.record_chunk('$L3', $(tok plan), 5, 0, 9, '$RESULT')"
+psql -q -At -c "select public.record_chunk('$L3', $(tok plan), 0, 0, 4, '$RESULT');" >/dev/null
 check "record_chunk stores the result and ends the step" \
   "select (select result is not null from public.summary_chunks where meeting_id = '$L3' and chunk_no = 0)
           and $(run_of "$L3" step_token) is null"
 check "record_chunk drops a straggler's write once its step has ended" \
-  "select not public.record_chunk('$L3', $(tok plan), 1, '$RESULT')
+  "select not public.record_chunk('$L3', $(tok plan), 1, 5, 9, '$RESULT')
           and (select result is null from public.summary_chunks where meeting_id = '$L3' and chunk_no = 1)"
 
 claim replan "$L3" summarization indexing 60000
@@ -707,11 +713,33 @@ reject "claim_step refuses a chunk the plan does not have" \
   "select * from public.claim_step('$L3', 'summarization', 'indexing', 60000, 7)" "not in the current plan"
 check "and holds no lease afterwards, the whole claim rolled back" \
   "select $(run_of "$L3" step_lease_until) is null"
+check "record_chunk refuses a result for a segment range the chunk is not planned with" \
+  "select not public.record_chunk('$L3', gen_random_uuid(), 1, 5, 9, '$RESULT')"
+claim chunk1range "$L3" summarization indexing 60000 1
+check "record_chunk records nothing when the range differs from the stored plan's" \
+  "select not public.record_chunk('$L3', $(tok chunk1range), 1, 5, 8, '$RESULT')
+          and (select result is null from public.summary_chunks where meeting_id = '$L3' and chunk_no = 1)"
+psql -q -At -c "select public.release_step('$L3', 'summarization', $(tok chunk1range), null, null, true);" >/dev/null
+check "release_step refunds a chunk claim's attempt when the step made no provider call" \
+  "select (select attempts from public.summary_chunks where meeting_id = '$L3' and chunk_no = 1) = 2
+          and $(run_of "$L3" step_chunk_no) is null"
+claim donechunk "$L3" summarization indexing 60000 0
+check "claim_step does not claim a chunk that already has its result, and holds no lease" \
+  "select not $(claimed donechunk) and $(run_of "$L3" step_lease_until) is null
+          and (select attempts from public.summary_chunks where meeting_id = '$L3' and chunk_no = 0) = 0"
+claim resetchunk "$L3" summarization indexing 60000 1 false true
+check "claim_step restarts a chunk's attempts on request, as when a failed run is retried" \
+  "select $(got resetchunk attempts) = 1
+          and (select attempts from public.summary_chunks where meeting_id = '$L3' and chunk_no = 1) = 1"
+psql -q -At -c "select public.release_step('$L3', 'summarization', $(tok resetchunk), null, null);" >/dev/null
+reject "a chunk is only recorded as the live step's claim when a token is live" \
+  "update public.pipeline_runs set step_chunk_no = 1 where meeting_id = '$L3' and stage = 'summarization'" \
+  "pipeline_runs_chunk_needs_step"
 
 claim fin1 "$L3" summarization indexing 60000
 reject "finalize_summary refuses while a chunk of the plan has no result" \
   "select public.finalize_summary('$L3', $(tok fin1), 's', 'stub', '[]', '[]')" "has no result yet"
-psql -q -At -c "select public.record_chunk('$L3', $(tok fin1), 1, '$RESULT');" >/dev/null
+psql -q -At -c "select public.record_chunk('$L3', $(tok fin1), 1, 5, 9, '$RESULT');" >/dev/null
 claim fin2 "$L3" summarization indexing 60000
 DECISIONS='[{"idx":0,"decision":"Ship","quote":"line 2","segment_idx":2,"start_ms":2000}]'
 ACTIONS='[{"idx":0,"task":"Send","assignee":null,"due_date_text":"Friday","quote":"line 7","segment_idx":7,"start_ms":7000}]'
@@ -736,7 +764,7 @@ claim old "$L4" summarization indexing 60000
 psql -q -At -c "select public.plan_chunks('$L4', $(tok old), '$PLAN');" >/dev/null
 claim newwhilelive "$L4" summarization indexing 60000 null true
 check "claim_step makes a new run wait for a live step of the old one" "select not $(claimed newwhilelive)"
-psql -q -At -c "select public.record_chunk('$L4', $(tok old), 0, '$RESULT');" >/dev/null
+psql -q -At -c "select public.record_chunk('$L4', $(tok old), 0, 0, 4, '$RESULT');" >/dev/null
 claim fresh "$L4" summarization indexing 60000 null true
 check "claim_step starts a new run on request, at attempt 0" \
   "select $(got fresh run_id) <> $(got old run_id) and $(got fresh attempts) = 0"
@@ -744,6 +772,30 @@ psql -q -At -c "select public.plan_chunks('$L4', $(tok fresh), '[{\"chunk_no\":0
 check "plan_chunks replaces an older run's plan" \
   "select (select count(*) from public.summary_chunks where meeting_id = '$L4') = 1
           and (select seg_to = 9 and result is null and run_id = $(got fresh run_id) from public.summary_chunks where meeting_id = '$L4')"
+
+# One lock order. A write by a step whose lease has just run out, racing a
+# re-claim, used to take the run row and then the meeting while the claim took
+# the meeting and then the run row: a deadlock. Session A here holds the
+# meeting lock as claim_step does, then reaches for the run row; finalize must
+# queue behind it rather than take the run row first.
+L5=a0000000-0000-0000-0000-000000000005
+ledger_meeting "$L5" indexing
+claim dl "$L5" summarization indexing 60000
+psql -q -At -c "select public.plan_chunks('$L5', $(tok dl), '[]');" >/dev/null
+DLTOKEN=$(psql -At -c "select $(tok dl)")
+psql -q -c "update public.pipeline_runs set step_lease_until = clock_timestamp() - interval '1 second' where meeting_id = '$L5';"
+( psql -q -c "begin;
+              select 1 from public.meetings where id = '$L5' for update;
+              select pg_sleep(1.5);
+              update public.pipeline_runs set updated_at = clock_timestamp() where meeting_id = '$L5';
+              commit;" >/tmp/vl_a.out 2>&1; echo $? >/tmp/vl_a.rc ) &
+sleep 0.5
+psql -At -c "select public.finalize_summary('$L5', '$DLTOKEN', 's', 'stub', '[]', '[]');" >/tmp/vl_b.out 2>&1 && echo 0 >/tmp/vl_b.rc || echo 1 >/tmp/vl_b.rc
+wait
+check "a token-fenced write queues behind a claim holding the meeting lock instead of deadlocking with it" \
+  "select $(cat /tmp/vl_a.rc) = 0 and $(cat /tmp/vl_b.rc) = 0 and $(grep -c deadlock /tmp/vl_a.out /tmp/vl_b.out | awk -F: '{s+=$2} END {print s+0}') = 0
+          and (select status from public.meetings where id = '$L5') = 'ready'"
+psql -q -c "delete from public.meetings where id = '$L5';"
 
 check "the ledger functions pin their search_path" \
   "select bool_and('search_path=public' = any(proconfig)) and count(*) = 6 from pg_proc

@@ -56,23 +56,36 @@ export interface ClaimOptions {
   chunkNo?: number
   /** Start the stage over under a new run id; results of the old run become stale. */
   newRun?: boolean
+  /** Count this claim as attempt 1, as when a failed run is retried. */
+  resetAttempts?: boolean
+}
+
+export interface ReleaseOutcome {
+  error: string | null
+  retryAt: Date | null
+  /**
+   * Give back the attempt the claim counted, because the step made no provider
+   * call: its request slot was not free, or the provider refused with a 429.
+   */
+  refundAttempt?: boolean
 }
 
 export interface PipelineRepository {
   readonly kind: 'supabase' | 'local'
   /**
    * Claim the stage's next step, or null when another step of it holds a live
-   * lease or the meeting is not in `status`. Moves the meeting's `updatedAt`,
+   * lease, the meeting is not in `status`, or the chunk already has its result. Moves the meeting's `updatedAt`,
    * so a delete that read the meeting before this claim no longer matches it.
    */
   claimStep(meetingId: string, stage: PipelineStage, options: ClaimOptions): Promise<StepClaim | null>
   /** End a step without a result, saying why and when to try again. False when `token` is not live. */
-  releaseStep(meetingId: string, stage: PipelineStage, token: string, outcome: { error: string | null, retryAt: Date | null }): Promise<boolean>
+  releaseStep(meetingId: string, stage: PipelineStage, token: string, outcome: ReleaseOutcome): Promise<boolean>
   listRuns(meetingId: string): Promise<PipelineRun[]>
   /**
    * Write the extraction plan for the current summarization run, unless it
-   * already has one, which is then kept as it is. The step keeps its claim.
-   * False when `token` is not live.
+   * already has one, which is then kept as it is -- so the caller works from
+   * {@link listChunks} afterwards, not from the plan it passed. The step keeps
+   * its claim. False when `token` is not live.
    */
   planChunks(meetingId: string, token: string, chunks: readonly ChunkPlan[]): Promise<boolean>
   /**
@@ -83,7 +96,8 @@ export interface PipelineRepository {
   listChunks(meetingId: string): Promise<SummaryChunk[]>
   /**
    * Store one chunk's result and end the step. Refuses a result that would not
-   * read back. False when `token` is not live or the chunk is not planned.
+   * read back. False when `token` is not live, or the chunk is not planned with
+   * exactly this segment range.
    */
   recordChunk(meetingId: string, token: string, chunk: ChunkPlan, result: AttestedChunk): Promise<boolean>
   /**
@@ -94,6 +108,15 @@ export interface PipelineRepository {
   finalizeSummary(meetingId: string, token: string, summary: MeetingSummary): Promise<boolean>
   /** Remove the meeting's runs and chunks. Idempotent; a cascade on Supabase. */
   deleteForMeeting(meetingId: string): Promise<void>
+}
+
+/** The largest lease Postgres's `integer` holds; both drivers refuse more, alike. */
+const MAX_LEASE_MS = 2_147_483_647
+
+export function assertValidLease(leaseMs: number): void {
+  if (!Number.isInteger(leaseMs) || leaseMs <= 0 || leaseMs > MAX_LEASE_MS) {
+    throw new Error(`The lease must be a whole number of milliseconds from 1 to ${MAX_LEASE_MS}, got ${leaseMs}`)
+  }
 }
 
 /** The latest live step lease among a meeting's runs, or null when none is live. */
@@ -154,6 +177,7 @@ export type PipelineRunRow = {
   cursor: Record<string, unknown>
   step_token: string | null
   step_lease_until: string | null
+  step_chunk_no: number | null
   attempts: number
   last_error: string | null
   retry_at: string | null

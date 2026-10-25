@@ -275,8 +275,31 @@ describe('deleteMeeting', () => {
       stage: 'summarization', runId: 'r', cursor: {}, attempts: 1, lastError: null, retryAt: null,
       stepLeaseUntil: new Date(later + 30_000),
     }]
-    const outcome = await deleteMeeting(id, harness({ runs }).deps)
+    const h = harness({ runs })
+    const outcome = await deleteMeeting(id, h.deps)
     expect(outcome).toMatchObject({ kind: 'blocked', retryAfterSec: 30 })
+    expect(h.deleteCalls).toHaveLength(0)
+    expect(h.removeCalls).toHaveLength(0)
+  })
+
+  // The ledger is read AFTER the meeting. A step claimed between the two reads
+  // is then seen by the ledger read; one claimed after both moves updatedAt,
+  // which the fenced delete catches. Read the other way round, a claim landing
+  // between them would be seen by neither.
+  it('reads the step leases after the meeting row, so a claim between the two reads is seen', async () => {
+    const h = harness()
+    const order: string[] = []
+    const get = h.meetings.get
+    h.deps.meetings = { ...h.meetings, get: async (mid) => {
+      order.push('meeting')
+      return get(mid)
+    } }
+    h.deps.pipeline = { listRuns: async () => {
+      order.push('runs')
+      return [{ stage: 'summarization', runId: 'r', cursor: {}, attempts: 1, lastError: null, retryAt: null, stepLeaseUntil: new Date(later + 60_000) }]
+    } }
+    expect(await deleteMeeting(id, h.deps)).toMatchObject({ kind: 'blocked' })
+    expect(order).toEqual(['meeting', 'runs'])
   })
 
   // Indexing holds no claim deletionBlocker can see on a 'ready' row, so the

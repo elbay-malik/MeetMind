@@ -168,9 +168,30 @@ describe('claimStep', () => {
     expect(await pipeline.listChunks(m.id)).toEqual([])
   })
 
-  it('refuses a non-positive lease, which would expire before the step began', async () => {
+  // Two drivers that both read "chunk 1 has no result" must not both spend a
+  // provider call on it.
+  it('does not claim a chunk that already has its result, and holds no lease', async () => {
+    const { m, pipeline, claim } = await planned()
+    await pipeline.recordChunk(m.id, claim.token, plan[0]!, result(2))
+    expect(await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE, chunkNo: 0 })).toBeNull()
+    expect((await pipeline.listRuns(m.id))[0]!.stepLeaseUntil).toBeNull()
+    expect((await pipeline.listChunks(m.id))[0]!.attempts).toBe(0)
+  })
+
+  it('restarts a chunk\'s attempts on request, as when a failed run is retried', async () => {
+    const { m, pipeline, claim } = await planned()
+    await pipeline.releaseStep(m.id, 'summarization', claim.token, { error: null, retryAt: null })
+    for (let i = 0; i < 2; i++) {
+      const c = (await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE, chunkNo: 1 }))!
+      await pipeline.releaseStep(m.id, 'summarization', c.token, { error: 'boom', retryAt: null })
+    }
+    const retried = await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE, chunkNo: 1, resetAttempts: true })
+    expect(retried!.attempts).toBe(1)
+  })
+
+  it.each([0, 0.4, -5, 2_147_483_648, Number.NaN])('refuses a lease of %s ms, as Postgres\'s integer parameter would', async (leaseMs) => {
     const m = await newMeeting()
-    await expect(repos().pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: 0 })).rejects.toThrow(/positive/)
+    await expect(repos().pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs })).rejects.toThrow(/whole number/)
   })
 })
 
@@ -183,6 +204,26 @@ describe('releaseStep', () => {
     expect(await pipeline.releaseStep(m.id, 'summarization', claim.token, { error: 'busy', retryAt })).toBe(true)
     expect((await pipeline.listRuns(m.id))[0]).toMatchObject({ stepLeaseUntil: null, lastError: 'busy', retryAt })
     expect(await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE })).not.toBeNull()
+  })
+
+  // A slot miss or a 429: the step made no provider call, so it must not use
+  // up one of the chunk's attempts (ADR-0012 §5).
+  it('gives a chunk claim\'s attempt back when the step made no provider call', async () => {
+    const { m, pipeline, claim } = await planned()
+    await pipeline.releaseStep(m.id, 'summarization', claim.token, { error: null, retryAt: null })
+    const missed = (await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE, chunkNo: 1 }))!
+    expect(missed.attempts).toBe(1)
+    await pipeline.releaseStep(m.id, 'summarization', missed.token, { error: null, retryAt: null, refundAttempt: true })
+    expect((await pipeline.listChunks(m.id))[1]!.attempts).toBe(0)
+    expect((await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE, chunkNo: 1 }))!.attempts).toBe(1)
+  })
+
+  it('gives a run claim\'s attempt back when the step made no provider call', async () => {
+    const m = await newMeeting()
+    const { pipeline } = repos()
+    const claim = (await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE }))!
+    await pipeline.releaseStep(m.id, 'summarization', claim.token, { error: null, retryAt: null, refundAttempt: true })
+    expect((await pipeline.listRuns(m.id))[0]!.attempts).toBe(0)
   })
 
   it('does nothing for a token that is not the live one', async () => {
@@ -262,6 +303,14 @@ describe('recordChunk', () => {
     const current = (await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE }))!
     await pipeline.planChunks(m.id, current.token, plan)
     expect(await pipeline.recordChunk(m.id, straggler.token, plan[0]!, result(2))).toBe(false)
+    expect((await pipeline.listChunks(m.id))[0]!.result).toBeNull()
+  })
+
+  // The caller's plan can differ from the stored one (a retried planning step
+  // keeps the stored plan). The result must match the range it is stored under.
+  it('records nothing when the segment range differs from the stored plan\'s', async () => {
+    const { m, pipeline, claim } = await planned()
+    expect(await pipeline.recordChunk(m.id, claim.token, { ...plan[0]!, segTo: 9 }, result(2))).toBe(false)
     expect((await pipeline.listChunks(m.id))[0]!.result).toBeNull()
   })
 

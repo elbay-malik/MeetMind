@@ -4,6 +4,7 @@ import type { SupabaseOptions } from './supabase'
 import { actionItemToRow, decisionToRow } from './summaries'
 import {
   assertStorableResult,
+  assertValidLease,
   assertValidPlan,
   parseStoredResult,
   rowToRun,
@@ -47,14 +48,16 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
   return {
     kind: 'supabase',
 
-    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun }) {
+    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun, resetAttempts }) {
+      assertValidLease(leaseMs)
       const { data, error } = await db().rpc('claim_step', {
         p_meeting: meetingId,
         p_stage: stage,
         p_status: status,
-        p_lease_ms: Math.round(leaseMs),
+        p_lease_ms: leaseMs,
         p_chunk_no: chunkNo ?? null,
         p_new_run: newRun ?? false,
+        p_reset_attempts: resetAttempts ?? false,
       })
       if (error) fail('claim step', error)
       const row = data?.[0]
@@ -62,13 +65,14 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
       return { token: row.step_token, runId: row.run_id, cursor: row.run_cursor, attempts: row.attempts } satisfies StepClaim
     },
 
-    async releaseStep(meetingId, stage, token, { error: reason, retryAt }) {
+    async releaseStep(meetingId, stage, token, { error: reason, retryAt, refundAttempt }) {
       const { data, error } = await db().rpc('release_step', {
         p_meeting: meetingId,
         p_stage: stage,
         p_token: token,
         p_error: reason,
         p_retry_at: retryAt ? retryAt.toISOString() : null,
+        p_refund_attempt: refundAttempt ?? false,
       })
       if (error) fail('release step', error)
       return granted('release step', data)
@@ -115,6 +119,8 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
         p_meeting: meetingId,
         p_token: token,
         p_chunk_no: chunk.chunkNo,
+        p_seg_from: chunk.segFrom,
+        p_seg_to: chunk.segTo,
         p_result: result,
       })
       if (error) fail('record chunk', error)

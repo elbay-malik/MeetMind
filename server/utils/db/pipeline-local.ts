@@ -5,6 +5,7 @@ import type { Meeting, MeetingSummary } from '#shared/types/meeting'
 import { serialize } from './local'
 import {
   assertStorableResult,
+  assertValidLease,
   assertValidPlan,
   parseStoredResult,
   type PipelineRepository,
@@ -28,6 +29,8 @@ interface LocalRun {
   cursor: Record<string, unknown>
   stepToken: string | null
   stepLeaseUntil: number | null
+  /** The chunk the live step claimed, so a release knows whose attempt to refund. */
+  stepChunkNo?: number | null
   attempts: number
   lastError: string | null
   retryAt: number | null
@@ -91,6 +94,7 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
   function endStep(run: LocalRun): void {
     run.stepToken = null
     run.stepLeaseUntil = null
+    run.stepChunkNo = null
     run.lastError = null
     run.retryAt = null
   }
@@ -98,8 +102,8 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
   return {
     kind: 'local',
 
-    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun = false }) {
-      if (!Number.isFinite(leaseMs) || leaseMs <= 0) throw new Error(`The lease must be positive, got ${leaseMs}`)
+    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun = false, resetAttempts = false }) {
+      assertValidLease(leaseMs)
       if (chunkNo !== undefined && newRun) throw new Error('A new run has no chunks to claim yet')
       return withLedger(meetingId, async (s, state) => {
         const meeting = await s.getItem<Meeting>(meetingKey(meetingId))
@@ -112,15 +116,23 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
         const run: LocalRun = current && !newRun
           ? { ...current }
           : { runId: randomUUID(), cursor: {}, stepToken: null, stepLeaseUntil: null, attempts: 0, lastError: null, retryAt: null }
+
+        // Checked before anything is written, so a refused chunk claim changes nothing.
+        const chunk = chunkNo === undefined ? undefined : state.chunks.find(c => c.chunkNo === chunkNo && c.runId === run.runId)
+        if (chunkNo !== undefined) {
+          if (!chunk) throw new Error(`Chunk ${chunkNo} is not in the current plan`)
+          if (chunk.result != null) return null
+        }
+
         run.stepToken = randomUUID()
         run.stepLeaseUntil = now + leaseMs
-        run.attempts = newRun || chunkNo !== undefined ? 0 : run.attempts + 1
+        run.stepChunkNo = chunkNo ?? null
+        run.attempts = newRun || chunk ? 0 : resetAttempts ? 1 : run.attempts + 1
 
         let attempts = run.attempts
-        if (chunkNo !== undefined) {
-          const chunk = state.chunks.find(c => c.chunkNo === chunkNo && c.runId === run.runId)
-          if (!chunk) throw new Error(`Chunk ${chunkNo} is not in the current plan`)
-          attempts = ++chunk.attempts
+        if (chunk) {
+          chunk.attempts = resetAttempts ? 1 : chunk.attempts + 1
+          attempts = chunk.attempts
         }
 
         state.runs[stage] = run
@@ -130,10 +142,17 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
       })
     },
 
-    async releaseStep(meetingId, stage, token, { error, retryAt }) {
+    async releaseStep(meetingId, stage, token, { error, retryAt, refundAttempt = false }) {
       return withLedger(meetingId, async (s, state) => {
         const run = liveRun(state, stage, token)
         if (!run) return false
+        if (refundAttempt) {
+          const chunk = run.stepChunkNo == null
+            ? undefined
+            : state.chunks.find(c => c.chunkNo === run.stepChunkNo && c.runId === run.runId)
+          if (chunk) chunk.attempts = Math.max(chunk.attempts - 1, 0)
+          else if (run.stepChunkNo == null) run.attempts = Math.max(run.attempts - 1, 0)
+        }
         endStep(run)
         run.lastError = error
         run.retryAt = retryAt ? retryAt.getTime() : null
@@ -189,7 +208,7 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
         const run = liveRun(state, 'summarization', token)
         if (!run) return false
         const stored = state.chunks.find(c => c.chunkNo === chunk.chunkNo && c.runId === run.runId)
-        if (!stored) return false
+        if (!stored || stored.segFrom !== chunk.segFrom || stored.segTo !== chunk.segTo) return false
         stored.result = structuredClone(result)
         endStep(run)
         await s.setItem<LedgerState>(ledgerKey(meetingId), state)

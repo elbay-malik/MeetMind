@@ -345,3 +345,16 @@ Step 5 (`20261026120000_pipeline_runs.sql`) differs from §3 in these ways:
 - **`finalize_summary` refuses outright while a chunk of the plan has no result**, rather than merging without it.
 - **Stored chunk results are checked again when read back**, both their shape and that every item cites a line inside its chunk. A result that fails reads as "not done", so the chunk is extracted again rather than merged. `recordChunk` applies the same check before writing.
 - **`deletionBlocker` reads step leases in addition to**, not instead of, the status leases and `indexingInFlight`. Until steps 6–8 move extraction, transcription and indexing onto step leases, the old routes hold only the old claims, and dropping those checks now would let a delete run under them.
+
+**Fixes from review** (`20261026130000_pipeline_runs_fixes.sql`, a separate migration because the first was already applied):
+- **One lock order: the meeting, then the run row.**
+  - `claim_step` and the fenced delete already took the locks in that order. The token-fenced writes took them the other way round, so a write by a step whose lease had just expired, racing a re-claim, deadlocked (40P01, reproduced).
+  - `locked_step_run` now locks the meeting first.
+- **An attempt is refunded when no provider call was made.** A step claims first and then reserves its slot, so a slot miss or a 429 parks it with nothing spent. `release_step(p_refund_attempt)` gives the claim's attempt back, to the chunk it claimed (`step_chunk_no`) or to the run. `claim_step(p_reset_attempts)` counts the claim as attempt 1, for the retry out of `failed`.
+- **A chunk that already has its result is not claimed again.** Two drivers that both read the chunk as unfinished therefore spend one provider call, not two.
+- **`record_chunk` takes the chunk's segment range and refuses a mismatch.** A result is only stored under the range it was checked against. A step works from `listChunks`, not from the plan it passed to `planChunks`, because a retried planning step keeps the stored plan.
+- **Both drivers accept the same leases:** whole milliseconds from 1 to 2³¹−1.
+
+**For step 6:**
+- `claim_step` moves `meetings.updated_at`, which restarts the old 4 h status lease on an `indexing` meeting. When extraction moves onto step leases, that status lease has to come out of `deletionBlocker` and `claimLooksStale`. Otherwise a parked run stays undeletable.
+- The "three consecutive 429s" counter needs a home. The likely place is the run's `cursor`, written under the step's token.
