@@ -861,3 +861,36 @@ Its plain-JS copy in `scripts/lib/citation-match.mjs` is held to it by
 `driver-citation-parity.spec.ts`, including a randomised corpus with index
 gaps and wordless segments. Reconciliation now tokenizes each segment once
 per summary instead of once per quote, through `createQuoteAttester`.
+
+## Addendum, 2026-10-25: quotes are checked against their own chunk
+
+Under ADR-0012, extraction runs one chunk per request, and the full transcript
+is never loaded in a request again. Reconciliation is split to match:
+
+- `attestChunk(model, segments)` checks one chunk's reply against that chunk's
+  lines only;
+- `mergeReconciled(chunks)` removes duplicates across chunks, sorts by time,
+  renumbers, and runs the output schema check;
+- `reconcile()` is the two combined, for a single reply.
+
+**Two behaviour changes**, both from the model being shown exactly
+`renderTranscript(chunk.segments)`:
+
+- **A quote that appears only in another chunk is now dropped.** It used to be
+  attested there. An honest quote can only come from the lines the model was
+  shown, so a quote that matches only somewhere else is one the model did not
+  read. It is a fabrication that happens to match, which is the case §3
+  exists to stop. Honest quotes are still kept, and no chunk overlap is
+  needed.
+- **A quote that also appears in another chunk is cited in its own.**
+  Matching prefers a quote that is a whole line over a fragment of one,
+  wherever the line is. So when a phrase the model quoted from its own chunk
+  is also some other chunk's entire line, the whole-transcript check cited
+  that other line: a moment the model never read. Review found this case. The
+  citation now points where the model read the words. Its time can move, and
+  two chunks citing the same words no longer share a duplicate key unless
+  they also cite the same line.
+
+`summarizeChunk` on both summarizers returns a chunk that has already been
+attested, so a step that stores per-chunk results cannot store unchecked
+model output.

@@ -358,20 +358,40 @@ export interface Reconciled {
 }
 
 /**
- * Keep only what the transcript supports, and resolve every timestamp here
- * rather than trusting one the model supplied.
+ * One chunk's extraction with every quote checked against that chunk's lines,
+ * and nothing else done to it yet: not deduplicated, sorted or numbered, since
+ * that needs every chunk. Plain data, so a step-wise pipeline can store it
+ * between requests (ADR-0012).
+ */
+export interface AttestedChunk {
+  summary: string
+  decisions: Omit<Decision, 'idx'>[]
+  actionItems: Omit<ActionItem, 'idx'>[]
+  /** Items dropped because nothing in the chunk supported them. */
+  droppedDecisions: number
+  droppedActionItems: number
+}
+
+/**
+ * Keep only what the chunk supports, and resolve every timestamp here rather
+ * than trusting one the model supplied.
  *
  * This is the single place model output becomes stored data, so it is the only
  * place a hallucinated citation can be stopped.
+ *
+ * Checked against the chunk alone: the model is shown exactly these lines, so
+ * an honest quote can only come from them. A quote that matches only some
+ * other chunk is one the model did not read there, and is dropped; one that
+ * also occurs in another chunk is cited where the model read it (ADR-0006,
+ * addendum on chunk-local attestation).
  */
-export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Reconciled {
-  const decisions: Decision[] = []
-  const actionItems: ActionItem[] = []
+export function attestChunk(model: WireSummary, segments: readonly TranscriptSegment[]): AttestedChunk {
+  const attest = createQuoteAttester(segments)
+  const decisions: AttestedChunk['decisions'] = []
+  const actionItems: AttestedChunk['actionItems'] = []
   let droppedDecisions = 0
   let droppedActionItems = 0
-  const attest = createQuoteAttester(segments)
 
-  const seenDecisions = new Set<string>()
   for (const item of model.decisions) {
     const attested = attest(item.quote, item.segmentIdx)
     const text = item.decision.trim()
@@ -379,22 +399,9 @@ export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Re
       droppedDecisions++
       continue
     }
-    // The same decision restated at the same moment is one decision. Chunked
-    // transcripts make this common at boundaries.
-    const key = `${attested.segmentIdx}:${normalise(text)}`
-    // Counted as dropped, because it was: `kept + dropped` is meant to account
-    // for everything the model sent, and skipping silently here made it
-    // under-report exactly when chunk boundaries produce the duplicates the
-    // comment above says are common.
-    if (seenDecisions.has(key)) {
-      droppedDecisions++
-      continue
-    }
-    seenDecisions.add(key)
-    decisions.push({ idx: 0, decision: text, ...attested })
+    decisions.push({ decision: text, ...attested })
   }
 
-  const seenActions = new Set<string>()
   for (const item of model.actionItems) {
     const attested = attest(item.quote, item.segmentIdx)
     const task = item.task.trim()
@@ -402,14 +409,7 @@ export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Re
       droppedActionItems++
       continue
     }
-    const key = `${attested.segmentIdx}:${normalise(task)}`
-    if (seenActions.has(key)) {
-      droppedActionItems++
-      continue
-    }
-    seenActions.add(key)
     actionItems.push({
-      idx: 0,
       task,
       // Empty strings are the model declining to answer in a field it was
       // forced to fill; store that as "nobody was named", not as a name.
@@ -417,6 +417,51 @@ export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Re
       dueDateText: item.dueDateText?.trim() || null,
       ...attested,
     })
+  }
+
+  return { summary: model.summary.trim(), decisions, actionItems, droppedDecisions, droppedActionItems }
+}
+
+/**
+ * Join attested chunks, in chunk order, into the stored summary: duplicates
+ * removed, items in time order and numbered without gaps.
+ */
+export function mergeReconciled(chunks: readonly AttestedChunk[]): Reconciled & { summary: string } {
+  let droppedDecisions = 0
+  let droppedActionItems = 0
+
+  // The same decision restated at the same moment is one decision. Chunked
+  // transcripts make this common at boundaries.
+  //
+  // Counted as dropped, because it was: `kept + dropped` is meant to account
+  // for everything the model sent, and skipping silently here made it
+  // under-report exactly when chunk boundaries produce the duplicates the
+  // comment above says are common.
+  const seenDecisions = new Set<string>()
+  const decisions: Decision[] = []
+  const seenActions = new Set<string>()
+  const actionItems: ActionItem[] = []
+  for (const chunk of chunks) {
+    droppedDecisions += chunk.droppedDecisions
+    droppedActionItems += chunk.droppedActionItems
+    for (const item of chunk.decisions) {
+      const key = `${item.segmentIdx}:${normalise(item.decision)}`
+      if (seenDecisions.has(key)) {
+        droppedDecisions++
+        continue
+      }
+      seenDecisions.add(key)
+      decisions.push({ idx: 0, ...item })
+    }
+    for (const item of chunk.actionItems) {
+      const key = `${item.segmentIdx}:${normalise(item.task)}`
+      if (seenActions.has(key)) {
+        droppedActionItems++
+        continue
+      }
+      seenActions.add(key)
+      actionItems.push({ idx: 0, ...item })
+    }
   }
 
   const finalDecisions = renumber(decisions.sort(byTime))
@@ -430,11 +475,21 @@ export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Re
   z.array(actionItemSchema).parse(finalActionItems)
 
   return {
+    summary: chunks.map(c => c.summary).filter(Boolean).join(' '),
     decisions: finalDecisions,
     actionItems: finalActionItems,
     droppedDecisions,
     droppedActionItems,
   }
+}
+
+/**
+ * {@link attestChunk} and {@link mergeReconciled} over one model reply for the
+ * whole of `segments`.
+ */
+export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Reconciled {
+  const { summary: _summary, ...reconciled } = mergeReconciled([attestChunk(model, segments)])
+  return reconciled
 }
 
 const byTime = (a: { startMs: number }, b: { startMs: number }) => a.startMs - b.startMs

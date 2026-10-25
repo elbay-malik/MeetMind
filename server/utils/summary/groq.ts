@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { MeetingSummary, TranscriptSegment } from '#shared/types/meeting'
 import { wireSummarySchema, type WireSummary } from '#shared/schemas/summary'
 import { planChunks } from './plan'
-import { reconcile } from './reconcile'
+import { attestChunk, mergeReconciled, type AttestedChunk } from './reconcile'
 import { SummarizationError, type SummarizeInput, type Summarizer } from './summarizer'
 import type { SlotProvider, SlotRepository } from '../db/slots'
 
@@ -322,62 +322,62 @@ export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer
     return validated.data
   }
 
+  // Sequential use is not the same as PACED: two requests sent back to back —
+  // two chunks, one chunk's first attempt and its own retry, or (via `pacer`) a
+  // call for an entirely different meeting — can land in the same rolling
+  // minute and exceed the provider's per-ACCOUNT limit. Every attempt waits.
+  async function pacedAskOnce(transcript: string): Promise<WireSummary> {
+    try {
+      await pacer.wait()
+    }
+    catch (err) {
+      if (err instanceof ProviderBusyError) {
+        // Same shape as the provider's own 429, which summarize.post.ts
+        // already turns into a cooldown-gated failure.
+        throw new SummarizationError(
+          `Summarization is queued behind other requests. Try again after ${err.retryAt.toISOString()}.`,
+          429,
+          false,
+        )
+      }
+      // The ledger itself failed (a database blip). Retryable, like a
+      // network error reaching the provider, and worded for the user: the
+      // database's own message is logged, not stored on the meeting.
+      console.warn('[meetmind] could not reserve a request slot:', err)
+      throw new SummarizationError('Could not schedule the summarization request. Try again shortly.', 503, true)
+    }
+    return askOnce(transcript)
+  }
+
+  async function summarizeChunk({ segments }: SummarizeInput): Promise<AttestedChunk> {
+    if (segments.length === 0) return attestChunk(EMPTY_WIRE, segments)
+    const wire = await withRetries(() => pacedAskOnce(renderTranscript(segments)), maxAttempts)
+    return attestChunk(wire, segments)
+  }
+
   return {
     kind: 'groq',
+    summarizeChunk,
 
     async summarize({ segments }: SummarizeInput): Promise<MeetingSummary> {
       if (segments.length === 0) {
         return { summary: '', decisions: [], actionItems: [], provider: 'groq' }
       }
 
-      const chunks = planChunks(segments, CHUNK_BUDGET_TOKENS)
-      const parts: WireSummary[] = []
-
       // Sequential on purpose: the per-minute token allowance is the binding
       // limit, and firing chunks in parallel is the fastest way to exhaust it.
-      // Sequential alone is not the same as PACED, though: two requests sent
-      // back to back — whether two different chunks, or one chunk's first
-      // attempt immediately followed by its own retry, or (via `pacer`) a
-      // concurrent call for an entirely different meeting — can both land in
-      // the same rolling minute and exceed the provider's per-ACCOUNT limit.
-      async function pacedAskOnce(transcript: string): Promise<WireSummary> {
-        try {
-          await pacer.wait()
-        }
-        catch (err) {
-          if (err instanceof ProviderBusyError) {
-            // Same shape as the provider's own 429, which summarize.post.ts
-            // already turns into a cooldown-gated failure.
-            throw new SummarizationError(
-              `Summarization is queued behind other requests. Try again after ${err.retryAt.toISOString()}.`,
-              429,
-              false,
-            )
-          }
-          // The ledger itself failed (a database blip). Retryable, like a
-          // network error reaching the provider, and worded for the user: the
-          // database's own message is logged, not stored on the meeting.
-          console.warn('[meetmind] could not reserve a request slot:', err)
-          throw new SummarizationError('Could not schedule the summarization request. Try again shortly.', 503, true)
-        }
-        return askOnce(transcript)
+      const parts: AttestedChunk[] = []
+      for (const chunk of planChunks(segments, CHUNK_BUDGET_TOKENS)) {
+        parts.push(await summarizeChunk({ segments: chunk.segments }))
       }
 
-      for (const chunk of chunks) {
-        parts.push(await withRetries(() => pacedAskOnce(renderTranscript(chunk.segments)), maxAttempts))
-      }
-
-      const merged: WireSummary = {
-        summary: parts.map(p => p.summary.trim()).filter(Boolean).join(' '),
-        decisions: parts.flatMap(p => p.decisions),
-        actionItems: parts.flatMap(p => p.actionItems),
-      }
-
-      const { decisions, actionItems } = reconcile(merged, segments)
-      return { summary: merged.summary, decisions, actionItems, provider: 'groq' }
+      const { summary, decisions, actionItems } = mergeReconciled(parts)
+      return { summary, decisions, actionItems, provider: 'groq' }
     },
   }
 }
+
+const EMPTY_WIRE: WireSummary = { summary: '', decisions: [], actionItems: [] }
 
 /** Retry only what retrying can fix, and only as many times as asked. */
 async function withRetries<T>(work: () => Promise<T>, attempts: number): Promise<T> {

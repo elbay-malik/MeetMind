@@ -1,5 +1,6 @@
 import type { MeetingSummary } from '#shared/types/meeting'
-import { reconcile } from './reconcile'
+import type { WireSummary } from '#shared/schemas/summary'
+import { attestChunk, mergeReconciled, type AttestedChunk } from './reconcile'
 import { SummarizationError, type SummarizeInput, type Summarizer } from './summarizer'
 
 /**
@@ -39,51 +40,59 @@ export interface StubSummarizerOptions {
  * plainly that it is not a real summary.
  */
 export function createStubSummarizer(options: StubSummarizerOptions = {}): Summarizer {
-  return {
-    kind: 'stub',
+  /** What a model would have replied for these lines, before any checking. */
+  function reply(segments: SummarizeInput['segments']): WireSummary {
+    if (options.failOnceRetryable && !retryableFailureUsed) {
+      retryableFailureUsed = true
+      throw new SummarizationError(
+        'Summarization service is unavailable (stub-injected for testing).', 502, true,
+      )
+    }
 
-    async summarize({ segments }: SummarizeInput): Promise<MeetingSummary> {
-      if (options.failOnceRetryable && !retryableFailureUsed) {
-        retryableFailureUsed = true
-        throw new SummarizationError(
-          'Summarization service is unavailable (stub-injected for testing).', 502, true,
-        )
-      }
+    if (segments.length === 0) return { summary: '', decisions: [], actionItems: [] }
 
-      if (segments.length === 0) {
-        return { summary: '', decisions: [], actionItems: [], provider: 'stub' }
-      }
+    // A deterministic structural rule, so the same transcript always yields
+    // the same result and tests do not flake.
+    const step = Math.max(1, Math.ceil(segments.length / 3))
+    const picked = segments.filter((_, i) => i % step === 0).slice(0, 3)
 
-      // A deterministic structural rule, so the same transcript always yields
-      // the same result and tests do not flake.
-      const step = Math.max(1, Math.ceil(segments.length / 3))
-      const picked = segments.filter((_, i) => i % step === 0).slice(0, 3)
-
-      const wire = {
-        summary:
-          `No summarization provider is configured, so this placeholder stands in for a summary of `
-          + `${segments.length} transcript segments.`,
-        decisions: [
-          ...picked.slice(0, 2).map(s => ({
-            quote: s.text,
-            segmentIdx: s.idx,
-            decision: `[stub] Placeholder decision drawn from segment ${s.idx}`,
-          })),
-          ...(options.injectCanary
-            ? [{ quote: CANARY_QUOTE, segmentIdx: 0, decision: '[canary] should be dropped by reconciliation' }]
-            : []),
-        ],
-        actionItems: picked.slice(0, 2).map(s => ({
+    return {
+      summary:
+        `No summarization provider is configured, so this placeholder stands in for a summary of `
+        + `${segments.length} transcript segments.`,
+      decisions: [
+        ...picked.slice(0, 2).map(s => ({
           quote: s.text,
           segmentIdx: s.idx,
-          task: `[stub] Placeholder action item drawn from segment ${s.idx}`,
-          assignee: null,
-          dueDateText: null,
+          decision: `[stub] Placeholder decision drawn from segment ${s.idx}`,
         })),
-      }
+        ...(options.injectCanary
+          ? [{ quote: CANARY_QUOTE, segmentIdx: 0, decision: '[canary] should be dropped by reconciliation' }]
+          : []),
+      ],
+      actionItems: picked.slice(0, 2).map(s => ({
+        quote: s.text,
+        segmentIdx: s.idx,
+        task: `[stub] Placeholder action item drawn from segment ${s.idx}`,
+        assignee: null,
+        dueDateText: null,
+      })),
+    }
+  }
 
-      const { decisions, actionItems } = reconcile(wire, segments)
-      return { summary: wire.summary, decisions, actionItems, provider: 'stub' }
+  async function summarizeChunk({ segments }: SummarizeInput): Promise<AttestedChunk> {
+    return attestChunk(reply(segments), segments)
+  }
+
+  return {
+    kind: 'stub',
+    summarizeChunk,
+
+    // The whole transcript as one chunk: the stub spends no quota, so it has
+    // no reason to split, and its output stays what the tests were written to.
+    async summarize({ segments }: SummarizeInput): Promise<MeetingSummary> {
+      const { summary, decisions, actionItems } = mergeReconciled([await summarizeChunk({ segments })])
+      return { summary, decisions, actionItems, provider: 'stub' }
     },
   }
 }

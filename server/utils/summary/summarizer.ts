@@ -1,4 +1,5 @@
 import type { MeetingSummary, TranscriptSegment } from '#shared/types/meeting'
+import type { AttestedChunk } from './reconcile'
 
 export interface SummarizeInput {
   segments: TranscriptSegment[]
@@ -12,6 +13,14 @@ export interface SummarizeInput {
 export interface Summarizer {
   readonly kind: 'groq' | 'stub'
   summarize(input: SummarizeInput): Promise<MeetingSummary>
+  /**
+   * One chunk's extraction -- at most one provider request, retries aside --
+   * already attested against the chunk's own lines, so a caller cannot store
+   * unchecked model output. `segments` is one chunk of a `planChunks` plan;
+   * `mergeReconciled` joins the results. The unit a step-wise pipeline runs
+   * per request (ADR-0012).
+   */
+  summarizeChunk(input: SummarizeInput): Promise<AttestedChunk>
 }
 
 /** Raised when the provider refuses or fails; carries what the UI should say. */
