@@ -135,7 +135,7 @@
 **Packages:** `ai` (Vercel AI SDK v6 core), `@ai-sdk/vue` (Chat/streaming to Vue), `@ai-sdk/groq` or community Groq provider, `zod`.
 **Key decisions:**
 - **`generateText` + `Output.object()`** (v6-preferred) over the deprecated `generateObject`.
-- **Map-reduce for long transcripts** to respect Groq's 100K TPD / 12K TPM free limits. Token budget math: one 1hr transcript extraction is comfortably within a single day's TPD, but batching many demo meetings needs the map-reduce + rate-limit guarding.
+- **Map-reduce for long transcripts** to respect Groq's free limits (measured 2026-10-25 for `openai/gpt-oss-120b`: 8K TPM, 200K TPD — see the ADR-0006 addendum). Token budget math: one 1hr transcript extraction is comfortably within a single day's TPD, but batching many demo meetings needs the map-reduce + rate-limit guarding.
 - **Groq Llama primary, Gemini fallback** for structured extraction.
 **Acceptance:** A meeting produces a valid, schema-conforming summary + decisions + action items with timestamp references; malformed outputs are retried.
 
@@ -177,6 +177,8 @@
 **Key decision:** **No queue.** Verdict: for free-tier scale, a single streaming request is the simplest reliable pattern. Rejected Cloudflare Queues / Nitro tasks as unnecessary complexity. On Cloudflare free tier, streaming proxy calls are I/O-bound (waiting on Groq), so they stay under the 10ms CPU limit even though wall time is seconds.
 **Acceptance:** End-to-end pipeline completes with live per-stage progress; failures surface clearly.
 
+> **Amended by [ADR-0012](adr/0012-pipeline-orchestration.md) (2026-10-25).** Points 1–2 and the "No queue … single streaming request" decision do not hold on the Workers free plan: 10 ms of CPU applies per invocation, and summarizing a one-hour meeting takes ~8 minutes of paced Groq calls. Each request now does one bounded step, the browser drives the loop, rate limits are coordinated in Postgres, and acceptance is **live per-stage progress by polling**.
+
 ### Phase 10 — Rate Limiting & Demo Protection (0.5 week, ~5h)
 **Goal:** Protect free-tier quotas from demo abuse.
 
@@ -214,7 +216,7 @@
 **Goal:** Live demo on the chosen host within budget.
 
 1. Deploy to Cloudflare Workers via the Nitro Cloudflare preset.
-2. Because MeetMind's server work is API-proxying + DB + embeddings (no server-side video processing), it fits Cloudflare's **free** tier: streaming AI calls are I/O-bound and don't accrue CPU time.
+2. Because MeetMind's server work is API-proxying + DB + embeddings (no server-side video processing), it fits Cloudflare's **free** tier: streaming AI calls are I/O-bound and don't accrue CPU time. *(Withdrawn by ADR-0012: CPU is per invocation and the parsing, attestation and multi-chunk work around those calls does count. Each request is a bounded step instead, and the deploy measures per-step CPU.)*
 3. If you ever choose the multi-thread FFmpeg path, set COOP/COEP headers (e.g., a Cloudflare `_headers` file) and self-host core assets — but the recommended single-thread path avoids this entirely.
 4. Set up a Supabase keep-alive (cron/GitHub Action) to prevent the 7-day pause; configure DB backups to R2.
 5. Configure all secrets as Worker environment variables.

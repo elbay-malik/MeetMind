@@ -60,6 +60,7 @@ The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 | [0009](docs/adr/0009-workers-measurement-spike.md) | Workers measurement spike before Phase 9: what the runtime actually does, measured rather than inferred |
 | [0010](docs/adr/0010-r2-cost-controls.md) | R2 cost controls: a lifecycle rule bounds growth, an application storage budget is the hard stop, per-request op metering rejected |
 | [0011](docs/adr/0011-admin-meeting-delete.md) | Deleting a meeting is admin-only, behind `NUXT_ADMIN_TOKEN`; refused while anything could still write its data |
+| [0012](docs/adr/0012-pipeline-orchestration.md) | Pipeline orchestration on the Workers free plan: one bounded step per request, browser-driven, Postgres rate-limit slots, polling not SSE |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
