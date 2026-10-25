@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createGroqAnswerer } from '../../server/utils/qa/groq-answerer'
+import { ANSWER_MAX_COMPLETION_TOKENS, createGroqAnswerer } from '../../server/utils/qa/groq-answerer'
 import { AnswerError } from '../../server/utils/qa/answerer'
 import type { RequestPacer } from '../../server/utils/summary/groq'
 import type { TranscriptSegment } from '../../shared/types/meeting'
@@ -99,6 +99,28 @@ describe('groq answerer', () => {
     expect(failure).toBeInstanceOf(AnswerError)
     expect(failure).toMatchObject({ statusCode: 429, retryable: false })
     expect(failure.message).toMatch(/12s/)
+    expect(bodies).toHaveLength(1)
+  })
+
+  // Same model, same provider default of 3,072 output tokens, reasoning
+  // included -- see the summarizer's measured case.
+  it('sets low reasoning effort and an explicit output budget rather than the provider\'s default', async () => {
+    const bodies = stubGroq([() => reply(good)])
+    await createGroqAnswerer({ apiKey: 'k', pacer: countingPacer() }).answer({ question: 'q', segments })
+    const body = bodies[0] as { max_completion_tokens?: number, reasoning_effort?: string }
+    expect(body.reasoning_effort).toBe('low')
+    expect(body.max_completion_tokens).toBe(ANSWER_MAX_COMPLETION_TOKENS)
+  })
+
+  it('names the output budget when the provider refuses a reply as invalid JSON, and does not retry it', async () => {
+    const bodies = stubGroq([() => new Response(JSON.stringify({
+      error: { message: 'Failed to validate JSON.', type: 'invalid_request_error', code: 'json_validate_failed', failed_generation: '' },
+    }), { status: 400 })])
+    const failure = await createGroqAnswerer({ apiKey: 'k', pacer: countingPacer() })
+      .answer({ question: 'q', segments }).catch(e => e)
+    expect(failure).toBeInstanceOf(AnswerError)
+    expect(failure).toMatchObject({ retryable: false })
+    expect(failure.message).toMatch(/output budget/)
     expect(bodies).toHaveLength(1)
   })
 

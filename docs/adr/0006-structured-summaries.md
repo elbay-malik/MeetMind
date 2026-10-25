@@ -775,8 +775,49 @@ Two limitations are stated rather than fixed:
     every e2e test and both drivers use, leaves the citation pointing at a
     segment index that may no longer exist. Nothing re-transcribes an
     already-transcribed meeting yet.
-  - **`MAX_CHUNKS` is defensive only.** 40 chunks at 5,000 estimated tokens is
-    about 200k tokens, which the 25 MB audio cap cannot produce for
+  - **`MAX_CHUNKS` is defensive only.** 40 chunks at 5,000 estimated tokens
+    (2,500 since the addendum below) is about 200k (100k) tokens, which the 25 MB audio cap cannot produce for
     whitespace-delimited text. Its dead-end fix still matters: an unlisted
     script mispriced below the floor, or a change to either limit, could
     reach it.
+
+## Addendum, 2026-10-25: each request has to fit one minute's token allowance
+
+Measured during the Phase 9 spike, on a synthetic but realistic one-hour
+meeting (73 decisions, 73 action items), run through the real routes against
+the real Groq account. The meeting **could not be summarised at all**.
+
+- The provider's default output cap for `openai/gpt-oss-120b` is **3,072
+  tokens**, and the request never set one. At the default reasoning effort the
+  model spent 2,850–4,413 of them reasoning before writing any JSON. The reply
+  was cut off, strict mode refused it as `json_validate_failed` with an empty
+  `failed_generation`, and at temperature 0 every retry failed the same way.
+- Raising the cap was not enough. A 5,000-token chunk and its reply came to
+  about **9,800 tokens, more than the free tier's 8,000 per minute**. The
+  provider refused the request up front with **413** "Request too large", though
+  not consistently.
+
+What changed:
+
+| | Before | After |
+| --- | --- | --- |
+| `CHUNK_BUDGET_TOKENS` | 5,000 | **2,500** |
+| `max_completion_tokens` (summary) | unset (3,072) | **4,500** |
+| `max_completion_tokens` (answer) | unset (3,072) | **1,500** |
+| `reasoning_effort` (both) | default | **low** |
+
+At low effort a dense 2,500-token chunk measured about 1,780 reply tokens, of
+which 311 were reasoning, and the result was the same across runs. The raw
+reply held every decision and action item in the chunk, quoted verbatim.
+`tests/unit/groq-token-budget.spec.ts` holds the sum: a full chunk, or the
+largest question context, plus its whole output budget must fit
+`TOKENS_PER_MINUTE`.
+
+The cost of smaller chunks is time. A one-hour meeting is now about 9 requests
+at the pacer's one per minute, about 8 minutes in total, where before it failed
+outright. Q&A is unaffected apart from its pacing.
+
+Found in the same run and fixed separately: `reconcile` dropped most of those
+correctly quoted items, because Whisper splits sentences across segments and a
+quote was only accepted within one segment.
+

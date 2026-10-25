@@ -1,8 +1,25 @@
 import { z } from 'zod'
 import type { TranscriptSegment } from '#shared/types/meeting'
 import { wireAnswerSchema, type WireAnswer } from '#shared/schemas/qa'
-import { ENDPOINT, MODEL, toStrictJsonSchema, type RequestPacer } from '../summary/groq'
+import {
+  ENDPOINT,
+  isJsonValidationFailure,
+  MODEL,
+  REASONING_EFFORT,
+  toStrictJsonSchema,
+  type RequestPacer,
+} from '../summary/groq'
 import { AnswerError, type AnswerInput, type Answerer } from './answerer'
+
+/**
+ * Output budget per answer, reasoning included -- set for the same reason as
+ * the summarizer's (the provider's 3,072 default can be spent on reasoning
+ * alone). An answer is a few citations and a sentence or two. Sized so the
+ * largest possible prompt -- TOP_K windows at their full WINDOW_TOKEN_BUDGET --
+ * still fits TOKENS_PER_MINUTE with it; tests/unit/groq-token-budget.spec.ts
+ * holds the sum.
+ */
+export const ANSWER_MAX_COMPLETION_TOKENS = 1500
 
 const INSTRUCTIONS = [
   'You answer a question about a single meeting, using only the transcript lines provided.',
@@ -59,6 +76,8 @@ export function createGroqAnswerer(options: GroqAnswererOptions): Answerer {
           type: 'json_schema',
           json_schema: { name: 'meeting_answer', strict: true, schema: jsonSchema },
         },
+        max_completion_tokens: ANSWER_MAX_COMPLETION_TOKENS,
+        reasoning_effort: REASONING_EFFORT,
         temperature: 0,
       }),
       signal: AbortSignal.timeout(timeoutMs),
@@ -113,7 +132,9 @@ export function createGroqAnswerer(options: GroqAnswererOptions): Answerer {
 }
 
 async function describeFailure(response: Response): Promise<AnswerError> {
-  const detail = (await response.text().catch(() => '')).slice(0, 300)
+  // Classified on the whole body, quoted from a prefix of it.
+  const body = await response.text().catch(() => '')
+  const detail = body.slice(0, 300)
   if (response.status === 429) {
     // Not retried in place, for the same reason extraction does not: an
     // immediate retry spends the same exhausted allowance again.
@@ -129,6 +150,14 @@ async function describeFailure(response: Response): Promise<AnswerError> {
   }
   if (response.status >= 500) {
     return new AnswerError(`Answering service is unavailable (HTTP ${response.status}).`, 502, true)
+  }
+  if (isJsonValidationFailure(response.status, body)) {
+    return new AnswerError(
+      'The answer did not fit the required format, most likely because the reply ran past its output budget '
+      + `(${ANSWER_MAX_COMPLETION_TOKENS} tokens).`,
+      502,
+      false,
+    )
   }
   return new AnswerError(`Answering service refused the request (HTTP ${response.status}): ${detail}`, 502, false)
 }

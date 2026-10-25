@@ -14,6 +14,8 @@ interface GroqRequest {
   temperature: number
   stream?: unknown
   messages: { role: string, content: string }[]
+  max_completion_tokens?: number
+  reasoning_effort?: string
   response_format: {
     type: string
     json_schema: { strict: boolean, schema: Record<string, unknown> }
@@ -99,6 +101,20 @@ describe('request', () => {
     // Keywords strict mode rejects must not survive the normaliser.
     expect(JSON.stringify(schema)).not.toContain('minLength')
     expect(JSON.stringify(schema)).not.toContain('format')
+  })
+
+  // Without both, a dense one-hour meeting could never be summarised: the
+  // provider's default 3,072-token cap was spent on reasoning (up to 4,413
+  // tokens measured at the default effort) and every reply was cut off. At low
+  // effort a dense full chunk measured 1,779 reply tokens; the budget must
+  // cover that with room, and the effort must stay low or the reply size is
+  // unpredictable again.
+  it('sets low reasoning effort and an output budget that covers a dense chunk\'s measured reply', async () => {
+    const calls = stubFetch([reply(goodPayload)])
+    await summarizer.summarize({ segments })
+    const body = await calls[0]!.json() as GroqRequest
+    expect(body.reasoning_effort).toBe('low')
+    expect(body.max_completion_tokens).toBeGreaterThanOrEqual(2 * 1779)
   })
 
   it('numbers transcript lines so the model can cite one', async () => {
@@ -281,6 +297,35 @@ describe('failures and retries', () => {
     expect(err.message).toMatch(/quota is exhausted.*60s/s)
     expect(err.retryable).toBe(false)
     expect(calls).toHaveLength(1)
+  })
+
+  // What a reply cut off by the output budget looks like on the wire: the
+  // provider's strict-mode check refuses it, with nothing in failed_generation.
+  // Captured from the real API.
+  const truncatedReply = () => new Response(JSON.stringify({
+    error: {
+      message: 'Failed to validate JSON. Please adjust your prompt. See \'failed_generation\' for more details.',
+      type: 'invalid_request_error',
+      code: 'json_validate_failed',
+      failed_generation: '',
+    },
+  }), { status: 400 })
+
+  it('names the output budget when the provider refuses a reply as invalid JSON, and does not retry it', async () => {
+    // At temperature 0 the same chunk produces the same reply, so a retry
+    // only spends another request of the per-minute allowance on a known
+    // failure.
+    const calls = stubFetch([truncatedReply(), reply(goodPayload)])
+    const err = await summarizer.summarize({ segments }).catch((e: SummarizationError) => e)
+    expect(err.message).toMatch(/output budget/)
+    expect(err.retryable).toBe(false)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('recognises that refusal by its error code even past the part of the body it quotes', async () => {
+    const padded = JSON.stringify({ error: { message: 'x'.repeat(400), code: 'json_validate_failed' } })
+    stubFetch([new Response(padded, { status: 400 })])
+    await expect(summarizer.summarize({ segments })).rejects.toThrow(/output budget/)
   })
 
   it('turns a network error into a retryable failure', async () => {

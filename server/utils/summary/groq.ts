@@ -17,12 +17,50 @@ export const ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions'
 export const MODEL = 'openai/gpt-oss-120b'
 
 /**
- * Transcript tokens allowed per request, leaving room inside the per-minute
- * allowance for the instructions and the reply. Exported so the route can plan
- * the same chunking to enforce a chunk-count ceiling before spending a single
- * provider call.
+ * The free tier's per-minute token allowance for this model. One request's
+ * prompt AND reply both count against it, and the provider may refuse a
+ * request up front (HTTP 413) when the prompt plus `max_completion_tokens`
+ * would exceed it -- measured, though not consistently. So every request here
+ * is sized to fit inside it on its own, with the output budget counted in full.
  */
-export const CHUNK_BUDGET_TOKENS = 5000
+export const TOKENS_PER_MINUTE = 8000
+
+/**
+ * Transcript tokens allowed per request. Exported so the route can plan the
+ * same chunking to enforce a chunk-count ceiling before spending a single
+ * provider call.
+ *
+ * Was 5,000. Measured on a dense one-hour meeting (2026-10-25), one such chunk
+ * cost ~4,700 prompt + ~5,100 reply = ~9,800 tokens, more than a whole minute's
+ * allowance, so it could never fit. 2,500 plus the output budget below plus the
+ * instructions stays under {@link TOKENS_PER_MINUTE} with room for the
+ * provider's own token estimate to run high; tests/unit/groq-token-budget.spec.ts
+ * holds the sum.
+ */
+export const CHUNK_BUDGET_TOKENS = 2500
+
+/**
+ * Output budget per summary request, reasoning included. Set explicitly because
+ * the provider's default for this model is 3,072 tokens, and at its default
+ * reasoning effort the model can spend all of that before writing any JSON:
+ * measured, one chunk spent 4,413 reasoning tokens. The reply was cut off
+ * mid-object, strict mode refused it as `json_validate_failed` with an empty
+ * `failed_generation`, and -- deterministic at temperature 0 -- every retry
+ * failed the same way, so the meeting could never be summarised. With
+ * {@link REASONING_EFFORT} low, a dense 2,500-token chunk measured ~1,780
+ * reply tokens (311 reasoning), consistently; 4,500 is two and a half times
+ * that, and still fits the per-minute allowance alongside a full chunk.
+ */
+export const SUMMARY_MAX_COMPLETION_TOKENS = 4500
+
+/**
+ * Low, for both callers of this model. Extraction is quoting and labelling, and
+ * the quotes are checked against the transcript afterwards (reconcile.ts); at
+ * low effort a dense chunk with ten decisions and ten action items yielded all
+ * ten of each. The default effort's reasoning length is what made the reply
+ * size unpredictable (2,850 to 4,413 tokens for the same kind of chunk).
+ */
+export const REASONING_EFFORT = 'low'
 
 /**
  * JSON Schema for the provider's strict mode, which is narrower than JSON
@@ -173,6 +211,8 @@ export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer
           type: 'json_schema',
           json_schema: { name: 'meeting_summary', strict: true, schema: jsonSchema },
         },
+        max_completion_tokens: SUMMARY_MAX_COMPLETION_TOKENS,
+        reasoning_effort: REASONING_EFFORT,
         temperature: 0,
       }),
       signal: AbortSignal.timeout(timeoutMs),
@@ -266,8 +306,20 @@ async function withRetries<T>(work: () => Promise<T>, attempts: number): Promise
   throw last
 }
 
+/**
+ * The provider's own strict-mode check refused the reply. Recognised by its
+ * error code, since the message is prose and `failed_generation` is empty when
+ * the reply was cut off -- which is the case that matters (see
+ * SUMMARY_MAX_COMPLETION_TOKENS). Exported for the answerer.
+ */
+export function isJsonValidationFailure(status: number, body: string): boolean {
+  return status === 400 && body.includes('"json_validate_failed"')
+}
+
 async function describeFailure(response: Response): Promise<SummarizationError> {
-  const detail = (await response.text().catch(() => '')).slice(0, 300)
+  // Classified on the whole body, quoted from a prefix of it.
+  const body = await response.text().catch(() => '')
+  const detail = body.slice(0, 300)
 
   if (response.status === 429) {
     // Not retryable here: withRetries has no backoff, so an immediate retry
@@ -288,6 +340,15 @@ async function describeFailure(response: Response): Promise<SummarizationError> 
   }
   if (response.status >= 500) {
     return new SummarizationError(`Summarization service is unavailable (HTTP ${response.status}).`, 502, true)
+  }
+  if (isJsonValidationFailure(response.status, body)) {
+    // Not retryable: at temperature 0 the same chunk produces the same reply.
+    return new SummarizationError(
+      'The summary did not fit the required format, most likely because the reply ran past its output budget '
+      + `(${SUMMARY_MAX_COMPLETION_TOKENS} tokens). Retrying will fail the same way.`,
+      502,
+      false,
+    )
   }
   return new SummarizationError(
     `Summarization service refused the request (HTTP ${response.status}): ${detail}`,
