@@ -147,8 +147,10 @@ async function startSummary() {
       const step = res._data
       if (finished || !step) continue
       extraction.value = step.progress
-      if (step.next === 'wait' && step.retryAt) {
-        await sleep(Math.max(0, Date.parse(step.retryAt) - Date.now()) + Math.random() * 2000)
+      // The server's duration, not `retryAt` against this browser's clock,
+      // which may be minutes off.
+      if (step.next === 'wait' && step.retryAfterMs !== null) {
+        await sleep(step.retryAfterMs + Math.random() * 2000)
       }
     }
     if (finished) justSummarized.value = true
@@ -306,9 +308,11 @@ const canSummarize = computed(() =>
  * an extraction this page is not driving. Extraction moves only while a page
  * asks it to (ADR-0012), so one left `indexing` is paused until someone
  * resumes it; if another tab is driving it, resuming here just takes turns.
+ * Offered while this page drives it too, shown busy: the button the user
+ * activated stays put rather than vanish and drop focus to <body>.
  */
 const canResume = computed(() =>
-  claimLooksStale(meeting.value, now.value) || (meeting.value.status === 'indexing' && !summarizing.value))
+  claimLooksStale(meeting.value, now.value) || meeting.value.status === 'indexing')
 
 /** The failure with no retry at all: the audio was rejected and removed. */
 

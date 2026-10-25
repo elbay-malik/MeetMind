@@ -49,7 +49,7 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
   return {
     kind: 'supabase',
 
-    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun, resetAttempts, moveTo }) {
+    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun, resetAttempts, moveTo, redo }) {
       assertValidLease(leaseMs)
       const { data, error } = await db().rpc('claim_step', {
         p_meeting: meetingId,
@@ -60,6 +60,7 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
         p_new_run: newRun ?? false,
         p_reset_attempts: resetAttempts ?? false,
         p_move_to: moveTo ?? null,
+        p_redo: redo ?? false,
       })
       if (error) fail('claim step', error)
       const row = data?.[0]
@@ -114,7 +115,8 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
       if (error) fail('summary chunks select', error)
       return data.map((row): SummaryChunk => {
         const plan = { chunkNo: row.chunk_no, segFrom: row.seg_from, segTo: row.seg_to, estTokens: row.est_tokens }
-        return { ...plan, attempts: row.attempts, result: parseStoredResult(plan, row.result) }
+        const result = parseStoredResult(plan, row.result)
+        return { ...plan, attempts: row.attempts, result, unusable: row.result != null && result === null }
       })
     },
 

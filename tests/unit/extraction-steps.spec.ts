@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createStorage } from 'unstorage'
+import fsDriver from 'unstorage/drivers/fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Meeting, MeetingStatus, TranscriptSegment } from '../../shared/types/meeting'
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
@@ -13,6 +15,8 @@ import {
   advanceExtraction,
   LIVE_STEP_POLL_MS,
   MAX_CHUNKS,
+  MAX_STEP_ATTEMPTS,
+  RETRYABLE_PARK_MS,
   RETRY_COOLDOWN_MS,
   type ExtractionDeps,
   type ExtractionOutcome,
@@ -104,6 +108,8 @@ function scripted() {
   }
 }
 
+type Clock = ReturnType<typeof clock>
+
 /** A test clock: real time, plus however far a test has moved it on. */
 function clock() {
   let offset = 0
@@ -115,23 +121,28 @@ function clock() {
   }
 }
 
-function depsWith(summarizer: Summarizer, now?: () => number): ExtractionDeps {
-  return { ...repos(), summarizer, now }
+function depsWith(summarizer: Summarizer, time: Clock = clock()): ExtractionDeps & { time: Clock } {
+  return { ...repos(), summarizer, now: time.now, time }
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 /**
- * Call until the run is done or stops, as the progress page does, with each
- * wait cut short. Returns every outcome, the last one last.
+ * Call until the run is done or stops, as the progress page does. A wait for a
+ * live step sleeps a moment of real time, since leases run on the real clock;
+ * a longer wait -- a parked chunk -- moves the test clock past it instead.
+ * Returns every outcome, the last one last.
  */
-async function drive(meetingId: string, deps: ExtractionDeps, maxSteps = 30): Promise<ExtractionOutcome[]> {
+async function drive(meetingId: string, deps: ExtractionDeps & { time: Clock }, maxSteps = 30): Promise<ExtractionOutcome[]> {
   const outcomes: ExtractionOutcome[] = []
   for (let i = 0; i < maxSteps; i++) {
     const outcome = await advanceExtraction(meetingId, deps)
     outcomes.push(outcome)
     if (outcome.kind !== 'progress') return outcomes
-    if (outcome.next === 'wait') await sleep(5)
+    if (outcome.next !== 'wait') continue
+    const ahead = outcome.retryAt!.getTime() - deps.time.now()
+    if (ahead > LIVE_STEP_POLL_MS) deps.time.advance(ahead + 1)
+    else await sleep(5)
   }
   throw new Error(`still running after ${maxSteps} steps: ${JSON.stringify(outcomes.at(-1))}`)
 }
@@ -278,6 +289,54 @@ describe('advanceExtraction: interruptions', () => {
   })
 })
 
+describe('advanceExtraction: steps that cannot finish', () => {
+  // A stored result that passed the write check but fails the read-back check
+  // (a stricter schema shipped mid-run, a damaged row) reads as missing, while
+  // the claim saw a result and refused the chunk as done: every call answered
+  // 'continue' and the page looped without end.
+  it('redoes a chunk whose stored result no longer passes its check', async () => {
+    const m = await newMeeting('summarizing')
+    const s = scripted()
+    const deps = depsWith(s.summarizer)
+    await advanceExtraction(m.id, deps) // plan
+    await advanceExtraction(m.id, deps) // chunk 0
+    const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+    const ledger = await storage.getItem<{ chunks: { result: unknown }[] }>(`pipeline/${m.id}`)
+    ledger!.chunks[0]!.result = { summary: 'damaged' }
+    await storage.setItem(`pipeline/${m.id}`, ledger)
+    expect((await repos().pipeline.listChunks(m.id))[0]).toMatchObject({ result: null, unusable: true })
+
+    expect((await drive(m.id, deps)).at(-1)).toMatchObject({ kind: 'done' })
+    expect(s.calls).toEqual([0, 0, 1, 2])
+  })
+
+  it('fails the run when planning keeps ending without finishing', async () => {
+    const m = await newMeeting('summarizing')
+    const s = scripted()
+    const deps = depsWith(s.summarizer)
+    const transcripts = deps.transcripts
+    deps.transcripts = {
+      ...transcripts,
+      listForMeeting: async () => {
+        throw new Error('read timed out')
+      },
+    }
+    // Each try throws, as the route's 500 would, and gives its claim back.
+    let thrown = 0
+    let outcome: ExtractionOutcome | undefined
+    while (!outcome && thrown < 10) {
+      outcome = await advanceExtraction(m.id, deps).catch(() => {
+        thrown++
+        return undefined
+      })
+    }
+    expect(outcome).toMatchObject({ kind: 'failed', statusCode: 500, message: expect.stringMatching(/Planning the extraction kept stopping/) })
+    expect(await repos().meetings.get(m.id)).toMatchObject({ status: 'failed', failedStage: 'summarization' })
+    // A new run's first claim counts as attempt 0.
+    expect(thrown).toBe(MAX_STEP_ATTEMPTS + 1)
+  })
+})
+
 describe('advanceExtraction: failures and retries', () => {
   it('parks a retryable failure and retries the chunk on the next step', async () => {
     const m = await newMeeting('summarizing')
@@ -286,7 +345,9 @@ describe('advanceExtraction: failures and retries', () => {
     const outcomes = await drive(m.id, depsWith(s.summarizer))
 
     const parked = outcomes.find(o => o.kind === 'progress' && o.progress.lastError)
-    expect(parked).toMatchObject({ next: 'continue', progress: { lastError: expect.stringMatching(/HTTP 503/) } })
+    expect(parked).toMatchObject({ next: 'wait', progress: { lastError: expect.stringMatching(/HTTP 503/) } })
+    if (parked?.kind !== 'progress') throw new Error('unreachable')
+    expect(parked.retryAt!.getTime()).toBeGreaterThanOrEqual(Date.now() + RETRYABLE_PARK_MS - 1000)
     expect(outcomes.at(-1)).toMatchObject({ kind: 'done', meeting: { status: 'ready' } })
     expect(s.calls).toEqual([0, 1, 1, 2])
   })
@@ -304,7 +365,7 @@ describe('advanceExtraction: failures and retries', () => {
     const m = await newMeeting('summarizing')
     const s = scripted()
     const time = clock()
-    const deps = depsWith(s.summarizer, time.now)
+    const deps = depsWith(s.summarizer, time)
     s.queue(1, permanent())
     expect((await drive(m.id, deps)).at(-1)).toMatchObject({ kind: 'failed', statusCode: 502 })
 
@@ -320,7 +381,7 @@ describe('advanceExtraction: failures and retries', () => {
     const m = await newMeeting('summarizing')
     const s = scripted()
     const time = clock()
-    const deps = depsWith(s.summarizer, time.now)
+    const deps = depsWith(s.summarizer, time)
     s.queue(0, transient(), transient())
     expect((await drive(m.id, deps)).at(-1)).toMatchObject({ kind: 'failed' })
     expect(await chunkAttempts(m.id)).toEqual([2, 0, 0])
@@ -328,7 +389,7 @@ describe('advanceExtraction: failures and retries', () => {
     time.advance(RETRY_COOLDOWN_MS + 1000)
     s.queue(0, transient())
     const retried = await advanceExtraction(m.id, deps)
-    expect(retried).toMatchObject({ kind: 'progress', next: 'continue', meeting: { status: 'indexing' } })
+    expect(retried).toMatchObject({ kind: 'progress', next: 'wait', meeting: { status: 'indexing' } })
     expect(await chunkAttempts(m.id)).toEqual([1, 0, 0])
     expect((await drive(m.id, deps)).at(-1)).toMatchObject({ kind: 'done' })
   })
@@ -337,7 +398,7 @@ describe('advanceExtraction: failures and retries', () => {
     const m = await newMeeting('summarizing')
     const s = scripted()
     const time = clock()
-    const deps = depsWith(s.summarizer, time.now)
+    const deps = depsWith(s.summarizer, time)
     const until = new Date(time.now() + 30_000)
     s.queue(1, rateLimited(until))
     await advanceExtraction(m.id, deps) // plan
@@ -361,7 +422,7 @@ describe('advanceExtraction: failures and retries', () => {
     const m = await newMeeting('summarizing')
     const s = scripted()
     const time = clock()
-    const deps = depsWith(s.summarizer, time.now)
+    const deps = depsWith(s.summarizer, time)
     await advanceExtraction(m.id, deps) // plan
     const blockMs = 5 * 60_000
     for (let i = 0; i < 3; i++) s.queue(0, rateLimited(new Date(time.now() + blockMs * (i + 1))))
@@ -387,7 +448,7 @@ describe('advanceExtraction: failures and retries', () => {
     const m = await newMeeting('summarizing')
     const s = scripted()
     const time = clock()
-    const deps = depsWith(s.summarizer, time.now)
+    const deps = depsWith(s.summarizer, time)
     await advanceExtraction(m.id, deps) // plan
     const soon = () => new Date(time.now() + 1000)
     s.queue(0, rateLimited(soon()), rateLimited(soon()))
@@ -407,7 +468,7 @@ describe('advanceExtraction: failures and retries', () => {
     const m = await newMeeting('summarizing')
     const s = scripted()
     const time = clock()
-    const deps = depsWith(s.summarizer, time.now)
+    const deps = depsWith(s.summarizer, time)
     await advanceExtraction(m.id, deps) // plan
     const soon = () => new Date(time.now() + 1000)
     s.queue(0, rateLimited(soon()), busy(soon()), rateLimited(soon()), rateLimited(soon()))
@@ -419,6 +480,26 @@ describe('advanceExtraction: failures and retries', () => {
     expect(outcomes.map(o => o.kind)).toEqual(['progress', 'progress', 'progress', 'failed'])
     expect(outcomes[1]).toMatchObject({ next: 'wait' })
     expect(await chunkAttempts(m.id)).toEqual([0, 0, 0])
+  })
+
+  it('starts the 429 count over on the next chunk', async () => {
+    const m = await newMeeting('summarizing')
+    const s = scripted()
+    const time = clock()
+    const deps = depsWith(s.summarizer, time)
+    await advanceExtraction(m.id, deps) // plan
+    const soon = () => new Date(time.now() + 1000)
+    s.queue(0, rateLimited(soon()), rateLimited(soon()))
+    s.queue(1, rateLimited(soon()))
+    const outcomes: ExtractionOutcome[] = []
+    for (let i = 0; i < 4; i++) {
+      outcomes.push(await advanceExtraction(m.id, deps))
+      time.advance(2000)
+    }
+    // Two 429s and a success on chunk 0, then chunk 1's first 429: a count
+    // carried over from chunk 0 would make that the third and fail the run.
+    expect(outcomes.map(o => o.kind)).toEqual(['progress', 'progress', 'progress', 'progress'])
+    expect(outcomes[3]).toMatchObject({ next: 'wait' })
   })
 
   it('treats an unexpected error from the step as a retryable failure', async () => {

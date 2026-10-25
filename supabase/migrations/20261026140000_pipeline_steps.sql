@@ -12,6 +12,10 @@
 --    A step whose lease ran out while it waited on the provider must not move
 --    the meeting to `failed` under a step that re-claimed it meanwhile; a
 --    status write fenced only on the status could not tell the two apart.
+-- 4. claim_step can redo a chunk whose stored result no longer passes the
+--    read-back check (p_redo). The reader treats such a result as missing, so
+--    a claim that refused it as "already done" left the run asking for that
+--    chunk forever. A redo claim clears the result with the claim.
 
 drop function public.claim_step(uuid, text, text, integer, integer, boolean, boolean);
 drop function public.release_step(uuid, text, uuid, text, timestamptz, boolean);
@@ -24,7 +28,8 @@ create function public.claim_step(
   p_chunk_no       integer default null,
   p_new_run        boolean default false,
   p_reset_attempts boolean default false,
-  p_move_to        text default null
+  p_move_to        text default null,
+  p_redo           boolean default false
 )
 returns table (step_token uuid, run_id uuid, run_cursor jsonb, attempts integer)
 language plpgsql
@@ -67,7 +72,7 @@ begin
     if not found then
       raise exception 'claim_step: chunk % is not in the current plan', p_chunk_no using errcode = 'P0002';
     end if;
-    if v_result is not null then
+    if v_result is not null and not p_redo then
       return;
     end if;
   end if;
@@ -92,7 +97,9 @@ begin
   v_attempts := v_run.attempts;
   if p_chunk_no is not null then
     update public.summary_chunks c
-       set attempts = case when p_reset_attempts then 1 else c.attempts + 1 end, updated_at = clock_timestamp()
+       set attempts   = case when p_reset_attempts then 1 else c.attempts + 1 end,
+           result     = case when p_redo then null else c.result end,
+           updated_at = clock_timestamp()
      where c.meeting_id = p_meeting and c.chunk_no = p_chunk_no and c.run_id = v_run.run_id
     returning c.attempts into v_attempts;
   end if;
@@ -110,8 +117,8 @@ begin
 end
 $$;
 
-comment on function public.claim_step(uuid, text, text, integer, integer, boolean, boolean, text) is
-  'Claim the next step of a pipeline stage under a fresh token and a short lease, if none is live, the meeting is in p_status and the chunk (if any) has no result yet; optionally moving the meeting to p_move_to (ADR-0012).';
+comment on function public.claim_step(uuid, text, text, integer, integer, boolean, boolean, text, boolean) is
+  'Claim the next step of a pipeline stage under a fresh token and a short lease, if none is live, the meeting is in p_status and the chunk (if any) has no result yet (or p_redo clears an unusable one); optionally moving the meeting to p_move_to (ADR-0012).';
 
 -- End a step without a result. p_refund_attempt gives back the attempt the
 -- claim counted (no provider call was made); p_cursor replaces the run's
@@ -180,7 +187,7 @@ declare
   fn text;
 begin
   foreach fn in array array[
-    'public.claim_step(uuid, text, text, integer, integer, boolean, boolean, text)',
+    'public.claim_step(uuid, text, text, integer, integer, boolean, boolean, text, boolean)',
     'public.release_step(uuid, text, uuid, text, timestamptz, boolean, jsonb, text)'
   ] loop
     execute format('revoke all on function %s from public', fn);

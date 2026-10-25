@@ -126,6 +126,7 @@ export interface Database {
           p_new_run: boolean
           p_reset_attempts: boolean
           p_move_to: string | null
+          p_redo: boolean
         }
         /** One row when granted, none when refused. */
         Returns: { step_token: string, run_id: string, run_cursor: Record<string, unknown>, attempts: number }[]

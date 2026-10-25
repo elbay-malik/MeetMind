@@ -361,11 +361,12 @@ Step 5 (`20261026120000_pipeline_runs.sql`) differs from §3 in these ways:
 
 ## Addendum: step-wise extraction as built (step 6, 2026-10-25)
 
-`POST /api/meetings/:id/summarize` now does one step per request (`server/utils/summary/steps.ts`): plan the chunks, extract one chunk, or finalize. It answers 200 with `{ meeting, summary }` once the summary is stored, and 202 with `{ meeting, progress: { done, total, lastError }, next, retryAt }` otherwise. The progress page loops on it until the 200; step 9's `/advance` will call the same library.
+`POST /api/meetings/:id/summarize` now does one step per request (`server/utils/summary/steps.ts`): plan the chunks, extract one chunk, or finalize. It answers 200 with `{ meeting, summary }` once the summary is stored, and 202 with `{ meeting, progress: { done, total, lastError }, next, retryAt, retryAfterMs }` otherwise. The page waits `retryAfterMs`, a duration measured on the server, not `retryAt` against its own clock, which may be minutes off. The progress page loops on it until the 200; step 9's `/advance` will call the same library.
 
 **One more migration** (`20261026140000_pipeline_steps.sql`):
 - `claim_step(p_move_to)` moves the meeting into the stage in the claim's own transaction. Entering extraction from `summarizing`, a cooled-down `failed`, or a `ready` meeting with no summary is therefore one write. A status compare-and-swap after the claim would leave a crash window: the meeting moved, the new run unplanned.
 - `release_step(p_cursor)` stores the run's cursor under the token. It holds the consecutive-429 count: `{ rateLimited: { chunkNo, count } }`.
+- `claim_step(p_redo)` claims a chunk whose stored result failed its read-back check, clearing it (see below).
 - `release_step(p_fail_from)` moves the meeting to `failed` under the token. A step that waited out its lease on the provider cannot fail a run another step has taken over since. Only transcription and summarization may fail the meeting this way.
 
 **How a step is chosen** (first match wins):
@@ -381,9 +382,10 @@ Step 5 (`20261026120000_pipeline_runs.sql`) differs from §3 in these ways:
 **Chunk outcomes:**
 - A **slot miss** refunds the attempt and parks the chunk until the slot's time. It neither adds to nor resets the 429 count.
 - A **provider 429** refunds the attempt, sets `blocked_until` through the pacer, and parks the chunk until its `Retry-After`. The third in a row on one chunk fails the run with 429.
-- A **retryable failure** on attempt 1 parks the chunk with no wait. The slot ledger spaces the retry. An error that is not a `SummarizationError`, such as a database read failing, counts as retryable.
+- A **retryable failure** on attempt 1 parks the chunk for 5 s (`RETRYABLE_PARK_MS`). A provider error is spaced by the slot ledger anyway; a failure before any slot was reserved, such as a database read failing, is not, and an instant retry would spend the last attempt on the same blip. An error that is not a `SummarizationError` counts as retryable.
 - **Attempt 2 failing, or a non-retryable error**, fails the run with that error's status.
-- **More than two claims of one chunk with no answer** fail the run without another provider call. That covers a step that keeps getting killed.
+- **More than two claims of one chunk with no answer** fail the run without another provider call. That covers a step that keeps getting killed. Planning and finalizing get the same bound, `MAX_STEP_ATTEMPTS` (3) claims in a row.
+- **A stored result that fails its read-back check** reads as missing, so the chunk is claimed with `claim_step(p_redo)`, which clears the result. Without it the claim saw a result and refused the chunk as done, and the run asked for that chunk forever.
 
 **The extraction summarizer** (`useStepSummarizer`) makes one attempt and waits 0 ms for its slot. Retries are the ledger's attempts, not loops inside the request. `SummarizationError.hold` tells a slot miss (`busy`) from a provider 429 (`rate-limited`), and gives when to come back.
 

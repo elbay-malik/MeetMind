@@ -66,7 +66,7 @@ async function summarize(id: string): Promise<{ meeting: Meeting, summary: Meeti
     if (status === 200) return body as { meeting: Meeting, summary: MeetingSummary }
     if (status !== 202) throw Object.assign(new Error(JSON.stringify(body)), { statusCode: status })
     const progress = body as ExtractionStepResponse
-    if (progress.next === 'wait') await new Promise(resolve => setTimeout(resolve, 50))
+    if (progress.next === 'wait') await new Promise(resolve => setTimeout(resolve, Math.min(progress.retryAfterMs ?? 0, 6000) + 20))
   }
   throw new Error(`extraction of ${id} did not finish in 50 steps`)
 }
@@ -109,6 +109,7 @@ describe('POST /api/meetings/:id/summarize', () => {
     expect(progress.progress).toEqual({ done: 0, total: 1, lastError: null })
     expect(progress.next).toBe('continue')
     expect(progress.retryAt).toBeNull()
+    expect(progress.retryAfterMs).toBeNull()
   })
 
   it('extracts a summary and advances the meeting to ready', async () => {

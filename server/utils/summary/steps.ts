@@ -30,6 +30,21 @@ export const SHORT_STEP_LEASE_MS = 60_000
  */
 export const MAX_CHUNK_ATTEMPTS = 2
 
+/**
+ * Claims of a planning or finalizing step, in a row, before the run fails.
+ * They make no provider call, so only a step that keeps dying or throwing --
+ * a transcript too heavy to plan inside the CPU limit, say -- reaches it.
+ */
+export const MAX_STEP_ATTEMPTS = 3
+
+/**
+ * How long a chunk parks after a retryable failure. A provider error is spaced
+ * by the slot ledger anyway, but a failure before any slot was reserved -- the
+ * database refusing a read -- is not, and an instant retry would spend the
+ * chunk's last attempt on the same blip.
+ */
+export const RETRYABLE_PARK_MS = 5_000
+
 /** Provider 429s in a row on one chunk before the run fails. */
 export const MAX_CONSECUTIVE_RATE_LIMITS = 3
 
@@ -204,7 +219,10 @@ function stepsFor(meetingId: string, deps: ExtractionDeps, now: () => number) {
     const chunks = await pipeline.listChunks(meetingId)
     const unfinished = chunks.find(c => !c.result)
     if (unfinished) {
-      return chunk({ ...base, chunkNo: unfinished.chunkNo, leaseMs: CHUNK_STEP_LEASE_MS }, unfinished, chunks, run)
+      // `redo`: a stored result failed its read-back check, and the claim
+      // would otherwise refuse the chunk as done -- forever.
+      const options = { ...base, chunkNo: unfinished.chunkNo, redo: unfinished.unusable, leaseMs: CHUNK_STEP_LEASE_MS }
+      return chunk(options, unfinished, chunks, run)
     }
     // No plan yet, or a plan with nothing in it: planning again keeps a plan
     // that exists, and finishes one that is empty.
@@ -212,9 +230,17 @@ function stepsFor(meetingId: string, deps: ExtractionDeps, now: () => number) {
     return finalize({ ...base, leaseMs: SHORT_STEP_LEASE_MS })
   }
 
+  /** A planning or finalizing step that keeps ending without finishing fails the run. */
+  function overTried(claimed: StepClaim, what: string): Promise<ExtractionOutcome> | null {
+    if (claimed.attempts <= MAX_STEP_ATTEMPTS) return null
+    return fail(claimed, 500, 'Summarisation failed', `${what} kept stopping without finishing; try again later.`)
+  }
+
   async function plan(options: ClaimOptions): Promise<ExtractionOutcome> {
     const claimed = await claim(options)
     if (!claimed) return snapshot()
+    const exhausted = overTried(claimed, 'Planning the extraction')
+    if (exhausted) return exhausted
     try {
       const segments = await deps.transcripts.listForMeeting(meetingId)
       const planned = planChunks(segments, CHUNK_BUDGET_TOKENS)
@@ -288,8 +314,9 @@ function stepsFor(meetingId: string, deps: ExtractionDeps, now: () => number) {
         // the lines -- is worth one more attempt, like a 5xx.
         const retryable = failure ? failure.retryable : true
         if (retryable && claimed.attempts < MAX_CHUNK_ATTEMPTS) {
-          const parked = await release(claimed, { error: message, retryAt: null, cursor: cursorWithoutStreak })
-          return parked ? progress(null, message, chunks) : snapshot()
+          const retryAt = new Date(now() + RETRYABLE_PARK_MS)
+          const parked = await release(claimed, { error: message, retryAt, cursor: cursorWithoutStreak })
+          return parked ? progress(retryAt, message, chunks) : snapshot()
         }
         return fail(claimed, failure?.statusCode ?? 500, 'Summarisation failed', message, { cursor: cursorWithoutStreak })
       }
@@ -310,6 +337,8 @@ function stepsFor(meetingId: string, deps: ExtractionDeps, now: () => number) {
   async function finalize(options: ClaimOptions): Promise<ExtractionOutcome> {
     const claimed = await claim(options)
     if (!claimed) return snapshot()
+    const exhausted = overTried(claimed, 'Saving the summary')
+    if (exhausted) return exhausted
     try {
       const chunks = await pipeline.listChunks(meetingId)
       // A result that failed its re-check reads as missing: that chunk is

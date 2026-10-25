@@ -35,14 +35,18 @@ export default defineEventHandler(async (event): Promise<{ meeting: Meeting, sum
   switch (outcome.kind) {
     case 'done':
       return { meeting: outcome.meeting, summary: outcome.summary }
-    case 'progress':
+    case 'progress': {
       setResponseStatus(event, 202)
+      const retryAfterMs = outcome.retryAt ? Math.max(0, outcome.retryAt.getTime() - Date.now()) : null
+      if (retryAfterMs !== null) setResponseHeader(event, 'retry-after', Math.ceil(retryAfterMs / 1000))
       return {
         meeting: outcome.meeting,
         progress: outcome.progress,
         next: outcome.next,
         retryAt: outcome.retryAt?.toISOString() ?? null,
+        retryAfterMs,
       }
+    }
     case 'failed':
       throw createError({ statusCode: outcome.statusCode, statusMessage: outcome.statusMessage, message: outcome.message })
     case 'refused':

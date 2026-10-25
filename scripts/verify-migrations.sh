@@ -613,9 +613,9 @@ ledger_meeting() { # ledger_meeting <uuid> <status>
               insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
               select '$1', g, g * 1000, g * 1000 + 900, 'line ' || g from generate_series(0, 9) g;"
 }
-claim() { # claim <label> <meeting> <stage> <status> <lease_ms> [chunk_no|null] [new_run] [reset_attempts] ['move_to'|null]
+claim() { # claim <label> <meeting> <stage> <status> <lease_ms> [chunk_no|null] [new_run] [reset_attempts] ['move_to'|null] [redo]
   psql -q -c "insert into vl_c select '$1', step_token, run_id, attempts
-              from public.claim_step('$2', '$3', '$4', $5, ${6:-null}, ${7:-false}, ${8:-false}, ${9:-null});"
+              from public.claim_step('$2', '$3', '$4', $5, ${6:-null}, ${7:-false}, ${8:-false}, ${9:-null}, ${10:-false});"
 }
 tok() { echo "(select step_token from vl_c where label = '$1')"; }
 got() { echo "(select $2 from vl_c where label = '$1')"; }
@@ -838,6 +838,20 @@ psql -q -c "insert into vl_c (label, attempts)
 check "release_step does not fail a meeting that has left the status it was to fail from" \
   "select $(got leftreleased attempts) = 1 and (select status from public.meetings where id = '$L6') = 'ready'"
 psql -q -c "delete from public.meetings where id = '$L6';"
+
+# A stored result that fails the read-back check is redone only on request.
+L7=a0000000-0000-0000-0000-000000000007
+ledger_meeting "$L7" indexing
+claim r7 "$L7" summarization indexing 60000
+psql -q -At -c "select public.plan_chunks('$L7', $(tok r7), '$PLAN');" >/dev/null
+psql -q -At -c "select public.record_chunk('$L7', $(tok r7), 0, 0, 4, '$RESULT');" >/dev/null
+psql -q -c "update public.summary_chunks set result = '{\"summary\":\"damaged\"}' where meeting_id = '$L7' and chunk_no = 0;"
+claim noredo "$L7" summarization indexing 60000 0
+claim redo "$L7" summarization indexing 60000 0 false false null true
+check "claim_step claims a chunk with a stored result only with p_redo, which clears the result" \
+  "select not $(claimed noredo) and $(claimed redo) and $(got redo attempts) = 1
+          and (select result is null from public.summary_chunks where meeting_id = '$L7' and chunk_no = 0)"
+psql -q -c "delete from public.meetings where id = '$L7';"
 
 check "the ledger functions pin their search_path" \
   "select bool_and('search_path=public' = any(proconfig)) and count(*) = 6 from pg_proc

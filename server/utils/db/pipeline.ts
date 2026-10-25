@@ -46,6 +46,8 @@ export interface SummaryChunk extends ChunkPlan {
   attempts: number
   /** The chunk's attested extraction, or null until it has one. */
   result: AttestedChunk | null
+  /** A result is stored but failed its read-back check, so the chunk is redone with `redo`. */
+  unusable: boolean
 }
 
 export interface ClaimOptions {
@@ -63,6 +65,11 @@ export interface ClaimOptions {
    * step enters its stage, from `summarizing` or a cooled-down `failed`.
    */
   moveTo?: MeetingStatus
+  /**
+   * Claim the chunk even though it has a stored result, clearing it: the
+   * result failed its read-back check ({@link SummaryChunk.unusable}).
+   */
+  redo?: boolean
 }
 
 export interface ReleaseOutcome {
