@@ -1,5 +1,5 @@
 import { requireAdmin } from '../../utils/admin'
-import { useMeetingRepository } from '../../utils/db'
+import { useMeetingRepository, usePipelineRepository } from '../../utils/db'
 import { conflict, notFound, requireMeetingId } from '../../utils/http'
 import { deleteMeeting, DeletionIncompleteError, removeMeetingData } from '../../utils/meeting-deletion'
 import { indexingInFlight } from '../../utils/qa/in-flight'
@@ -27,6 +27,7 @@ export default defineEventHandler(async (event) => {
   try {
     outcome = await deleteMeeting(id, {
       meetings: useMeetingRepository(event),
+      pipeline: usePipelineRepository(event),
       removeData: (meetingId, audioKey) => removeMeetingData(event, meetingId, audioKey),
       indexingRuns: indexingInFlight,
     })

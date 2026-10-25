@@ -327,6 +327,67 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
       await client.from('provider_slots').delete().eq('provider', provider)
     }
   })
+
+  it('runs a summarization through the run ledger over the real RPCs, fenced on the step token', async () => {
+    // What only PostgREST can show: that the repository's arguments arrive as
+    // the jsonb and uuid the functions expect, and their answers come back in
+    // the shapes it reads. The rules themselves are pinned by
+    // scripts/verify-migrations.sh.
+    const { createSupabasePipelineRepository } = await import('../../server/utils/db/pipeline-supabase')
+    const { createSupabaseSummaryRepository } = await import('../../server/utils/db/summaries-supabase')
+    const options = { url: process.env.NUXT_SUPABASE_URL!, serviceKey: process.env.NUXT_SUPABASE_SERVICE_KEY! }
+    const pipeline = createSupabasePipelineRepository(options)
+    const client = await db()
+    const ledgerId = crypto.randomUUID()
+    try {
+      const { error } = await client.from('meetings')
+        .insert({ ...newRow(), id: ledgerId, audio_key: `verify-${ledgerId}/audio.ogg`, status: 'indexing' })
+      expect(error).toBeNull()
+      const segments = await client.from('transcript_segments').insert([0, 1, 2, 3].map(idx => ({
+        meeting_id: ledgerId, idx, start_ms: idx * 1000, end_ms: idx * 1000 + 900, text: `line ${idx}`,
+      })))
+      expect(segments.error).toBeNull()
+
+      const claim = await pipeline.claimStep(ledgerId, 'summarization', { status: 'indexing', leaseMs: 60_000 })
+      expect(claim, 'is the run ledger migration applied?').toMatchObject({ attempts: 1, cursor: {} })
+      expect(await pipeline.claimStep(ledgerId, 'summarization', { status: 'indexing', leaseMs: 60_000 })).toBeNull()
+
+      const plan = [{ chunkNo: 0, segFrom: 0, segTo: 1, estTokens: 10 }, { chunkNo: 1, segFrom: 2, segTo: 3, estTokens: 10 }]
+      expect(await pipeline.planChunks(ledgerId, claim!.token, plan)).toBe(true)
+      const result = (segmentIdx: number) => ({
+        summary: `around ${segmentIdx}`,
+        decisions: [{ decision: 'Ship', quote: `line ${segmentIdx}`, segmentIdx, startMs: segmentIdx * 1000 }],
+        actionItems: [],
+        droppedDecisions: 0,
+        droppedActionItems: 0,
+      })
+      expect(await pipeline.recordChunk(ledgerId, claim!.token, plan[0]!, result(1))).toBe(true)
+      expect(await pipeline.recordChunk(ledgerId, claim!.token, plan[1]!, result(3))).toBe(false)
+
+      const second = await pipeline.claimStep(ledgerId, 'summarization', { status: 'indexing', leaseMs: 60_000, chunkNo: 1 })
+      expect(second).toMatchObject({ attempts: 1 })
+      expect(await pipeline.recordChunk(ledgerId, second!.token, plan[1]!, result(3))).toBe(true)
+      expect((await pipeline.listChunks(ledgerId)).map(c => c.result)).toEqual([result(1), result(3)])
+
+      const final = await pipeline.claimStep(ledgerId, 'summarization', { status: 'indexing', leaseMs: 60_000 })
+      const summary = {
+        summary: 'Shipping.',
+        provider: 'stub' as const,
+        decisions: [{ idx: 0, decision: 'Ship', quote: 'line 1', segmentIdx: 1, startMs: 1000 }],
+        actionItems: [{ idx: 0, task: 'Send', assignee: null, dueDateText: 'Friday', quote: 'line 3', segmentIdx: 3, startMs: 3000 }],
+      }
+      expect(await pipeline.finalizeSummary(ledgerId, final!.token, summary)).toBe(true)
+      expect(await createSupabaseSummaryRepository(options).getForMeeting(ledgerId)).toEqual(summary)
+      const meeting = await client.from('meetings').select('status').eq('id', ledgerId).single()
+      expect(meeting.data?.status).toBe('ready')
+      expect((await pipeline.listRuns(ledgerId))[0]).toMatchObject({ stage: 'summarization', stepLeaseUntil: null })
+    }
+    finally {
+      await client.from('meetings').delete().eq('id', ledgerId)
+    }
+    // The cascade took the ledger with the meeting.
+    expect(await pipeline.listRuns(ledgerId)).toEqual([])
+  })
 })
 
 // ----------------------------------------------------------------------- Groq

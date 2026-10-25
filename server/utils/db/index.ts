@@ -14,6 +14,9 @@ import type { TranscriptIndexRepository } from './windows'
 import { createLocalSlotRepository } from './slots-local'
 import { createSupabaseSlotRepository } from './slots-supabase'
 import type { SlotRepository } from './slots'
+import { createLocalPipelineRepository } from './pipeline-local'
+import { createSupabasePipelineRepository } from './pipeline-supabase'
+import type { PipelineRepository } from './pipeline'
 import { requireAllOrNone } from '../storage'
 
 let announced = false
@@ -88,4 +91,16 @@ export function useSlotRepository(event: H3Event): SlotRepository {
   return supabaseReady
     ? createSupabaseSlotRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey })
     : createLocalSlotRepository({ dataDir: config.dataDir })
+}
+
+/** The run ledger (ADR-0012), chosen the same way as the other repositories. */
+export function usePipelineRepository(event: H3Event): PipelineRepository {
+  const config = useRuntimeConfig(event)
+  const supabaseReady = requireAllOrNone('Supabase', {
+    NUXT_SUPABASE_URL: config.supabaseUrl,
+    NUXT_SUPABASE_SERVICE_KEY: config.supabaseServiceKey,
+  })
+  return supabaseReady
+    ? createSupabasePipelineRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey })
+    : createLocalPipelineRepository({ dataDir: config.dataDir })
 }

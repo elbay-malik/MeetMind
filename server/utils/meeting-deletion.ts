@@ -1,8 +1,9 @@
 import type { H3Event } from 'h3'
 import type { Meeting } from '#shared/types/meeting'
 import { audioObjectKey, claimLooksStale, SUMMARIZE_CLAIM_LEASE_MS, TRANSCRIBE_CLAIM_LEASE_MS } from '#shared/utils/meeting'
-import { useSummaryRepository, useTranscriptIndexRepository, useTranscriptRepository } from './db'
+import { usePipelineRepository, useSummaryRepository, useTranscriptIndexRepository, useTranscriptRepository } from './db'
 import type { MeetingRepository } from './db/meetings'
+import { liveStepLease, type PipelineRepository, type PipelineRun } from './db/pipeline'
 import { useAudioStore } from './storage'
 import { UPLOAD_URL_TTL_SEC } from './storage-budget'
 
@@ -45,10 +46,16 @@ export interface DeletionBlocker {
  *   route's own status write, but not the child rows it writes first -- and on
  *   the local driver nothing would refuse those. A claim past its lease is
  *   treated the way the routes themselves treat it: as abandoned.
+ * - **A live pipeline step** (ADR-0012). A step writes its result back when it
+ *   finishes, fenced on its token; the cascade would make that write match
+ *   nothing on Supabase, but a step part-way through a provider call has
+ *   already spent the quota for a result that would be thrown away. A run
+ *   parked between steps holds no lease and does not block.
  */
 export function deletionBlocker(
   meeting: Pick<Meeting, 'status' | 'createdAt' | 'updatedAt'>,
   now: number = Date.now(),
+  runs: readonly Pick<PipelineRun, 'stepLeaseUntil'>[] = [],
 ): DeletionBlocker | null {
   const uploadWindowEnds = Date.parse(meeting.createdAt) + (UPLOAD_URL_TTL_SEC + UPLOAD_GRACE_SEC) * 1000
   if (now < uploadWindowEnds) {
@@ -68,6 +75,14 @@ export function deletionBlocker(
     }
   }
 
+  const stepLease = liveStepLease(runs, now)
+  if (stepLease) {
+    return {
+      reason: 'A pipeline step is running, and it would write its result back after the delete',
+      retryAfterSec: Math.ceil((stepLease.getTime() - now) / 1000),
+    }
+  }
+
   return null
 }
 
@@ -84,6 +99,7 @@ export function deletionBlocker(
  */
 export async function removeMeetingData(event: H3Event, meetingId: string, audioKey: string): Promise<void> {
   await useAudioStore(event).delete(audioKey)
+  await usePipelineRepository(event).deleteForMeeting(meetingId)
   await useTranscriptIndexRepository(event).deleteForMeeting(meetingId)
   await useSummaryRepository(event).deleteForMeeting(meetingId)
   await useTranscriptRepository(event).deleteForMeeting(meetingId)
@@ -96,6 +112,8 @@ export type DeletionOutcome
 
 export interface DeletionDeps {
   meetings: MeetingRepository
+  /** The run ledger, for the step leases {@link deletionBlocker} reads. */
+  pipeline: Pick<PipelineRepository, 'listRuns'>
   /** {@link removeMeetingData}, bound to the request. */
   removeData: (meetingId: string, audioKey: string) => Promise<void>
   /** Indexing runs in flight in this process (server/utils/qa/in-flight.ts). */
@@ -135,7 +153,9 @@ export async function deleteMeeting(id: string, deps: DeletionDeps): Promise<Del
     return { kind: 'not-found' }
   }
 
-  const blocker = deletionBlocker(meeting, now())
+  // Read after the meeting: a step claimed in between moves its updatedAt,
+  // so the fenced delete below refuses it even though this read missed it.
+  const blocker = deletionBlocker(meeting, now(), await deps.pipeline.listRuns(id))
   if (blocker) return { kind: 'blocked', ...blocker }
   if (deps.indexingRuns.has(id)) {
     return {

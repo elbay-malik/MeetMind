@@ -373,6 +373,19 @@ export interface AttestedChunk {
 }
 
 /**
+ * An {@link AttestedChunk} as read back from storage. Stored chunks come back
+ * as untyped JSON, and `mergeReconciled` trusts its input, so whatever a
+ * pipeline step reads back is checked against this before it is merged.
+ */
+export const attestedChunkSchema = z.object({
+  summary: z.string(),
+  decisions: z.array(decisionSchema.omit({ idx: true })),
+  actionItems: z.array(actionItemSchema.omit({ idx: true })),
+  droppedDecisions: z.int().nonnegative(),
+  droppedActionItems: z.int().nonnegative(),
+}) satisfies z.ZodType<AttestedChunk>
+
+/**
  * Keep only what the chunk supports, and resolve every timestamp here rather
  * than trusting one the model supplied.
  *

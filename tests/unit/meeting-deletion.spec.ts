@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Meeting } from '#shared/types/meeting'
 import { audioObjectKey, SUMMARIZE_CLAIM_LEASE_MS, TRANSCRIBE_CLAIM_LEASE_MS } from '#shared/utils/meeting'
 import type { MeetingRepository } from '../../server/utils/db/meetings'
+import type { PipelineRun } from '../../server/utils/db/pipeline'
 import {
   CHANGED_RETRY_AFTER_SEC,
   deleteMeeting,
@@ -116,6 +117,31 @@ describe('deletionBlocker', () => {
   })
 })
 
+describe('deletionBlocker and pipeline step leases (ADR-0012)', () => {
+  const later = uploadWindowEnds + 60 * MIN
+  const lease = (until: number | null) => ({ stepLeaseUntil: until === null ? null : new Date(until) })
+
+  it('refuses while any stage holds a live step lease, until that lease ends', () => {
+    const blocker = deletionBlocker(meeting('ready'), later, [lease(null), lease(later + 90_500)])
+    expect(blocker?.reason).toMatch(/pipeline step is running/)
+    expect(blocker?.retryAfterSec).toBe(91)
+  })
+
+  it('waits for the latest of several live leases', () => {
+    expect(deletionBlocker(meeting('ready'), later, [lease(later + 10_000), lease(later + 70_000)])?.retryAfterSec).toBe(70)
+  })
+
+  // Parked between steps: a run waiting for its next slot holds no lease, and
+  // must not make a meeting undeletable for as long as the wait lasts.
+  it('lets a run parked between steps be deleted', () => {
+    expect(deletionBlocker(meeting('ready'), later, [lease(null)])).toBeNull()
+  })
+
+  it('treats a lease that has run out as abandoned', () => {
+    expect(deletionBlocker(meeting('ready'), later, [lease(later)])).toBeNull()
+  })
+})
+
 describe('deleteMeeting', () => {
   const id = 'm-1'
   // Past the upload window and with no claim, so deletionBlocker lets it
@@ -160,6 +186,7 @@ describe('deleteMeeting', () => {
     deleteResult?: 'row' | 'null'
     onDelete?: (h: Harness) => void
     removeData?: (meetingId: string, audioKey: string) => Promise<void>
+    runs?: PipelineRun[]
     now?: number
   } = {}): Harness {
     const stored = options.stored === undefined ? row() : options.stored
@@ -189,6 +216,7 @@ describe('deleteMeeting', () => {
     }
     h.deps = {
       meetings: h.meetings,
+      pipeline: { listRuns: async () => options.runs ?? [] },
       removeData: async (meetingId, audioKey) => {
         h.removeCalls.push({ meetingId, audioKey })
         await options.removeData?.(meetingId, audioKey)
@@ -240,6 +268,15 @@ describe('deleteMeeting', () => {
     expect(outcome).toMatchObject({ retryAfterSec: deletionBlocker(row(), now)!.retryAfterSec })
     expect(h.deleteCalls).toHaveLength(0)
     expect(h.removeCalls).toHaveLength(0)
+  })
+
+  it('refuses while a pipeline step holds a live lease, deleting nothing', async () => {
+    const runs: PipelineRun[] = [{
+      stage: 'summarization', runId: 'r', cursor: {}, attempts: 1, lastError: null, retryAt: null,
+      stepLeaseUntil: new Date(later + 30_000),
+    }]
+    const outcome = await deleteMeeting(id, harness({ runs }).deps)
+    expect(outcome).toMatchObject({ kind: 'blocked', retryAfterSec: 30 })
   })
 
   // Indexing holds no claim deletionBlocker can see on a 'ready' row, so the

@@ -329,3 +329,19 @@ single blocking route move to a drive helper rather than being deleted.
 The real-Worker CPU check (no Error 1102, every step under 10 ms, every
 invocation within its subrequest budget) is part of Phase 13's deploy.
 
+
+## Addendum: the run ledger as built (step 5, 2026-10-25)
+
+Step 5 (`20261026120000_pipeline_runs.sql`) differs from §3 in these ways:
+
+- **Three more functions.**
+  - `release_step` ends a step without a result: a failure, or a slot miss. Without it, a parked step would hold its lease until the lease expired.
+  - `plan_chunks` writes the extraction plan under the step's token. A plan that already exists for the run is kept, results and all, so a retried planning step redoes nothing.
+  - `locked_step_run` is the shared fence.
+- **The fence is a row lock, not a `WHERE EXISTS`.** Each write first locks the stage's run row `FOR UPDATE`, matching on the token. Postgres re-reads a row that another transaction changed before granting the lock. A straggler whose step was re-claimed meanwhile therefore finds no row. `EXISTS` would read a snapshot that could predate the re-claim.
+- **`claim_step` takes the meeting's expected status** (`p_status`) and locks that row first. It refuses, and moves nothing, when the meeting is elsewhere.
+  - `p_chunk_no` counts the attempt on the chunk.
+  - `p_new_run` starts the stage over under a new `run_id`. The old run's chunks are then stale: `plan_chunks` removes them, and nothing reads them.
+- **`finalize_summary` refuses outright while a chunk of the plan has no result**, rather than merging without it.
+- **Stored chunk results are checked again when read back**, both their shape and that every item cites a line inside its chunk. A result that fails reads as "not done", so the chunk is extracted again rather than merged. `recordChunk` applies the same check before writing.
+- **`deletionBlocker` reads step leases in addition to**, not instead of, the status leases and `indexingInFlight`. Until steps 6–8 move extraction, transcription and indexing onto step leases, the old routes hold only the old claims, and dropping those checks now would let a delete run under them.

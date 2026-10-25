@@ -168,6 +168,7 @@ describe('DELETE /api/meetings/:id not found', () => {
     await db.setItem(`transcripts/${id}`, [{ idx: 0, startMs: 0, endMs: 1000, text: 'hello' }])
     await db.setItem(`summaries/${id}`, { summary: 'stored', decisions: [], actionItems: [] })
     await db.setItem(`windows/${id}`, [{ idx: 0, text: 'hello' }])
+    await db.setItem(`pipeline/${id}`, ledger(null))
 
     expect((await del(id)).status).toBe(404)
     expect(await exists(planted)).toBe(false)
@@ -175,10 +176,36 @@ describe('DELETE /api/meetings/:id not found', () => {
     expect(await db.hasItem(`transcripts/${id}`)).toBe(false)
     expect(await db.hasItem(`summaries/${id}`)).toBe(false)
     expect(await db.hasItem(`windows/${id}`)).toBe(false)
+    expect(await db.hasItem(`pipeline/${id}`)).toBe(false)
   })
 })
 
+/** A run ledger as the local pipeline driver stores it, with one summarization run. */
+const ledger = (stepLeaseUntil: number | null) => ({
+  runs: {
+    summarization: {
+      runId: randomUUID(), cursor: {}, stepToken: stepLeaseUntil === null ? null : randomUUID(), stepLeaseUntil,
+      attempts: 1, lastError: null, retryAt: null,
+    },
+  },
+  chunks: [],
+})
+
 describe('DELETE /api/meetings/:id while the meeting may still be written', () => {
+  it('409s while a pipeline step holds a live lease, until that lease ends', async () => {
+    // ADR-0012: a step mid provider call would write its result back after
+    // the delete. A `ready` meeting holds no status claim, so only the step
+    // lease can be what refuses.
+    const meeting = await seedMeeting()
+    await db.setItem(`pipeline/${meeting.id}`, ledger(Date.now() + 90_000))
+    const refused = await del(meeting.id)
+    expect(refused.status).toBe(409)
+    const retryAfter = Number(refused.headers.get('retry-after'))
+    expect(retryAfter).toBeGreaterThan(80)
+    expect(retryAfter).toBeLessThanOrEqual(90)
+    expect((await fetch(`/api/meetings/${meeting.id}`)).status).toBe(200)
+  })
+
   it('409s inside the upload window, with a Retry-After', async () => {
     // Its upload URL is live: audio PUT after the delete would be stored with
     // no row, invisible to the budget.
@@ -232,6 +259,8 @@ describe('DELETE /api/meetings/:id', () => {
     await db.setItem(`transcripts/${meeting.id}`, [{ idx: 0, startMs: 0, endMs: 1000, text: 'hello' }])
     await db.setItem(`summaries/${meeting.id}`, { summary: 'stored', decisions: [], actionItems: [] })
     await db.setItem(`windows/${meeting.id}`, [{ idx: 0, text: 'hello' }])
+    // Parked between steps: no lease, so it does not block, and goes with the meeting.
+    await db.setItem(`pipeline/${meeting.id}`, ledger(null))
 
     const res = await del(meeting.id)
     expect(res.status).toBe(204)
@@ -244,6 +273,7 @@ describe('DELETE /api/meetings/:id', () => {
     expect(await db.hasItem(`transcripts/${meeting.id}`)).toBe(false)
     expect(await db.hasItem(`summaries/${meeting.id}`)).toBe(false)
     expect(await db.hasItem(`windows/${meeting.id}`)).toBe(false)
+    expect(await db.hasItem(`pipeline/${meeting.id}`)).toBe(false)
 
     expect((await del(meeting.id)).status).toBe(404)
   })

@@ -1,6 +1,7 @@
 import type { MeetingRow } from './meetings'
 import type { TranscriptSegmentRow } from './transcripts'
 import type { ActionItemRow, DecisionRow, SummaryRow } from './summaries'
+import type { PipelineRunRow, SummaryChunkRow } from './pipeline'
 import type { CrossMeetingMatchRow, TranscriptWindowRow, WindowMatchRow } from './windows'
 
 /**
@@ -15,6 +16,18 @@ export interface Database {
         Row: { provider: string, next_available_at: string, blocked_until: string }
         Insert: { provider: string, next_available_at?: string, blocked_until?: string }
         Update: Partial<{ provider: string, next_available_at: string, blocked_until: string }>
+        Relationships: []
+      }
+      pipeline_runs: {
+        Row: PipelineRunRow
+        Insert: Pick<PipelineRunRow, 'meeting_id' | 'stage'> & Partial<PipelineRunRow>
+        Update: Partial<PipelineRunRow>
+        Relationships: []
+      }
+      summary_chunks: {
+        Row: SummaryChunkRow
+        Insert: Omit<SummaryChunkRow, 'attempts' | 'result' | 'updated_at'> & Partial<SummaryChunkRow>
+        Update: Partial<SummaryChunkRow>
         Relationships: []
       }
       meetings: {
@@ -102,6 +115,43 @@ export interface Database {
           p_retry_after_ms: number
         }
         Returns: undefined
+      }
+      claim_step: {
+        Args: {
+          p_meeting: string
+          p_stage: string
+          p_status: string
+          p_lease_ms: number
+          p_chunk_no: number | null
+          p_new_run: boolean
+        }
+        /** One row when granted, none when refused. */
+        Returns: { step_token: string, run_id: string, run_cursor: Record<string, unknown>, attempts: number }[]
+      }
+      release_step: {
+        Args: { p_meeting: string, p_stage: string, p_token: string, p_error: string | null, p_retry_at: string | null }
+        Returns: boolean
+      }
+      plan_chunks: {
+        /** p_chunks: rows of { chunk_no, seg_from, seg_to, est_tokens }. */
+        Args: { p_meeting: string, p_token: string, p_chunks: unknown }
+        Returns: boolean
+      }
+      record_chunk: {
+        Args: { p_meeting: string, p_token: string, p_chunk_no: number, p_result: unknown }
+        Returns: boolean
+      }
+      finalize_summary: {
+        /** p_decisions and p_action_items: rows in the tables' own column names. */
+        Args: {
+          p_meeting: string
+          p_token: string
+          p_summary: string
+          p_provider: string
+          p_decisions: unknown
+          p_action_items: unknown
+        }
+        Returns: boolean
       }
     }
     Enums: Record<string, never>
