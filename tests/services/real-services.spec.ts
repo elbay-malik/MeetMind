@@ -388,6 +388,64 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
     // The cascade took the ledger with the meeting.
     expect(await pipeline.listRuns(ledgerId)).toEqual([])
   })
+
+  it('drives step-wise extraction to ready over the real RPCs, and fails a run under its token', async () => {
+    // Step 6 (ADR-0012): the claim that moves the meeting into the stage, and
+    // the release that stores the cursor and fails the meeting, as PostgREST
+    // delivers them. The stub summarizer stands in for Groq: this is about the
+    // ledger, and spends no quota.
+    const { createSupabasePipelineRepository } = await import('../../server/utils/db/pipeline-supabase')
+    const { createSupabaseSummaryRepository } = await import('../../server/utils/db/summaries-supabase')
+    const { createSupabaseTranscriptRepository } = await import('../../server/utils/db/transcripts-supabase')
+    const { createSupabaseMeetingRepository } = await import('../../server/utils/db/supabase')
+    const { advanceExtraction } = await import('../../server/utils/summary/steps')
+    const { createStubSummarizer } = await import('../../server/utils/summary/stub')
+    const { SummarizationError } = await import('../../server/utils/summary/summarizer')
+    const options = { url: process.env.NUXT_SUPABASE_URL!, serviceKey: process.env.NUXT_SUPABASE_SERVICE_KEY! }
+    const stub = createStubSummarizer()
+    let failNext = false
+    const deps = {
+      meetings: createSupabaseMeetingRepository(options),
+      pipeline: createSupabasePipelineRepository(options),
+      transcripts: createSupabaseTranscriptRepository(options),
+      summaries: createSupabaseSummaryRepository(options),
+      summarizer: {
+        ...stub,
+        async summarizeChunk(input: Parameters<typeof stub.summarizeChunk>[0]) {
+          if (failNext) throw new SummarizationError('refused (verify)', 502, false)
+          return stub.summarizeChunk(input)
+        },
+      },
+    }
+    const client = await db()
+    const ids = [crypto.randomUUID(), crypto.randomUUID()]
+    try {
+      for (const id of ids) {
+        const { error } = await client.from('meetings')
+          .insert({ ...newRow(), id, audio_key: `verify-${id}/audio.ogg`, status: 'summarizing' })
+        expect(error).toBeNull()
+        await deps.transcripts.replaceForMeeting(id, [0, 1, 2].map(idx => ({
+          idx, startMs: idx * 1000, endMs: idx * 1000 + 900, text: `We agreed on point ${idx}.`,
+        })))
+      }
+
+      const [ok, failing] = ids as [string, string]
+      const planned = await advanceExtraction(ok, deps)
+      expect(planned, 'is the pipeline steps migration applied?').toMatchObject({ kind: 'progress', meeting: { status: 'indexing' } })
+      let outcome = planned
+      for (let i = 0; i < 5 && outcome.kind === 'progress'; i++) outcome = await advanceExtraction(ok, deps)
+      expect(outcome).toMatchObject({ kind: 'done', meeting: { status: 'ready' }, summary: { provider: 'stub' } })
+
+      await advanceExtraction(failing, deps)
+      failNext = true
+      expect(await advanceExtraction(failing, deps)).toMatchObject({ kind: 'failed', statusCode: 502 })
+      const meeting = await client.from('meetings').select('status, failed_stage, error_message').eq('id', failing).single()
+      expect(meeting.data).toEqual({ status: 'failed', failed_stage: 'summarization', error_message: 'refused (verify)' })
+    }
+    finally {
+      await client.from('meetings').delete().in('id', ids)
+    }
+  })
 })
 
 // ----------------------------------------------------------------------- Groq

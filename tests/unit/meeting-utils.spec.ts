@@ -3,7 +3,6 @@ import {
   AUDIO_MIME,
   MAX_AUDIO_BYTES,
   MAX_TITLE_LENGTH,
-  SUMMARIZE_CLAIM_LEASE_MS,
   TRANSCRIBE_CLAIM_LEASE_MS,
   audioObjectKey,
   claimLooksStale,
@@ -101,7 +100,6 @@ describe('claimLooksStale', () => {
   it('is false while a claim is still within its lease', () => {
     const now = 10 * 60 * 60_000
     expect(claimLooksStale({ status: 'transcribing', updatedAt: at(now - 60_000) }, now)).toBe(false)
-    expect(claimLooksStale({ status: 'indexing', updatedAt: at(now - 60 * 60_000) }, now)).toBe(false)
   })
 
   it('is true once nothing can still be holding the claim', () => {
@@ -109,19 +107,15 @@ describe('claimLooksStale', () => {
     expect(claimLooksStale(
       { status: 'transcribing', updatedAt: at(now - TRANSCRIBE_CLAIM_LEASE_MS - 1) }, now,
     )).toBe(true)
-    expect(claimLooksStale(
-      { status: 'indexing', updatedAt: at(now - SUMMARIZE_CLAIM_LEASE_MS - 1) }, now,
-    )).toBe(true)
   })
 
-  it('uses each route\'s own lease, not a single shared number', () => {
-    // Extraction's lease is 16x transcription's, because a multi-chunk run
-    // legitimately takes hours. Treating them alike would either declare a
-    // live extraction dead or leave a dead transcription unrecoverable for 4h.
+  it('does not treat indexing as a claim: extraction steps carry their own leases', () => {
+    // Extraction used to hold a 4 h status lease. It now runs in short steps,
+    // each leased in the run ledger (ADR-0012), so `indexing` says nothing
+    // about whether a step is live -- the server answers that when asked.
     const now = 10 * 60 * 60_000
-    const justOverTranscribe = at(now - TRANSCRIBE_CLAIM_LEASE_MS - 1)
-    expect(claimLooksStale({ status: 'transcribing', updatedAt: justOverTranscribe }, now)).toBe(true)
-    expect(claimLooksStale({ status: 'indexing', updatedAt: justOverTranscribe }, now)).toBe(false)
+    expect(claimLooksStale({ status: 'indexing', updatedAt: at(now - 60_000) }, now)).toBe(false)
+    expect(claimLooksStale({ status: 'indexing', updatedAt: at(0) }, now)).toBe(false)
   })
 
   it('is false for statuses that are not an in-flight claim at all', () => {

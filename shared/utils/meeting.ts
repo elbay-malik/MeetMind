@@ -56,12 +56,17 @@ export function titleFromFileName(fileName: string): string {
  * still alive. These only decide whether the button is worth offering.
  */
 export const TRANSCRIBE_CLAIM_LEASE_MS = 15 * 60_000
-export const SUMMARIZE_CLAIM_LEASE_MS = 4 * 60 * 60_000
 
-/** Statuses that mean a route is holding a claim on this meeting right now. */
+/**
+ * Statuses that mean a route is holding a claim on this meeting right now.
+ *
+ * Not `indexing`: extraction runs in short steps, each under its own lease in
+ * the run ledger (ADR-0012), and between steps nothing holds it at all. An
+ * `indexing` meeting is always safe to ask to carry on -- the server answers
+ * "wait" while a step is live -- and safe to delete between steps.
+ */
 const IN_FLIGHT_LEASE: Partial<Record<Meeting['status'], number>> = {
   transcribing: TRANSCRIBE_CLAIM_LEASE_MS,
-  indexing: SUMMARIZE_CLAIM_LEASE_MS,
 }
 
 /**

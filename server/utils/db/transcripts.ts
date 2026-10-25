@@ -5,6 +5,11 @@ export interface TranscriptRepository {
   /** Replace a meeting's whole transcript. Re-running transcription is idempotent. */
   replaceForMeeting(meetingId: string, segments: TranscriptSegment[]): Promise<void>
   listForMeeting(meetingId: string): Promise<TranscriptSegment[]>
+  /**
+   * The segments with `from <= idx <= to`, in order: one chunk's lines, read
+   * without the rest of the transcript (ADR-0012).
+   */
+  listRange(meetingId: string, from: number, to: number): Promise<TranscriptSegment[]>
   /** Remove the whole transcript. Idempotent: nothing stored is not an error. */
   deleteForMeeting(meetingId: string): Promise<void>
 }

@@ -70,5 +70,24 @@ export function createSupabaseTranscriptRepository(options: SupabaseOptions): Tr
         if (data.length < PAGE) return segments
       }
     },
+
+    async listRange(meetingId, from, to) {
+      // One chunk is far under the row cap; paged anyway, so a wide range
+      // cannot come back silently short.
+      const PAGE = 1000
+      const segments = []
+      for (let offset = 0; ; offset += PAGE) {
+        const { data, error } = await table()
+          .select()
+          .eq('meeting_id', meetingId)
+          .gte('idx', from)
+          .lte('idx', to)
+          .order('idx', { ascending: true })
+          .range(offset, offset + PAGE - 1)
+        if (error) fail('transcript range select', error)
+        segments.push(...data.map(rowToSegment))
+        if (data.length < PAGE) return segments
+      }
+    },
   }
 }

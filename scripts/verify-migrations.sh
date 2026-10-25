@@ -613,9 +613,9 @@ ledger_meeting() { # ledger_meeting <uuid> <status>
               insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
               select '$1', g, g * 1000, g * 1000 + 900, 'line ' || g from generate_series(0, 9) g;"
 }
-claim() { # claim <label> <meeting> <stage> <status> <lease_ms> [chunk_no|null] [new_run] [reset_attempts]
+claim() { # claim <label> <meeting> <stage> <status> <lease_ms> [chunk_no|null] [new_run] [reset_attempts] ['move_to'|null]
   psql -q -c "insert into vl_c select '$1', step_token, run_id, attempts
-              from public.claim_step('$2', '$3', '$4', $5, ${6:-null}, ${7:-false}, ${8:-false});"
+              from public.claim_step('$2', '$3', '$4', $5, ${6:-null}, ${7:-false}, ${8:-false}, ${9:-null});"
 }
 tok() { echo "(select step_token from vl_c where label = '$1')"; }
 got() { echo "(select $2 from vl_c where label = '$1')"; }
@@ -796,6 +796,48 @@ check "a token-fenced write queues behind a claim holding the meeting lock inste
   "select $(cat /tmp/vl_a.rc) = 0 and $(cat /tmp/vl_b.rc) = 0 and $(grep -c deadlock /tmp/vl_a.out /tmp/vl_b.out | awk -F: '{s+=$2} END {print s+0}') = 0
           and (select status from public.meetings where id = '$L5') = 'ready'"
 psql -q -c "delete from public.meetings where id = '$L5';"
+
+# Step 6: entering a stage with the claim, the cursor, and failing under the token.
+L6=a0000000-0000-0000-0000-000000000006
+ledger_meeting "$L6" indexing
+psql -q -c "update public.meetings set status = 'failed', failed_stage = 'summarization', error_message = 'boom' where id = '$L6';"
+claim enter "$L6" summarization failed 60000 null false false "'indexing'"
+check "claim_step moves the meeting into the stage with the claim, clearing the failure it leaves" \
+  "select $(claimed enter) and (select status = 'indexing' and failed_stage is null and error_message is null
+                               from public.meetings where id = '$L6')"
+claim enterlive "$L6" summarization indexing 60000 null false false "'ready'"
+check "claim_step moves nothing when the claim is refused" \
+  "select not $(claimed enterlive) and (select status from public.meetings where id = '$L6') = 'indexing'"
+psql -q -At -c "select public.release_step('$L6', 'summarization', $(tok enter), null, null, false, '{\"rateLimited\":{\"chunkNo\":1,\"count\":2}}');" >/dev/null
+claim cur2 "$L6" summarization indexing 60000
+reject "release_step refuses a cursor that is not a JSON object" \
+  "select public.release_step('$L6', 'summarization', $(tok cur2), null, null, false, '[1, 2]')" "must be a JSON object"
+psql -q -At -c "select public.release_step('$L6', 'summarization', $(tok cur2), null, null);" >/dev/null
+check "release_step replaces the run's cursor when asked, and keeps it otherwise" \
+  "select $(run_of "$L6" cursor) = '{\"rateLimited\":{\"chunkNo\":1,\"count\":2}}'::jsonb"
+claim stale "$L6" summarization indexing 60000
+psql -q -c "update public.pipeline_runs set step_lease_until = clock_timestamp() - interval '1 second'
+            where meeting_id = '$L6' and stage = 'summarization';"
+claim live "$L6" summarization indexing 60000
+psql -q -c "insert into vl_c (label, attempts)
+            select 'stalereleased', public.release_step('$L6', 'summarization', $(tok stale), 'late', null, false, null, 'indexing')::int;"
+check "release_step does not fail the meeting under a token that is no longer live" \
+  "select $(got stalereleased attempts) = 0 and (select status from public.meetings where id = '$L6') = 'indexing'"
+reject "release_step refuses to fail the meeting from the search_index stage" \
+  "select public.release_step('$L6', 'search_index', gen_random_uuid(), 'x', null, false, null, 'indexing')" "cannot fail the meeting"
+psql -q -c "insert into vl_c (label, attempts)
+            select 'failed', public.release_step('$L6', 'summarization', $(tok live), 'quota', null, false, null, 'indexing')::int;"
+check "release_step fails the meeting for its stage under the live token" \
+  "select $(got failed attempts) = 1
+          and (select status = 'failed' and failed_stage = 'summarization' and error_message = 'quota'
+                 from public.meetings where id = '$L6')"
+claim leftstatus "$L6" summarization failed 60000
+psql -q -c "update public.meetings set status = 'ready', failed_stage = null, error_message = null where id = '$L6';"
+psql -q -c "insert into vl_c (label, attempts)
+            select 'leftreleased', public.release_step('$L6', 'summarization', $(tok leftstatus), 'x', null, false, null, 'indexing')::int;"
+check "release_step does not fail a meeting that has left the status it was to fail from" \
+  "select $(got leftreleased attempts) = 1 and (select status from public.meetings where id = '$L6') = 'ready'"
+psql -q -c "delete from public.meetings where id = '$L6';"
 
 check "the ledger functions pin their search_path" \
   "select bool_and('search_path=public' = any(proconfig)) and count(*) = 6 from pg_proc

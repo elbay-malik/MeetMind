@@ -101,6 +101,26 @@ export interface MeetingSummary {
   provider: 'groq' | 'stub'
 }
 
+/**
+ * Extraction runs as a series of short steps (ADR-0012); this is what one step
+ * answers while the work is not finished. The finished answer is
+ * `{ meeting, summary }` with a 200.
+ */
+export interface ExtractionStepResponse {
+  meeting: Meeting
+  progress: {
+    /** Chunks with an attested result. */
+    done: number
+    /** Chunks in the plan; null until the plan is written. */
+    total: number | null
+    /** Why the last step of this run ended without a result, if it did. */
+    lastError: string | null
+  }
+  /** `continue`: ask again now. `wait`: ask again at `retryAt`. */
+  next: 'continue' | 'wait'
+  retryAt: string | null
+}
+
 /** Fields the client supplies when registering a meeting before uploading its audio. */
 export interface CreateMeetingInput {
   title: string

@@ -125,6 +125,7 @@ export interface Database {
           p_chunk_no: number | null
           p_new_run: boolean
           p_reset_attempts: boolean
+          p_move_to: string | null
         }
         /** One row when granted, none when refused. */
         Returns: { step_token: string, run_id: string, run_cursor: Record<string, unknown>, attempts: number }[]
@@ -137,6 +138,8 @@ export interface Database {
           p_error: string | null
           p_retry_at: string | null
           p_refund_attempt: boolean
+          p_cursor: Record<string, unknown> | null
+          p_fail_from: string | null
         }
         Returns: boolean
       }

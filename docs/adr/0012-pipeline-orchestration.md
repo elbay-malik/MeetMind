@@ -358,3 +358,41 @@ Step 5 (`20261026120000_pipeline_runs.sql`) differs from §3 in these ways:
 **For step 6:**
 - `claim_step` moves `meetings.updated_at`, which restarts the old 4 h status lease on an `indexing` meeting. When extraction moves onto step leases, that status lease has to come out of `deletionBlocker` and `claimLooksStale`. Otherwise a parked run stays undeletable.
 - The "three consecutive 429s" counter needs a home. The likely place is the run's `cursor`, written under the step's token.
+
+## Addendum: step-wise extraction as built (step 6, 2026-10-25)
+
+`POST /api/meetings/:id/summarize` now does one step per request (`server/utils/summary/steps.ts`): plan the chunks, extract one chunk, or finalize. It answers 200 with `{ meeting, summary }` once the summary is stored, and 202 with `{ meeting, progress: { done, total, lastError }, next, retryAt }` otherwise. The progress page loops on it until the 200; step 9's `/advance` will call the same library.
+
+**One more migration** (`20261026140000_pipeline_steps.sql`):
+- `claim_step(p_move_to)` moves the meeting into the stage in the claim's own transaction. Entering extraction from `summarizing`, a cooled-down `failed`, or a `ready` meeting with no summary is therefore one write. A status compare-and-swap after the claim would leave a crash window: the meeting moved, the new run unplanned.
+- `release_step(p_cursor)` stores the run's cursor under the token. It holds the consecutive-429 count: `{ rateLimited: { chunkNo, count } }`.
+- `release_step(p_fail_from)` moves the meeting to `failed` under the token. A step that waited out its lease on the provider cannot fail a run another step has taken over since. Only transcription and summarization may fail the meeting this way.
+
+**How a step is chosen** (first match wins):
+1. `ready` with a summary: done. `ready` without one, or `summarizing`: claim a new run and plan it.
+2. `failed`/summarization:
+   - Refused until the cooldown has passed: `max(updatedAt + 60 s, the run's retryAt)`, so a provider block longer than the cooldown is honoured.
+   - After that, the claim resumes the run. It goes to the first chunk without a result, with that chunk's attempts reset; otherwise it finalizes, or plans if there is no plan.
+3. `indexing`:
+   - A live step lease answers `wait`, retrying at the earlier of the lease's end and 2 s from now.
+   - A `retryAt` in the future answers `wait` without claiming anything.
+   - Otherwise the step is the next unfinished chunk, or the finalize step once every chunk is done.
+
+**Chunk outcomes:**
+- A **slot miss** refunds the attempt and parks the chunk until the slot's time. It neither adds to nor resets the 429 count.
+- A **provider 429** refunds the attempt, sets `blocked_until` through the pacer, and parks the chunk until its `Retry-After`. The third in a row on one chunk fails the run with 429.
+- A **retryable failure** on attempt 1 parks the chunk with no wait. The slot ledger spaces the retry. An error that is not a `SummarizationError`, such as a database read failing, counts as retryable.
+- **Attempt 2 failing, or a non-retryable error**, fails the run with that error's status.
+- **More than two claims of one chunk with no answer** fail the run without another provider call. That covers a step that keeps getting killed.
+
+**The extraction summarizer** (`useStepSummarizer`) makes one attempt and waits 0 ms for its slot. Retries are the ledger's attempts, not loops inside the request. `SummarizationError.hold` tells a slot miss (`busy`) from a provider 429 (`rate-limited`), and gives when to come back.
+
+**Deletion and resume:**
+- The 4 h `indexing` status lease is gone from `deletionBlocker` and `claimLooksStale`.
+  - An `indexing` meeting with no live step can be deleted at once.
+  - The progress page offers "Resume extraction" whenever it is not the page driving.
+- Transcription keeps its 15-minute status lease until step 7.
+
+**Not yet done:**
+- `event.waitUntil` around the step.
+- The chunk step still reads the plan's segments with one range query. Planning, however, reads the whole transcript once per run, until step 7 plans incrementally during transcription.

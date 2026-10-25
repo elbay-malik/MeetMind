@@ -36,10 +36,28 @@ export function useGroqChatPacer(event: H3Event, options: { maxWaitMs?: number }
  * otherwise a deterministic stub so the pipeline runs without credentials.
  */
 export function useSummarizer(event: H3Event): Summarizer {
+  return pickSummarizer(event, {})
+}
+
+/**
+ * The summarizer for one extraction step (ADR-0012): exactly one provider
+ * request per `summarizeChunk`, sent only if its slot is free now. A retry is
+ * the next step's attempt, recorded on the chunk, not a second request inside
+ * this one; a slot that is not free is a hold, which parks the chunk.
+ */
+export function useStepSummarizer(event: H3Event): Summarizer {
+  return pickSummarizer(event, { maxAttempts: 1, maxSlotWaitMs: 0 })
+}
+
+function pickSummarizer(event: H3Event, options: { maxAttempts?: number, maxSlotWaitMs?: number }): Summarizer {
   const config = useRuntimeConfig(event)
   const groqReady = requireAllOrNone('Groq', { NUXT_GROQ_API_KEY: config.groqApiKey })
   const summarizer = groqReady
-    ? createGroqSummarizer({ apiKey: config.groqApiKey, pacer: useGroqChatPacer(event) })
+    ? createGroqSummarizer({
+        apiKey: config.groqApiKey,
+        maxAttempts: options.maxAttempts,
+        pacer: useGroqChatPacer(event, { maxWaitMs: options.maxSlotWaitMs }),
+      })
     // Truthy, not === true: destr parses '1' to the number 1, not a boolean.
     : createStubSummarizer({
         injectCanary: !!config.summaryStubCanary,

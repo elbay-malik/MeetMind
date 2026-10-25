@@ -3,10 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { createStorage } from 'unstorage'
-import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, ExtractionStepResponse, Meeting } from '../../shared/types/meeting'
 
 // Isolated from summary-api.spec.ts: NUXT_SUMMARY_STUB_FAIL_ONCE_RETRYABLE
 // makes the stub throw a retryable error exactly ONCE for the whole server
@@ -42,39 +40,34 @@ async function transcribedMeeting(): Promise<Meeting> {
   return done.meeting
 }
 
-/** Simulate the retry cooldown having elapsed, without a real 60s wait. */
-async function backdateUpdatedAt(id: string, msAgo: number): Promise<void> {
-  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
-  const meeting = await storage.getItem<Meeting>(`meetings/${id}`)
-  if (!meeting) throw new Error(`no local meeting row for ${id}`)
-  await storage.setItem(`meetings/${id}`, { ...meeting, updatedAt: new Date(Date.now() - msAgo).toISOString() })
-}
-
 describe('summarization retryable failure', () => {
-  it('lands a retryable failure on a cooldown-gated failed state, not the ungated summarizing one', async () => {
+  it('parks the chunk with the failure shown, and the next step extracts it, without failing the meeting', async () => {
+    // Step-wise extraction (ADR-0012): a retryable failure on a chunk's first
+    // attempt parks it, and the next step is its second attempt. The meeting
+    // never shows `failed` for a hiccup the retry absorbs, and the chunks
+    // already finished are kept. That a second failure DOES fail it, behind the
+    // cooldown, is in extraction-steps.spec.ts, where failures can be scripted.
     const meeting = await transcribedMeeting()
-    const res = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
-    expect(res.status).toBe(502)
+    const step = async () => {
+      const res = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
+      return { status: res.status, body: await res.json() as ExtractionStepResponse & { summary?: unknown } }
+    }
 
-    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
-    // The bug this guards: a retryable failure used to reset straight to
-    // `summarizing` — the meeting's own pre-first-attempt state, which
-    // claim() reclaims with no cooldown gate at all.
-    expect(after.status).toBe('failed')
-    expect(after.failedStage).toBe('summarization')
+    const planned = await step()
+    expect(planned.status).toBe(202)
 
-    // An instant retry must still be refused.
-    const tooSoon = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
-    expect(tooSoon.status).toBe(409)
-    const body = await tooSoon.json()
-    expect(body.message).toMatch(/wait \d+s/)
+    const failed = await step()
+    expect(failed.status).toBe(202)
+    expect(failed.body.next).toBe('continue')
+    expect(failed.body.progress.lastError).toMatch(/stub-injected/)
+    expect(failed.body.meeting.status).toBe('indexing')
 
-    // Past the cooldown, and past the stub's single-shot failure, a retry
-    // succeeds normally.
-    await backdateUpdatedAt(meeting.id, 61_000)
-    const { meeting: recovered } = await $fetch<{ meeting: Meeting }>(
-      `/api/meetings/${meeting.id}/summarize`, { method: 'POST' },
-    )
-    expect(recovered.status).toBe('ready')
+    const extracted = await step()
+    expect(extracted.status).toBe(202)
+    expect(extracted.body.progress).toEqual({ done: 1, total: 1, lastError: null })
+
+    const done = await step()
+    expect(done.status).toBe(200)
+    expect(done.body.meeting.status).toBe('ready')
   })
 })

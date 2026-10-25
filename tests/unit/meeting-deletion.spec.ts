@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Meeting } from '#shared/types/meeting'
-import { audioObjectKey, SUMMARIZE_CLAIM_LEASE_MS, TRANSCRIBE_CLAIM_LEASE_MS } from '#shared/utils/meeting'
+import { audioObjectKey, TRANSCRIBE_CLAIM_LEASE_MS } from '#shared/utils/meeting'
 import type { MeetingRepository } from '../../server/utils/db/meetings'
 import type { PipelineRun } from '../../server/utils/db/pipeline'
 import {
@@ -98,21 +98,12 @@ describe('deletionBlocker', () => {
       expect(deletionBlocker(meeting('transcribing', now - TRANSCRIBE_CLAIM_LEASE_MS), now)).toBeNull()
     })
 
-    // Indexing holds the much longer summarise lease. Checking at a point
-    // past the transcribe lease but inside the summarise one proves the right
-    // lease is used for each status.
-    it('blocks an indexing meeting inside its (longer) lease, until the lease runs out', () => {
-      const blocker = deletionBlocker(meeting('indexing', now - 30 * MIN), now)
-      expect(blocker).not.toBeNull()
-      expect(blocker!.retryAfterSec).toBe((SUMMARIZE_CLAIM_LEASE_MS - 30 * MIN) / 1000)
-    })
-
-    it('still blocks an indexing meeting one millisecond before its lease ends', () => {
-      expect(deletionBlocker(meeting('indexing', now - SUMMARIZE_CLAIM_LEASE_MS + 1), now)).not.toBeNull()
-    })
-
-    it('allows an indexing meeting whose lease has run out', () => {
-      expect(deletionBlocker(meeting('indexing', now - SUMMARIZE_CLAIM_LEASE_MS), now)).toBeNull()
+    // Extraction runs in short steps under their own leases (ADR-0012), read
+    // from the run ledger below. Between steps nothing holds an `indexing`
+    // meeting, so its status alone -- even a moment old -- blocks nothing. The
+    // old 4 h status lease kept a paused extraction undeletable for hours.
+    it('allows an indexing meeting with no live step, however recently it moved', () => {
+      expect(deletionBlocker(meeting('indexing', now - 1), now)).toBeNull()
     })
   })
 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Meeting, MeetingStatus, SearchIndexStatus, TranscriptSegment } from '#shared/types/meeting'
+import type { ExtractionStepResponse, Meeting, MeetingStatus, SearchIndexStatus, TranscriptSegment } from '#shared/types/meeting'
 
 const route = useRoute()
 const meetingId = computed(() => String(route.params.id))
@@ -117,6 +117,10 @@ async function restoreActionFocus() {
 }
 
 const summarizing = ref(false)
+/** How far the extraction this page is driving has got, from the last step's answer. */
+const extraction = ref<ExtractionStepResponse['progress'] | null>(null)
+/** Stops the extraction loop when the page goes away; the run parks and resumes when reopened. */
+let unmounted = false
 
 async function startSummary() {
   // Guarded rather than disabled: a disabled button loses focus, which is the
@@ -131,15 +135,30 @@ async function startSummary() {
   // announcing "Transcription finished" again for an already-summarized,
   // ready meeting.
   justFinished.value = false
+  extraction.value = null
   try {
-    await $fetch(`/api/meetings/${meetingId.value}/summarize`, { method: 'POST' })
-    justSummarized.value = true
+    // One step per request (ADR-0012): ask again until the summary is stored,
+    // waiting when the server says when to come back. The jitter keeps two
+    // tabs that were told the same moment from arriving together.
+    let finished = false
+    while (!finished && !unmounted) {
+      const res = await $fetch.raw<ExtractionStepResponse>(`/api/meetings/${meetingId.value}/summarize`, { method: 'POST' })
+      finished = res.status !== 202
+      const step = res._data
+      if (finished || !step) continue
+      extraction.value = step.progress
+      if (step.next === 'wait' && step.retryAt) {
+        await sleep(Math.max(0, Date.parse(step.retryAt) - Date.now()) + Math.random() * 2000)
+      }
+    }
+    if (finished) justSummarized.value = true
   }
   catch (err) {
     stepError.value = { step: 'Extraction failed', message: describeError(err) }
   }
   finally {
     summarizing.value = false
+    extraction.value = null
     await reloadAll()
     await restoreActionFocus()
   }
@@ -197,8 +216,11 @@ onMounted(() => {
   }, POLL_MS)
 })
 onUnmounted(() => {
+  unmounted = true
   if (poller) clearInterval(poller)
 })
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 /** The server's message when it gave one, rather than a generic failure. */
 function describeError(err: unknown): string {
@@ -279,8 +301,14 @@ const canSummarize = computed(() =>
   meeting.value.status === 'summarizing'
   || (meeting.value.status === 'failed' && meeting.value.failedStage === 'summarization'))
 
-/** An in-flight claim nothing can still be holding — see claimLooksStale. */
-const canResume = computed(() => claimLooksStale(meeting.value, now.value))
+/**
+ * An in-flight claim nothing can still be holding — see claimLooksStale — or
+ * an extraction this page is not driving. Extraction moves only while a page
+ * asks it to (ADR-0012), so one left `indexing` is paused until someone
+ * resumes it; if another tab is driving it, resuming here just takes turns.
+ */
+const canResume = computed(() =>
+  claimLooksStale(meeting.value, now.value) || (meeting.value.status === 'indexing' && !summarizing.value))
 
 /** The failure with no retry at all: the audio was rejected and removed. */
 
@@ -324,7 +352,12 @@ const primaryAction = computed(() => {
  * in the same element the in-progress message did.
  */
 const activityLabel = computed(() => {
-  if (summarizing.value) return 'Extracting decisions and action items.'
+  if (summarizing.value) {
+    const step = extraction.value
+    if (!step?.total) return 'Extracting decisions and action items.'
+    const retrying = step.lastError ? ' The last attempt did not finish; it will be retried.' : ''
+    return `Extracting decisions and action items: ${step.done} of ${step.total} parts done.${retrying}`
+  }
   if (transcribing.value) return 'Transcribing. This can take a moment.'
   // A claim nothing can still be holding is not "running", and saying so left
   // the only message on the card actively misleading for as long as the page
@@ -332,12 +365,9 @@ const activityLabel = computed(() => {
   if (canResume.value) {
     return meeting.value.status === 'transcribing'
       ? 'Transcription stopped before it finished. Resume it to try again.'
-      : 'Extraction stopped before it finished. Resume it to try again.'
+      : 'Extraction is paused, or running in another tab. Resume it here to carry on.'
   }
   if (meeting.value.status === 'transcribing') return 'Transcription is running.'
-  // Another tab, or a request that outlived its page, can leave a meeting
-  // claimed here with nothing visibly running on THIS page.
-  if (meeting.value.status === 'indexing') return 'Extraction is running.'
   // Both completions are announced, not just transcription's: this region is
   // the only thing a screen reader hears, and it used to go from "Extracting
   // decisions and action items." straight to empty, which announces nothing
