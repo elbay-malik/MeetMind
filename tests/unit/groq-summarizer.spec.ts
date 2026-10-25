@@ -1,5 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createGroqSummarizer, createRequestPacer } from '../../server/utils/summary/groq'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { createLocalSlotRepository } from '../../server/utils/db/slots-local'
+import { createGroqSummarizer, createSlotPacer, type RequestPacer } from '../../server/utils/summary/groq'
 import type { SummarizationError } from '../../server/utils/summary/summarizer'
 import type { TranscriptSegment } from '../../shared/types/meeting'
 
@@ -22,12 +26,39 @@ interface GroqRequest {
   }
 }
 
-// minRequestIntervalMs: 0 — these tests are not about pacing (that has its
-// own test below, with its own summarizer and a real, small interval), and
-// several exercise a within-call retry, which is paced exactly like a new
-// chunk since the pacing fix. Left at the real default they would each wait
-// out a real 60s here for no reason.
-const summarizer = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 2, minRequestIntervalMs: 0 })
+/** Records each 429 the summarizer reports to its pacer, and paces nothing. */
+const rateLimited: number[] = []
+const unpaced: RequestPacer = {
+  wait: async () => {},
+  rateLimited: async (ms) => {
+    rateLimited.push(ms)
+  },
+}
+
+/**
+ * Pacing tests space SLOTS 400 ms apart and assert sends at least 200 ms
+ * apart. The slack is real, not padding: a caller that slept re-reads the
+ * ledger before sending (see createSlotPacer), so its send can trail its slot
+ * by a few milliseconds -- tens under a loaded test run. Unpaced, the gap is ~0.
+ *
+ * A real slot ledger (the local driver) in a fresh directory. Each call to
+ * `pacer()` is what one HTTP request builds; pacers from the same ledger share
+ * its slots, which is how two requests -- or two isolates -- are paced against
+ * each other in production.
+ */
+const ledgerRoot = mkdtempSync(join(tmpdir(), 'meetmind-slots-'))
+afterAll(() => rmSync(ledgerRoot, { recursive: true, force: true }))
+
+function ledger(intervalMs: number) {
+  const slots = createLocalSlotRepository({ dataDir: mkdtempSync(join(ledgerRoot, 'ledger-')) })
+  return { pacer: () => createSlotPacer({ slots, provider: 'groq-chat', intervalMs }) }
+}
+
+// Unpaced: these tests are not about pacing (that has its own tests below,
+// with a real, small interval), and several exercise a within-call retry,
+// which is paced exactly like a new chunk. At the real interval they would
+// each wait out a real 60s here for no reason.
+const summarizer = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 2, pacer: unpaced })
 
 const reply = (payload: unknown) => new Response(JSON.stringify({
   choices: [{ message: { content: JSON.stringify(payload) } }],
@@ -68,7 +99,10 @@ function stubFetch(responses: (Response | (() => never))[]) {
   return calls
 }
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  rateLimited.length = 0
+})
 
 describe('request', () => {
   it('asks for strict structured output from a model that supports it', async () => {
@@ -177,7 +211,7 @@ describe('response', () => {
       { idx: 0, startMs: 0, endMs: 1000, text: bigText },
       { idx: 1, startMs: 1000, endMs: 2000, text: bigText },
     ]
-    const paced = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, minRequestIntervalMs: 200 })
+    const paced = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: ledger(400).pacer() })
     const calls = stubFetch([
       reply({ summary: '', decisions: [], actionItems: [] }),
       reply({ summary: '', decisions: [], actionItems: [] }),
@@ -187,14 +221,14 @@ describe('response', () => {
 
     expect(calls).toHaveLength(2)
     expect(requestGaps()).toHaveLength(1)
-    expect(Math.min(...requestGaps())).toBeGreaterThanOrEqual(180)
+    expect(Math.min(...requestGaps())).toBeGreaterThanOrEqual(200)
   })
 
   it('paces a within-chunk retry exactly like a new chunk', async () => {
     // A retry from withRetries is a real request too, and can consume close
     // to the same chunk's whole token budget — just as capable of landing in
     // the same rolling minute as its own first attempt as a new chunk is.
-    const paced = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 2, minRequestIntervalMs: 200 })
+    const paced = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 2, pacer: ledger(400).pacer() })
     const calls = stubFetch([
       reply({ summary: 'x' }), // malformed: triggers a retry
       reply({ summary: '', decisions: [], actionItems: [] }),
@@ -203,18 +237,18 @@ describe('response', () => {
     await paced.summarize({ segments })
 
     expect(calls).toHaveLength(2)
-    expect(Math.min(...requestGaps())).toBeGreaterThanOrEqual(180)
+    expect(Math.min(...requestGaps())).toBeGreaterThanOrEqual(200)
   })
 
-  it('paces across summarizer instances that share a pacer, since the rate limit is per account', async () => {
-    // useSummarizer builds a fresh Summarizer per HTTP request, so two
-    // instances stand in for two concurrent extractions of DIFFERENT
-    // meetings. Each is internally paced on its own either way; a shared
-    // pacer is what keeps them from together exceeding the same
-    // per-account rolling-minute allowance neither alone would hit.
-    const sharedPacer = createRequestPacer(200)
-    const meetingA = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: sharedPacer })
-    const meetingB = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: sharedPacer })
+  it('paces across summarizers that share a slot ledger, since the rate limit is per account', async () => {
+    // useSummarizer builds a fresh Summarizer and a fresh pacer per HTTP
+    // request, so two instances stand in for two concurrent extractions of
+    // DIFFERENT meetings -- on Workers, quite possibly in different isolates.
+    // Nothing in memory is shared between them; only the ledger is, and that
+    // is what keeps them from together exceeding the per-account allowance.
+    const shared = ledger(400)
+    const meetingA = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: shared.pacer() })
+    const meetingB = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: shared.pacer() })
     stubFetch([
       reply({ summary: '', decisions: [], actionItems: [] }),
       reply({ summary: '', decisions: [], actionItems: [] }),
@@ -224,7 +258,7 @@ describe('response', () => {
     await meetingB.summarize({ segments })
 
     expect(requestGaps()).toHaveLength(1)
-    expect(Math.min(...requestGaps())).toBeGreaterThanOrEqual(180)
+    expect(Math.min(...requestGaps())).toBeGreaterThanOrEqual(200)
   })
 
   it('serializes TRULY concurrent callers of a shared pacer, not just sequentially-awaited ones', async () => {
@@ -245,16 +279,16 @@ describe('response', () => {
       return reply({ summary: '', decisions: [], actionItems: [] })
     })
 
-    const sharedPacer = createRequestPacer(200)
-    await sharedPacer.wait()
+    const shared = ledger(400)
+    await shared.pacer().wait()
 
-    const meetingA = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: sharedPacer })
-    const meetingB = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: sharedPacer })
+    const meetingA = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: shared.pacer() })
+    const meetingB = createGroqSummarizer({ apiKey: 'gsk-test', maxAttempts: 1, pacer: shared.pacer() })
 
     await Promise.all([meetingA.summarize({ segments }), meetingB.summarize({ segments })])
 
     expect(requestTimestamps).toHaveLength(2)
-    expect(Math.abs(requestTimestamps[1]! - requestTimestamps[0]!)).toBeGreaterThanOrEqual(180)
+    expect(Math.abs(requestTimestamps[1]! - requestTimestamps[0]!)).toBeGreaterThanOrEqual(200)
   })
 
   it('does not call the provider at all for an empty transcript', async () => {
@@ -290,13 +324,17 @@ describe('failures and retries', () => {
     // 60s cooldown before a failed meeting can be retried (summarize.post.ts)
     // is where the actual backoff lives.
     const calls = stubFetch([
-      new Response('rate limited', { status: 429, headers: { 'retry-after': '60' } }),
-      new Response('rate limited', { status: 429, headers: { 'retry-after': '60' } }),
+      new Response('rate limited', { status: 429, headers: { 'retry-after': '17' } }),
+      new Response('rate limited', { status: 429, headers: { 'retry-after': '17' } }),
     ])
     const err = await summarizer.summarize({ segments }).catch((e: SummarizationError) => e)
-    expect(err.message).toMatch(/quota is exhausted.*60s/s)
+    expect(err.message).toMatch(/quota is exhausted.*17s/s)
     expect(err.retryable).toBe(false)
     expect(calls).toHaveLength(1)
+    // And it reached the shared ledger, so every other caller -- in any
+    // isolate -- waits out the same 17s instead of colliding again. 17, not
+    // 60: a summarizer that ignored the header would record the 60s default.
+    expect(rateLimited).toEqual([17_000])
   })
 
   // What a reply cut off by the output budget looks like on the wire: the

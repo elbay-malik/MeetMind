@@ -11,6 +11,12 @@ import type { CrossMeetingMatchRow, TranscriptWindowRow, WindowMatchRow } from '
 export interface Database {
   public: {
     Tables: {
+      provider_slots: {
+        Row: { provider: string, next_available_at: string, blocked_until: string }
+        Insert: { provider: string, next_available_at?: string, blocked_until?: string }
+        Update: Partial<{ provider: string, next_available_at: string, blocked_until: string }>
+        Relationships: []
+      }
       meetings: {
         Row: MeetingRow
         Insert: Omit<MeetingRow, 'created_at' | 'updated_at' | 'audio_mime'>
@@ -80,6 +86,22 @@ export interface Database {
         }
         /** A bigint, which PostgREST sends as a number or a string. */
         Returns: number | string
+      }
+      reserve_slot: {
+        Args: {
+          p_provider: string
+          p_interval_ms: number
+          p_max_wait_ms: number
+        }
+        /** One row: granted, and the slot's start (or when the next one frees). */
+        Returns: { granted: boolean, slot_at: string }[]
+      }
+      note_rate_limit: {
+        Args: {
+          p_provider: string
+          p_retry_after_ms: number
+        }
+        Returns: undefined
       }
     }
     Enums: Record<string, never>

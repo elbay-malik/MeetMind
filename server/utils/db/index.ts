@@ -11,6 +11,9 @@ import type { SummaryRepository } from './summaries'
 import { createLocalTranscriptIndexRepository } from './windows-local'
 import { createSupabaseTranscriptIndexRepository } from './windows-supabase'
 import type { TranscriptIndexRepository } from './windows'
+import { createLocalSlotRepository } from './slots-local'
+import { createSupabaseSlotRepository } from './slots-supabase'
+import type { SlotRepository } from './slots'
 import { requireAllOrNone } from '../storage'
 
 let announced = false
@@ -73,4 +76,16 @@ export function useTranscriptIndexRepository(event: H3Event): TranscriptIndexRep
   return supabaseReady
     ? createSupabaseTranscriptIndexRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey })
     : createLocalTranscriptIndexRepository({ dataDir: config.dataDir })
+}
+
+/** Provider request slots (ADR-0012), chosen the same way as the other repositories. */
+export function useSlotRepository(event: H3Event): SlotRepository {
+  const config = useRuntimeConfig(event)
+  const supabaseReady = requireAllOrNone('Supabase', {
+    NUXT_SUPABASE_URL: config.supabaseUrl,
+    NUXT_SUPABASE_SERVICE_KEY: config.supabaseServiceKey,
+  })
+  return supabaseReady
+    ? createSupabaseSlotRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey })
+    : createLocalSlotRepository({ dataDir: config.dataDir })
 }

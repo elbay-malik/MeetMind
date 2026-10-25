@@ -292,6 +292,41 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
       await client.from('meetings').delete().eq('id', deleteId)
     }
   })
+
+  it('gives concurrent callers distinct request slots one interval apart, over the real RPC', async () => {
+    // The whole point of the slot ledger (ADR-0012): several isolates asking at
+    // once must each get their own slot. Only the database can prove that --
+    // the local driver's queue is a stand-in for the row lock, not the lock.
+    // A 'verify-' provider of its own, so the app's real 'groq-chat' slot is
+    // never touched.
+    const { createSupabaseSlotRepository } = await import('../../server/utils/db/slots-supabase')
+    const slots = createSupabaseSlotRepository({
+      url: process.env.NUXT_SUPABASE_URL!,
+      serviceKey: process.env.NUXT_SUPABASE_SERVICE_KEY!,
+    })
+    const provider = `verify-${crypto.randomUUID()}` as 'groq-chat'
+    const client = await db()
+    try {
+      const grants = await Promise.all(Array.from({ length: 6 }, () =>
+        slots.reserve(provider, { intervalMs: 1000, maxWaitMs: 60_000 })))
+      expect(grants.every(g => g.granted), `${JSON.stringify(grants)} — is the slot migration applied?`).toBe(true)
+      const starts = grants.map(g => (g.granted ? g.slotAt.getTime() : 0)).sort((a, b) => a - b)
+      for (let i = 1; i < starts.length; i++) expect(starts[i]! - starts[i - 1]!).toBe(1000)
+
+      // A caller that will not wait is refused, told when the next slot frees,
+      // and reserves nothing.
+      const refused = await slots.reserve(provider, { intervalMs: 1000, maxWaitMs: 0 })
+      expect(refused).toMatchObject({ granted: false })
+      if (!refused.granted) expect(refused.retryAt.getTime()).toBe(starts.at(-1)! + 1000)
+
+      // A provider's Retry-After holds every caller off.
+      await slots.noteRateLimit(provider, 120_000)
+      expect((await slots.reserve(provider, { intervalMs: 0, maxWaitMs: 60_000 })).granted).toBe(false)
+    }
+    finally {
+      await client.from('provider_slots').delete().eq('provider', provider)
+    }
+  })
 })
 
 // ----------------------------------------------------------------------- Groq

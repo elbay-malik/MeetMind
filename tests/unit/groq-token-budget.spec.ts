@@ -40,7 +40,7 @@ afterEach(() => vi.unstubAllGlobals())
 
 describe('per-request token budget', () => {
   it('fits a full summary chunk and its whole output budget inside one minute\'s allowance', async () => {
-    const summarizer = createGroqSummarizer({ apiKey: 'k', minRequestIntervalMs: 0 })
+    const summarizer = createGroqSummarizer({ apiKey: 'k', pacer: { wait: async () => {}, rateLimited: async () => {} } })
     const overhead = await fixedOverheadTokens(
       () => summarizer.summarize({ segments: [segment] }),
       { summary: '', decisions: [], actionItems: [] },
@@ -49,7 +49,7 @@ describe('per-request token budget', () => {
   })
 
   it('fits the largest possible question context and its whole output budget inside one minute\'s allowance', async () => {
-    const answerer = createGroqAnswerer({ apiKey: 'k', pacer: { wait: async () => {} } })
+    const answerer = createGroqAnswerer({ apiKey: 'k', pacer: { wait: async () => {}, rateLimited: async () => {} } })
     const overhead = await fixedOverheadTokens(
       () => answerer.answer({ question: 'q', segments: [segment] }),
       { citations: [], answer: '' },

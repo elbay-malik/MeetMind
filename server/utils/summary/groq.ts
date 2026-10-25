@@ -4,6 +4,7 @@ import { wireSummarySchema, type WireSummary } from '#shared/schemas/summary'
 import { planChunks } from './plan'
 import { reconcile } from './reconcile'
 import { SummarizationError, type SummarizeInput, type Summarizer } from './summarizer'
+import type { SlotProvider, SlotRepository } from '../db/slots'
 
 // Exported for the question answerer (server/utils/qa/groq-answerer.ts), which
 // talks to the same model under the same per-account limit.
@@ -134,63 +135,125 @@ export interface GroqSummarizerOptions {
   /** Attempts per chunk when the reply is unusable. One retry is usually enough. */
   maxAttempts?: number
   /**
-   * Minimum time between the start of one request and the next — EVERY
-   * request (a fresh chunk or a within-chunk retry alike), not just the
-   * first attempt of each chunk. Sequential alone does not pace anything:
-   * two 5,000-token requests (a full CHUNK_BUDGET_TOKENS each) can both land
-   * inside the SAME rolling-minute window and still exceed the provider's
-   * ~8,000-token aggregate allowance, even though each fits comfortably
-   * under the per-request budget on its own — and a chunk's own retry is
-   * exactly as capable of that collision as a new chunk is. Only used to
-   * build the default pacer when `pacer` is not given; ignored otherwise.
+   * Paces EVERY request -- a fresh chunk or a within-chunk retry alike -- against
+   * the provider's per-account allowance. Sequential alone paces nothing: two
+   * full chunks sent back to back can land in the same rolling minute and
+   * exceed it, and so can a chunk and its own retry, or two meetings
+   * extracting at once. Required, so nothing can build an unpaced summarizer by
+   * omission; production passes {@link createSlotPacer}.
    */
-  minRequestIntervalMs?: number
-  /**
-   * Share pacing across summarizer instances. `useSummarizer` builds a fresh
-   * Summarizer per HTTP request, but the provider's rate limit is per
-   * ACCOUNT, not per meeting — two different meetings extracting at once
-   * would otherwise each pace only against their own requests and could
-   * together still exceed the aggregate limit. Production passes one shared
-   * pacer (module-level in server/utils/summary/index.ts); a test that
-   * constructs a summarizer directly gets an isolated one by default, which
-   * is what keeps unrelated tests from waiting on each other.
-   */
-  pacer?: RequestPacer
+  pacer: RequestPacer
 }
 
 export interface RequestPacer {
-  /** Resolves once at least `minIntervalMs` has passed since the previous
-   * call's own reserved slot — immediately, the first time. */
+  /**
+   * Resolves when this caller's request slot starts. Throws
+   * {@link ProviderBusyError} when no slot starts within the caller's wait.
+   */
   wait(): Promise<void>
+  /** The provider refused with a 429: hold every caller off for `retryAfterMs`. */
+  rateLimited(retryAfterMs: number): Promise<void>
 }
+
+/** No request slot starts within the caller's wait; `retryAt` is when the next frees. */
+export class ProviderBusyError extends Error {
+  constructor(readonly retryAt: Date) {
+    super(`The provider is busy until ${retryAt.toISOString()}`)
+    this.name = 'ProviderBusyError'
+  }
+}
+
+/**
+ * How long a caller waits in-request for its slot. Long, for now: the routes
+ * still run a whole extraction in one request and have nowhere else to wait.
+ * ADR-0012's step-wise routes stop waiting server-side and return `retryAt`.
+ */
+export const DEFAULT_MAX_SLOT_WAIT_MS = 10 * 60_000
+
+/** A 429 that names no wait still means "not now"; a minute is the allowance's own window. */
+export const DEFAULT_RATE_LIMIT_BLOCK_MS = 60_000
+
+/**
+ * The longest block a Retry-After can impose. Groq's longest window is a day,
+ * and a larger value would overflow the ledger's millisecond parameter.
+ */
+export const MAX_RATE_LIMIT_BLOCK_MS = 24 * 60 * 60_000
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
-export function createRequestPacer(minIntervalMs: number): RequestPacer {
-  let nextAvailableAt = 0
+/**
+ * Pace requests through the shared slot ledger (ADR-0012), which every server
+ * instance sees. It replaces an in-memory queue that, on Workers, paced only the
+ * isolate it lived in -- and many isolates run at once.
+ */
+export function createSlotPacer(options: {
+  slots: SlotRepository
+  provider: SlotProvider
+  intervalMs: number
+  maxWaitMs?: number
+}): RequestPacer {
+  const maxWaitMs = options.maxWaitMs ?? DEFAULT_MAX_SLOT_WAIT_MS
+  // Refused here, at construction, so a mistyped NUXT_GROQ_CHAT_INTERVAL_MS
+  // fails the first request with its name rather than reaching the ledger as
+  // NaN -- a NULL slot in SQL, and pacing silently off in the local driver.
+  if (!Number.isInteger(options.intervalMs) || options.intervalMs < 0) {
+    throw new Error(`The ${options.provider} request interval must be a whole number of milliseconds, got ${options.intervalMs}`)
+  }
   return {
     async wait() {
-      // Reserves the next slot SYNCHRONOUSLY, before awaiting anything: two
-      // genuinely concurrent callers (Promise.all, not just two sequential
-      // awaited calls) would otherwise both read the same previousStartedAt,
-      // both sleep the same remainder, and both fire together — defeating
-      // pacing for exactly the case it exists for. Reserving first means the
-      // second caller's own reservation always accounts for the first's,
-      // even when both call wait() in the same synchronous tick.
-      const now = Date.now()
-      const scheduledAt = Math.max(now, nextAvailableAt)
-      nextAvailableAt = scheduledAt + minIntervalMs
-      const remaining = scheduledAt - now
-      if (remaining > 0) await sleep(remaining)
+      const reservation = await options.slots.reserve(options.provider, { intervalMs: options.intervalMs, maxWaitMs })
+      if (!reservation.granted) throw new ProviderBusyError(reservation.retryAt)
+      const remaining = reservation.slotAt.getTime() - Date.now()
+      if (remaining <= 0) return
+      await sleep(remaining)
+      // While this caller slept, an earlier one may have been refused with a
+      // 429. Its Retry-After applies to slots handed out before it as well, so
+      // sending now would only collect another 429 and keep the account
+      // throttled. Checked only after a real wait: a caller sent at once has
+      // given no other request time to be refused.
+      const blocked = await options.slots.blockedUntil(options.provider)
+      if (blocked) throw new ProviderBusyError(blocked)
+    },
+    async rateLimited(ms) {
+      // Best effort. The provider's 429 is what the caller must see -- the
+      // routes' cooldowns depend on it -- and a failure to record it must not
+      // replace it with a database error.
+      try {
+        await options.slots.noteRateLimit(options.provider, ms)
+      }
+      catch (err) {
+        console.warn('[meetmind] could not record a provider rate limit:', err)
+      }
     },
   }
+}
+
+/**
+ * A `Retry-After` header in milliseconds: delta-seconds or an HTTP date, per
+ * RFC 9110. Missing or unreadable means {@link DEFAULT_RATE_LIMIT_BLOCK_MS}.
+ */
+export function retryAfterMs(header: string | null, now: number = Date.now()): number {
+  return Math.min(parseRetryAfterMs(header, now), MAX_RATE_LIMIT_BLOCK_MS)
+}
+
+function parseRetryAfterMs(header: string | null, now: number): number {
+  const value = header?.trim() ?? ''
+  // A number is only ever delta-seconds. Date.parse would read "-5" as a year
+  // and turn a malformed header into "no wait at all".
+  if (/^[+-]?\d+(\.\d+)?$/.test(value)) {
+    const seconds = Number(value)
+    return seconds >= 0 ? seconds * 1000 : DEFAULT_RATE_LIMIT_BLOCK_MS
+  }
+  const date = value ? Date.parse(value) : Number.NaN
+  if (Number.isFinite(date)) return Math.max(0, date - now)
+  return DEFAULT_RATE_LIMIT_BLOCK_MS
 }
 
 export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer {
   const endpoint = options.endpoint ?? ENDPOINT
   const timeoutMs = options.timeoutMs ?? 90_000
   const maxAttempts = options.maxAttempts ?? 2
-  const pacer = options.pacer ?? createRequestPacer(options.minRequestIntervalMs ?? 60_000)
+  const pacer = options.pacer
   const jsonSchema = toStrictJsonSchema(wireSummarySchema)
 
   async function askOnce(transcript: string): Promise<WireSummary> {
@@ -221,7 +284,11 @@ export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer
       throw new SummarizationError(`Could not reach the summarization service: ${detail}`, 502, true)
     })
 
-    if (!response.ok) throw await describeFailure(response)
+    if (!response.ok) {
+      // Recorded before anything else, so every other caller waits it out too.
+      if (response.status === 429) await pacer.rateLimited(retryAfterMs(response.headers.get('retry-after')))
+      throw await describeFailure(response)
+    }
 
     const body = await response.json().catch(() => {
       throw new SummarizationError('The summarization service returned an unreadable body', 502, true)
@@ -270,7 +337,25 @@ export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer
       // concurrent call for an entirely different meeting — can both land in
       // the same rolling minute and exceed the provider's per-ACCOUNT limit.
       async function pacedAskOnce(transcript: string): Promise<WireSummary> {
-        await pacer.wait()
+        try {
+          await pacer.wait()
+        }
+        catch (err) {
+          if (err instanceof ProviderBusyError) {
+            // Same shape as the provider's own 429, which summarize.post.ts
+            // already turns into a cooldown-gated failure.
+            throw new SummarizationError(
+              `Summarization is queued behind other requests. Try again after ${err.retryAt.toISOString()}.`,
+              429,
+              false,
+            )
+          }
+          // The ledger itself failed (a database blip). Retryable, like a
+          // network error reaching the provider, and worded for the user: the
+          // database's own message is logged, not stored on the meeting.
+          console.warn('[meetmind] could not reserve a request slot:', err)
+          throw new SummarizationError('Could not schedule the summarization request. Try again shortly.', 503, true)
+        }
         return askOnce(transcript)
       }
 

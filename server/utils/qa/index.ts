@@ -1,6 +1,6 @@
 import type { H3Event } from 'h3'
 import { requireAllOrNone } from '../storage'
-import { sharedGroqPacer } from '../summary'
+import { useGroqChatPacer } from '../summary'
 import type { Answerer } from './answerer'
 import { createGroqAnswerer } from './groq-answerer'
 import { createStubAnswerer } from './stub-answerer'
@@ -42,7 +42,7 @@ export function useAnswerer(event: H3Event): Answerer {
   const config = useRuntimeConfig(event)
   const groqReady = requireAllOrNone('Groq', { NUXT_GROQ_API_KEY: config.groqApiKey })
   const answerer = groqReady
-    ? createGroqAnswerer({ apiKey: config.groqApiKey, pacer: sharedGroqPacer })
+    ? createGroqAnswerer({ apiKey: config.groqApiKey, pacer: useGroqChatPacer(event) })
     : createStubAnswerer()
   if (!answererAnnounced && answerer.kind === 'stub') {
     answererAnnounced = true

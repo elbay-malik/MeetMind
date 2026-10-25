@@ -1,5 +1,6 @@
 import type { H3Event } from 'h3'
-import { createGroqSummarizer, createRequestPacer } from './groq'
+import { useSlotRepository } from '../db'
+import { createGroqSummarizer, createSlotPacer, type RequestPacer } from './groq'
 import { createStubSummarizer } from './stub'
 import type { Summarizer } from './summarizer'
 import { requireAllOrNone } from '../storage'
@@ -13,15 +14,19 @@ function announce(kind: Summarizer['kind']) {
   }
 }
 
-// Module-level, not per-request: `useSummarizer` builds a fresh Summarizer
-// every call, but Groq's rate limit is per ACCOUNT, not per meeting. Two
-// concurrent extractions for different meetings pace only against their own
-// requests without this — each individually paced, but together still able
-// to exceed the aggregate limit neither alone would hit.
-// Exported because answering a question is a Groq request against the same
-// per-account allowance, so it has to wait in the same queue (ADR-0007
-// decision 7) rather than collide with an extraction chunk.
-export const sharedGroqPacer = createRequestPacer(60_000)
+/**
+ * The pacer for every Groq chat request -- extraction chunks and questions
+ * alike, since both spend the same per-account allowance (ADR-0007 decision 7).
+ * Its state lives in the slot ledger, not in this module: a module-level queue
+ * is per isolate on Workers and paced nothing across them (ADR-0012).
+ */
+export function useGroqChatPacer(event: H3Event): RequestPacer {
+  return createSlotPacer({
+    slots: useSlotRepository(event),
+    provider: 'groq-chat',
+    intervalMs: Number(useRuntimeConfig(event).groqChatIntervalMs),
+  })
+}
 
 /**
  * Pick the summarizer from runtime config: Groq when its key is present,
@@ -31,7 +36,7 @@ export function useSummarizer(event: H3Event): Summarizer {
   const config = useRuntimeConfig(event)
   const groqReady = requireAllOrNone('Groq', { NUXT_GROQ_API_KEY: config.groqApiKey })
   const summarizer = groqReady
-    ? createGroqSummarizer({ apiKey: config.groqApiKey, pacer: sharedGroqPacer })
+    ? createGroqSummarizer({ apiKey: config.groqApiKey, pacer: useGroqChatPacer(event) })
     // Truthy, not === true: destr parses '1' to the number 1, not a boolean.
     : createStubSummarizer({
         injectCanary: !!config.summaryStubCanary,

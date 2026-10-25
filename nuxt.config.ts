@@ -30,6 +30,11 @@ export default defineNuxtConfig({
     // means those routes answer 404; set means at least 32 characters, or they
     // refuse to run. Generate with `openssl rand -base64 32`.
     adminToken: '', // NUXT_ADMIN_TOKEN
+    // Minimum gap between Groq chat requests (extraction chunks and questions)
+    // across EVERY server instance, enforced through the slot ledger
+    // (ADR-0012). One request a minute fits the free tier's 8,000 tokens per
+    // minute for gpt-oss-120b. Lower only with a higher Groq tier.
+    groqChatIntervalMs: 60_000, // NUXT_GROQ_CHAT_INTERVAL_MS
     // Local drivers only (dev/tests): HMAC secret for upload URLs and data root.
     uploadTokenSecret: '', // NUXT_UPLOAD_TOKEN_SECRET (random per process when empty)
     dataDir: '.data', // NUXT_DATA_DIR

@@ -542,5 +542,63 @@ psql -q -c "delete from public.meetings where audio_key like 'sab_%';"
 check "stored_audio_bytes returns 0 rather than null for an empty table" \
   "select public.stored_audio_bytes(30, 900) = 0"
 
+
+# reserve_slot / note_rate_limit pace provider calls across every server
+# instance (ADR-0012). Each case mirrors one in tests/unit/slots.spec.ts, which
+# asserts the same rule against the local driver's reserveFrom.
+#
+# Every call runs as its OWN statement, its result kept in vm_r, and the checks
+# read state afterwards. A check that called the function and read
+# provider_slots in one statement would read the statement's starting snapshot,
+# never see the call's own writes, and pass "nothing changed" vacuously.
+psql -q -c "create table vm_r (label text primary key, granted boolean, slot_at timestamptz, taken_at timestamptz default clock_timestamp());"
+reserve() { # reserve <label> <provider> <interval_ms> <max_wait_ms>
+  psql -q -c "insert into vm_r (label, granted, slot_at) select '$1', granted, slot_at from public.reserve_slot('$2', $3, $4);"
+}
+next_at() { echo "(select next_available_at from public.provider_slots where provider = '$1')"; }
+r() { echo "(select $2 from vm_r where label = '$1')"; }
+
+check "provider_slots has RLS on and no policies" \
+  "select c.relrowsecurity and not exists (select 1 from pg_policy where polrelid = c.oid)
+   from pg_class c where c.oid = 'public.provider_slots'::regclass"
+
+reserve first vm_a 60000 0
+check "reserve_slot grants a free provider now" \
+  "select $(r first granted) and $(r first slot_at) between $(r first taken_at) - interval '5 seconds' and $(r first taken_at)"
+check "reserve_slot moves the next slot one interval past the grant" \
+  "select $(next_at vm_a) - $(r first slot_at) = interval '60 seconds'"
+
+reserve refused vm_a 60000 0
+check "reserve_slot refuses when the next slot is past the caller's wait, and says when it frees" \
+  "select not $(r refused granted) and $(r refused slot_at) = $(r first slot_at) + interval '60 seconds'"
+check "reserve_slot reserves NOTHING for a caller it refuses" \
+  "select $(next_at vm_a) = $(r first slot_at) + interval '60 seconds'"
+
+reserve waited vm_a 60000 120000
+check "reserve_slot places a waiting caller at the next slot, not now" \
+  "select $(r waited granted) and $(r waited slot_at) = $(r first slot_at) + interval '60 seconds'"
+check "and moves the next slot past that one" \
+  "select $(next_at vm_a) = $(r first slot_at) + interval '120 seconds'"
+
+psql -q -At -c "select public.note_rate_limit('vm_b', 90000);" >/dev/null
+reserve blocked vm_b 0 0
+check "reserve_slot places no slot before a provider's Retry-After" \
+  "select not $(r blocked granted) and $(r blocked slot_at) > $(r blocked taken_at) + interval '80 seconds'"
+reserve blockedwait vm_b 0 120000
+check "reserve_slot grants a waiting caller no earlier than the Retry-After" \
+  "select $(r blockedwait granted) and $(r blockedwait slot_at) > $(r blockedwait taken_at) + interval '80 seconds'"
+psql -q -At -c "select public.note_rate_limit('vm_b', 5000);" >/dev/null
+check "note_rate_limit never shortens a block" \
+  "select (select blocked_until from public.provider_slots where provider = 'vm_b') > clock_timestamp() + interval '80 seconds'"
+
+reject "reserve_slot refuses a negative interval rather than moving the next slot backwards" \
+  "select * from public.reserve_slot('vm_c', -1, 0)" "must be non-negative"
+reject "reserve_slot refuses a NULL wait rather than writing a NULL slot" \
+  "select * from public.reserve_slot('vm_c', 1000, null)" "must be non-negative"
+check "reserve_slot and note_rate_limit pin their search_path" \
+  "select bool_and('search_path=public' = any(proconfig)) and count(*) = 2
+   from pg_proc where proname in ('reserve_slot', 'note_rate_limit')"
+psql -q -c "drop table vm_r; delete from public.provider_slots where provider like 'vm_%';"
+
 echo
 echo "RESULT: PASS — $(ls supabase/migrations/*.sql | wc -l | tr -d ' ') migrations applied, all invariants hold"

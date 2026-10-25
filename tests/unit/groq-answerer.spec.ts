@@ -9,15 +9,19 @@ const segments: TranscriptSegment[] = [
   { idx: 11, startMs: 55_000, endMs: 59_800, text: 'Finance will circulate it on Monday.' },
 ]
 
-/** A pacer that counts how often it was waited on. */
+/** A pacer that counts how often it was waited on, and records each 429 it is told of. */
 function countingPacer() {
   const pacer = {
     waits: 0,
+    blocks: [] as number[],
     async wait() {
       pacer.waits++
     },
+    async rateLimited(ms: number) {
+      pacer.blocks.push(ms)
+    },
   }
-  return pacer as RequestPacer & { waits: number }
+  return pacer satisfies RequestPacer
 }
 
 const reply = (content: unknown) => Response.json({
@@ -94,12 +98,15 @@ describe('groq answerer', () => {
 
   it('reports a quota refusal as a 429 and does not retry into it', async () => {
     const bodies = stubGroq([() => new Response('slow down', { status: 429, headers: { 'retry-after': '12' } })])
-    const failure = await createGroqAnswerer({ apiKey: 'k', pacer: countingPacer() })
+    const pacer = countingPacer()
+    const failure = await createGroqAnswerer({ apiKey: 'k', pacer })
       .answer({ question: 'q', segments }).catch(e => e)
     expect(failure).toBeInstanceOf(AnswerError)
     expect(failure).toMatchObject({ statusCode: 429, retryable: false })
     expect(failure.message).toMatch(/12s/)
     expect(bodies).toHaveLength(1)
+    // Recorded on the shared ledger, so extraction waits it out as well.
+    expect(pacer.blocks).toEqual([12_000])
   })
 
   // Same model, same provider default of 3,072 output tokens, reasoning

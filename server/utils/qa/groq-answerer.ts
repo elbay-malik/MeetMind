@@ -5,7 +5,9 @@ import {
   ENDPOINT,
   isJsonValidationFailure,
   MODEL,
+  ProviderBusyError,
   REASONING_EFFORT,
+  retryAfterMs,
   toStrictJsonSchema,
   type RequestPacer,
 } from '../summary/groq'
@@ -59,7 +61,20 @@ export function createGroqAnswerer(options: GroqAnswererOptions): Answerer {
   const jsonSchema = toStrictJsonSchema(wireAnswerSchema)
 
   async function askOnce(input: AnswerInput): Promise<WireAnswer> {
-    await options.pacer.wait()
+    try {
+      await options.pacer.wait()
+    }
+    catch (err) {
+      if (err instanceof ProviderBusyError) {
+        throw new AnswerError(
+          `Questions are queued behind other requests. Try again after ${err.retryAt.toISOString()}.`,
+          429,
+          false,
+        )
+      }
+      console.warn('[meetmind] could not reserve a request slot:', err)
+      throw new AnswerError('Could not schedule the question. Try again shortly.', 503, true)
+    }
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -86,7 +101,11 @@ export function createGroqAnswerer(options: GroqAnswererOptions): Answerer {
       throw new AnswerError(`Could not reach the answering service: ${detail}`, 502, true)
     })
 
-    if (!response.ok) throw await describeFailure(response)
+    if (!response.ok) {
+      // Recorded before anything else, so every other caller waits it out too.
+      if (response.status === 429) await options.pacer.rateLimited(retryAfterMs(response.headers.get('retry-after')))
+      throw await describeFailure(response)
+    }
 
     const body = await response.json().catch(() => {
       throw new AnswerError('The answering service returned an unreadable body', 502, true)
