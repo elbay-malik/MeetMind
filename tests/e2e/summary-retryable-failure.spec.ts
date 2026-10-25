@@ -58,9 +58,19 @@ describe('summarization retryable failure', () => {
 
     const failed = await step()
     expect(failed.status).toBe(202)
-    expect(failed.body.next).toBe('continue')
     expect(failed.body.progress.lastError).toMatch(/stub-injected/)
     expect(failed.body.meeting.status).toBe('indexing')
+    // Parked for a few seconds, measured on the server, so a blip that is not
+    // the provider's is not retried into the chunk's last attempt at once.
+    expect(failed.body.next).toBe('wait')
+    expect(failed.body.retryAfterMs).toBeGreaterThan(3000)
+    expect(failed.body.retryAfterMs).toBeLessThanOrEqual(5000)
+
+    const tooSoon = await step()
+    expect(tooSoon.body.next).toBe('wait')
+    expect(tooSoon.body.progress.done).toBe(0)
+
+    await new Promise(resolve => setTimeout(resolve, tooSoon.body.retryAfterMs! + 100))
 
     const extracted = await step()
     expect(extracted.status).toBe(202)

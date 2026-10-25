@@ -104,7 +104,7 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
   return {
     kind: 'local',
 
-    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun = false, resetAttempts = false, moveTo }) {
+    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun = false, resetAttempts = false, moveTo, redo = false }) {
       assertValidLease(leaseMs)
       if (chunkNo !== undefined && newRun) throw new Error('A new run has no chunks to claim yet')
       return withLedger(meetingId, async (s, state) => {
@@ -123,7 +123,7 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
         const chunk = chunkNo === undefined ? undefined : state.chunks.find(c => c.chunkNo === chunkNo && c.runId === run.runId)
         if (chunkNo !== undefined) {
           if (!chunk) throw new Error(`Chunk ${chunkNo} is not in the current plan`)
-          if (chunk.result != null) return null
+          if (chunk.result != null && !redo) return null
         }
 
         run.stepToken = randomUUID()
@@ -134,6 +134,7 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
         let attempts = run.attempts
         if (chunk) {
           chunk.attempts = resetAttempts ? 1 : chunk.attempts + 1
+          if (redo) chunk.result = null
           attempts = chunk.attempts
         }
 
@@ -220,7 +221,8 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
           .sort((a, b) => a.chunkNo - b.chunkNo)
           .map(({ chunkNo, segFrom, segTo, estTokens, attempts, result }) => {
             const plan = { chunkNo, segFrom, segTo, estTokens }
-            return { ...plan, attempts, result: parseStoredResult(plan, result) }
+            const parsed = parseStoredResult(plan, result)
+            return { ...plan, attempts, result: parsed, unusable: result != null && parsed === null }
           })
       })
     },

@@ -250,7 +250,15 @@ describe('DELETE /api/meetings/:id while the meeting may still be written', () =
     await db.setItem(`pipeline/${meeting.id}`, ledger(Date.now() + 90_000))
     const refused = await del(meeting.id)
     expect(refused.status).toBe(409)
-    expect(Number(refused.headers.get('retry-after'))).toBeLessThanOrEqual(90)
+    const retryAfter = refused.headers.get('retry-after')
+    expect(retryAfter).not.toBeNull()
+    expect(Number(retryAfter)).toBeGreaterThan(0)
+    expect(Number(retryAfter)).toBeLessThanOrEqual(90)
+    // Refused means untouched: the row and its run are both still there.
+    const after = await fetch(`/api/meetings/${meeting.id}`)
+    expect(after.status).toBe(200)
+    expect(((await after.json()) as { meeting: Meeting }).meeting.status).toBe('indexing')
+    expect(await db.hasItem(`pipeline/${meeting.id}`)).toBe(true)
   })
 })
 

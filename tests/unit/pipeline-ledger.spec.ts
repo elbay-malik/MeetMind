@@ -421,8 +421,22 @@ describe('listChunks re-validates what it reads back', () => {
     await pipeline.recordChunk(m.id, claim.token, plan[0]!, result(2))
     await corrupt(m.id, 0, stored)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    expect((await pipeline.listChunks(m.id))[0]!.result).toBeNull()
+    expect((await pipeline.listChunks(m.id))[0]).toMatchObject({ result: null, unusable: true })
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/chunk 0 is unusable/))
+    warn.mockRestore()
+  })
+
+  // The claim sees the stored value, the reader does not: without `redo` the
+  // chunk would read as unfinished and be refused as done, for ever.
+  it('claims an unusable chunk only with redo, which clears the result', async () => {
+    const { m, pipeline, claim } = await planned()
+    await pipeline.recordChunk(m.id, claim.token, plan[0]!, result(2))
+    await corrupt(m.id, 0, { summary: 'damaged' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    expect(await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE, chunkNo: 0 })).toBeNull()
+    const redo = await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE, chunkNo: 0, redo: true })
+    expect(redo).toMatchObject({ attempts: 1 })
+    expect((await pipeline.listChunks(m.id))[0]).toMatchObject({ result: null, unusable: false })
     warn.mockRestore()
   })
 })

@@ -119,6 +119,11 @@ export interface ExtractionStepResponse {
   /** `continue`: ask again now. `wait`: ask again at `retryAt`. */
   next: 'continue' | 'wait'
   retryAt: string | null
+  /**
+   * The same wait as a duration measured on the server, so a client whose
+   * clock is off waits the right length rather than to the wrong instant.
+   */
+  retryAfterMs: number | null
 }
 
 /** Fields the client supplies when registering a meeting before uploading its audio. */
