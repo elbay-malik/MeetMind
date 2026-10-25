@@ -1,6 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createStorage } from 'unstorage'
+import fsDriver from 'unstorage/drivers/fs'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createLocalTranscriptRepository } from '../../server/utils/db/transcripts-local'
 import { createSupabaseTranscriptRepository } from '../../server/utils/db/transcripts-supabase'
@@ -69,6 +71,41 @@ describe('local transcript repository', () => {
     await repo.replaceForMeeting('m5', [])
     expect(await repo.listForMeeting('m5')).toEqual([])
   })
+
+  describe('deleteForMeeting', () => {
+    // Read straight from the JSON store: listForMeeting reads a missing file
+    // and an empty one identically, so only the store itself can show the
+    // file is gone rather than emptied.
+    const stored = (meetingId: string) =>
+      createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) }).hasItem(`transcripts/${meetingId}`)
+
+    it('removes the transcript file itself, not just its segments', async () => {
+      // Nothing cascades on this driver; a file left behind would outlive the
+      // meeting it belongs to, with nothing left that knows to remove it.
+      const repo = createLocalTranscriptRepository({ dataDir })
+      await repo.replaceForMeeting('d1', segments)
+      expect(await stored('d1')).toBe(true)
+      await repo.deleteForMeeting('d1')
+      expect(await stored('d1')).toBe(false)
+      expect(await repo.listForMeeting('d1')).toEqual([])
+    })
+
+    it('leaves other meetings\' transcripts alone', async () => {
+      const repo = createLocalTranscriptRepository({ dataDir })
+      await repo.replaceForMeeting('d2', segments)
+      await repo.replaceForMeeting('d3', segments)
+      await repo.deleteForMeeting('d2')
+      expect(await repo.listForMeeting('d3')).toEqual(segments)
+    })
+
+    it('is a no-op for a meeting with nothing stored, so a half-finished delete can be re-run', async () => {
+      const repo = createLocalTranscriptRepository({ dataDir })
+      await expect(repo.deleteForMeeting('never-stored')).resolves.toBeUndefined()
+      await repo.replaceForMeeting('d4', segments)
+      await repo.deleteForMeeting('d4')
+      await expect(repo.deleteForMeeting('d4')).resolves.toBeUndefined()
+    })
+  })
 })
 
 describe('supabase transcript repository', () => {
@@ -120,6 +157,30 @@ describe('supabase transcript repository', () => {
     expect(await repo.listForMeeting('m1')).toHaveLength(1000)
     // 1000 rows means "there may be more", so exactly one extra probe.
     expect(urls).toHaveLength(2)
+  })
+
+  it('deletes a whole transcript with one DELETE filtered to the meeting', async () => {
+    // Normally a no-op behind the meetings cascade, but the delete route runs
+    // it on both drivers; an unfiltered DELETE here would empty the table.
+    const calls: Request[] = []
+    vi.stubGlobal('fetch', async (input: string | Request, init?: RequestInit) => {
+      calls.push(typeof input === 'string' ? new Request(input, init) : input)
+      return new Response(null, { status: 204 })
+    })
+    await repo.deleteForMeeting('m1')
+    expect(calls).toHaveLength(1)
+    const url = new URL(calls[0]!.url)
+    expect(calls[0]!.method).toBe('DELETE')
+    expect(url.pathname).toBe('/rest/v1/transcript_segments')
+    expect(url.searchParams.get('meeting_id')).toBe('eq.m1')
+  })
+
+  it('surfaces a database error from the delete', async () => {
+    vi.stubGlobal('fetch', async () => new Response(
+      JSON.stringify({ code: '42501', message: 'permission denied', details: '', hint: '' }),
+      { status: 403, headers: { 'content-type': 'application/json' } },
+    ))
+    await expect(repo.deleteForMeeting('m1')).rejects.toThrow(/42501/)
   })
 
   it('asks for rows in transcript order', async () => {

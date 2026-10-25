@@ -218,6 +218,80 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
       await client.from('meetings').delete().eq('id', budgetId)
     }
   })
+
+  it('deletes a meeting only while its status and updated_at still match, and cascades everything under it', async () => {
+    // The unit tests prove the driver SENDS id, status and updated_at filters;
+    // only the real PostgREST proves they MATCH. updated_at round-trips as text
+    // with microseconds and an offset, and a value that came back from the
+    // database in one format but is compared in another would fence out every
+    // delete, or, worse, a dropped filter would let a stale delete win the
+    // race against a claim. The cascade is the other half: the admin route
+    // relies on the foreign keys, and a table added without `on delete cascade`
+    // would leave orphans no unit test can see.
+    const { createSupabaseMeetingRepository } = await import('../../server/utils/db/supabase')
+    const repo = createSupabaseMeetingRepository({
+      url: process.env.NUXT_SUPABASE_URL!,
+      serviceKey: process.env.NUXT_SUPABASE_SERVICE_KEY!,
+    })
+    const client = await db()
+    const deleteId = crypto.randomUUID()
+    const { error: insertError } = await client.from('meetings').insert({
+      ...newRow(), id: deleteId, audio_key: `verify-delete-${deleteId}/audio.ogg`,
+    })
+    expect(insertError, `${insertError?.code}: ${insertError?.message}`).toBeNull()
+
+    try {
+      const children = await Promise.all([
+        client.from('transcript_segments').insert({ meeting_id: deleteId, idx: 0, start_ms: 0, end_ms: 1000, text: 'We ship on Friday.' }),
+        client.from('meeting_summaries').insert({ meeting_id: deleteId, summary: 'verify-services probe', provider: 'stub' }),
+      ])
+      // The decision cites the segment, so it can only go in once that exists.
+      children.push(await client.from('meeting_decisions').insert({
+        meeting_id: deleteId, idx: 0, decision: 'Ship on Friday', quote: 'We ship on Friday.', segment_idx: 0, start_ms: 0,
+      }))
+      children.push(await client.from('transcript_windows').insert({
+        meeting_id: deleteId,
+        idx: 0,
+        first_segment_idx: 0,
+        last_segment_idx: 0,
+        start_ms: 0,
+        end_ms: 1000,
+        content: 'We ship on Friday.',
+        content_hash: '0'.repeat(64),
+        model: 'verify-services',
+        embedding: `[${Array.from({ length: 768 }, () => 0.01).join(',')}]`,
+      }))
+      for (const { error } of children) expect(error, `${error?.code}: ${error?.message}`).toBeNull()
+
+      // A stale view, made the way the route meets one: read the row, then
+      // something else writes it and the trigger advances updated_at.
+      const stale = (await repo.get(deleteId))!
+      const touched = await client.from('meetings').update({ title: 'verify-services probe (touched)' }).eq('id', deleteId)
+      expect(touched.error).toBeNull()
+      const fresh = (await repo.get(deleteId))!
+      expect(fresh.updatedAt, 'updated_at did not advance — is the trigger installed?').not.toBe(stale.updatedAt)
+
+      expect(await repo.delete(deleteId, { status: stale.status, updatedAt: stale.updatedAt })).toBeNull()
+      expect(await repo.get(deleteId), 'a stale updated_at deleted the row').not.toBeNull()
+      // Same for a status the row has already left, with the timestamp right.
+      expect(await repo.delete(deleteId, { status: 'transcribing', updatedAt: fresh.updatedAt })).toBeNull()
+      expect(await repo.get(deleteId), 'a stale status deleted the row').not.toBeNull()
+
+      // The value as read back is exactly what must match, with no reformatting.
+      const deleted = await repo.delete(deleteId, { status: fresh.status, updatedAt: fresh.updatedAt })
+      expect(deleted?.id, 'the current status and updated_at did not match the row').toBe(deleteId)
+      expect(await repo.get(deleteId)).toBeNull()
+
+      for (const tableName of ['transcript_segments', 'meeting_summaries', 'meeting_decisions', 'transcript_windows'] as const) {
+        const { data, error } = await client.from(tableName).select('meeting_id').eq('meeting_id', deleteId)
+        expect(error, `${tableName}: ${error?.code}: ${error?.message}`).toBeNull()
+        expect(data, `${tableName} kept rows for a deleted meeting — missing on delete cascade?`).toHaveLength(0)
+      }
+    }
+    finally {
+      await client.from('meetings').delete().eq('id', deleteId)
+    }
+  })
 })
 
 // ----------------------------------------------------------------------- Groq

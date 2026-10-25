@@ -1,6 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createStorage } from 'unstorage'
+import fsDriver from 'unstorage/drivers/fs'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createLocalSummaryRepository } from '../../server/utils/db/summaries-local'
 import { createSupabaseSummaryRepository } from '../../server/utils/db/summaries-supabase'
@@ -88,6 +90,38 @@ describe('local summary repository', () => {
     await repo.replaceForMeeting('m3', summary)
     expect(await repo.getForMeeting('m4')).toBeNull()
   })
+
+  describe('deleteForMeeting', () => {
+    const stored = (meetingId: string) =>
+      createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) }).hasItem(`summaries/${meetingId}`)
+
+    it('removes the summary file, and with it the decisions and action items it holds', async () => {
+      // Nothing cascades on this driver; a file left behind would outlive the
+      // meeting, verbatim quotes and all.
+      const repo = createLocalSummaryRepository({ dataDir })
+      await repo.replaceForMeeting('d1', summary)
+      expect(await stored('d1')).toBe(true)
+      await repo.deleteForMeeting('d1')
+      expect(await stored('d1')).toBe(false)
+      expect(await repo.getForMeeting('d1')).toBeNull()
+    })
+
+    it('leaves other meetings\' summaries alone', async () => {
+      const repo = createLocalSummaryRepository({ dataDir })
+      await repo.replaceForMeeting('d2', summary)
+      await repo.replaceForMeeting('d3', summary)
+      await repo.deleteForMeeting('d2')
+      expect(await repo.getForMeeting('d3')).toEqual(summary)
+    })
+
+    it('is a no-op for a meeting with nothing stored, so a half-finished delete can be re-run', async () => {
+      const repo = createLocalSummaryRepository({ dataDir })
+      await expect(repo.deleteForMeeting('never-stored')).resolves.toBeUndefined()
+      await repo.replaceForMeeting('d4', summary)
+      await repo.deleteForMeeting('d4')
+      await expect(repo.deleteForMeeting('d4')).resolves.toBeUndefined()
+    })
+  })
 })
 
 describe('supabase summary repository', () => {
@@ -171,6 +205,38 @@ describe('supabase summary repository', () => {
     })
     await expect(repo.replaceForMeeting('m1', summary)).rejects.toThrow(/23503/)
   })
+
+  it('deletes from all three tables, items before the summary, each filtered to the meeting', async () => {
+    // The cascade from meetings normally leaves nothing for these to find, but
+    // the method claims the same meaning on both drivers, so all three tables
+    // are stated. A missing filter would empty the table for every meeting.
+    const calls = stub({})
+    await repo.deleteForMeeting('m1')
+    expect(calls.map(c => [c.method, c.table])).toEqual([
+      ['DELETE', 'meeting_decisions'],
+      ['DELETE', 'meeting_action_items'],
+      ['DELETE', 'meeting_summaries'],
+    ])
+    for (const c of calls) expect(c.url.searchParams.get('meeting_id')).toBe('eq.m1')
+  })
+
+  it.each(['meeting_decisions', 'meeting_action_items', 'meeting_summaries'])(
+    'surfaces a database error from the %s delete, not just the first one',
+    async (failTable) => {
+      vi.stubGlobal('fetch', async (input: string | Request, init?: RequestInit) => {
+        const request = typeof input === 'string' ? new Request(input, init) : input
+        const table = new URL(request.url).pathname.replace('/rest/v1/', '')
+        if (table === failTable) {
+          return new Response(
+            JSON.stringify({ code: '42501', message: 'permission denied', details: '', hint: '' }),
+            { status: 403, headers: { 'content-type': 'application/json' } },
+          )
+        }
+        return new Response('[]', { headers: { 'content-type': 'application/json' } })
+      })
+      await expect(repo.deleteForMeeting('m1')).rejects.toThrow(/42501/)
+    },
+  )
 
   it('returns null when no summary row exists', async () => {
     stub({ meeting_summaries: [] })

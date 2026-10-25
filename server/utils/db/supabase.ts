@@ -96,6 +96,20 @@ export function createSupabaseMeetingRepository(options: SupabaseOptions): Meeti
       return total
     },
 
+    async delete(id, expected) {
+      // One DELETE ... WHERE id AND status AND updated_at RETURNING *, so the
+      // database decides: a claim that landed first leaves nothing to match.
+      const { data, error } = await table()
+        .delete()
+        .eq('id', id)
+        .eq('status', expected.status)
+        .eq('updated_at', expected.updatedAt)
+        .select()
+        .maybeSingle()
+      if (error) fail('delete', error)
+      return data ? rowToMeeting(data) : null
+    },
+
     async update(id, patch: MeetingPatch) {
       assertValidStatusPatch(patch)
       const { data, error } = await table()

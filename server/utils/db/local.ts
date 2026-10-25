@@ -136,6 +136,16 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
       })
     },
 
+    async delete(id, expected) {
+      return serialize(id, async () => {
+        const s = await storage()
+        const found = await s.getItem<Meeting>(meetingKey(id))
+        if (!found || found.status !== expected.status || found.updatedAt !== expected.updatedAt) return null
+        await s.removeItem(meetingKey(id))
+        return normalize(found)
+      })
+    },
+
     async claim(id, from, patch: MeetingPatch, expectedUpdatedAt) {
       assertValidStatusPatch(patch)
       return serialize(id, async () => {

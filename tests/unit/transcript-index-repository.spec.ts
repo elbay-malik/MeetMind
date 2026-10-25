@@ -1,6 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createStorage } from 'unstorage'
+import fsDriver from 'unstorage/drivers/fs'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   clampLimit,
@@ -271,6 +273,39 @@ describe('local transcript index repository', () => {
       expect(matches.map(m => m.meetingId)).toEqual(['xm8'])
     })
 
+    describe('after deleteForMeeting', () => {
+      const keys = () =>
+        createStorage({ driver: fsDriver({ base: join(crossDataDir, 'db') }) }).getKeys('windows')
+
+      it('leaves no key behind for a cross-meeting scan to enumerate', async () => {
+        // Why this is not deleteExcept(id, []): that rewrites the file as an
+        // empty array, which is still a key -- so every later cross-meeting
+        // search would go on enumerating and reading a meeting that no longer
+        // exists, for ever, since nothing else ever removes it.
+        const repo = createLocalTranscriptIndexRepository({ dataDir: crossDataDir })
+        await repo.upsertWindows('xd-gone', [window(0, axis(1))])
+        await repo.upsertWindows('xd-kept', [window(0, axis(1))])
+        await repo.deleteForMeeting('xd-gone')
+
+        expect(await keys()).toEqual(['windows:xd-kept'])
+        const matches = await repo.searchAcrossMeetings(axis(1), {
+          model: 'gemini-embedding-2', meetingLimit: 5, perMeetingLimit: 5,
+        })
+        expect(matches.map(m => m.meetingId)).toEqual(['xd-kept'])
+        expect(await repo.listKeys('xd-gone')).toEqual([])
+        expect(await repo.listKeys('xd-kept')).toHaveLength(1)
+      })
+
+      it('is a no-op for a meeting with nothing stored, so a half-finished delete can be re-run', async () => {
+        const repo = createLocalTranscriptIndexRepository({ dataDir: crossDataDir })
+        await repo.upsertWindows('xd-kept', [window(0, axis(1))])
+        await expect(repo.deleteForMeeting('never-stored')).resolves.toBeUndefined()
+        await repo.deleteForMeeting('xd-kept')
+        await expect(repo.deleteForMeeting('xd-kept')).resolves.toBeUndefined()
+        expect(await keys()).toEqual([])
+      })
+    })
+
     it('ranks a meeting whose best window is zero-norm behind one with real negative similarity', async () => {
       // The same NaN-sorts-last fix search() has, generalised to the
       // meeting-ranking pass: a meeting's zero-vector window must not
@@ -366,6 +401,18 @@ describe('supabase transcript index repository', () => {
     expect(calls[1]!.url.searchParams.get('meeting_id')).toBe('eq.m1')
   })
 
+  it('deletes every window of the meeting with one DELETE filtered only by meeting', async () => {
+    // Normally a no-op behind the meetings cascade. No idx filter at all: this
+    // is the whole meeting, and a missing meeting_id filter would be everyone's.
+    const calls = stub()
+    await repo.deleteForMeeting('m1')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.method).toBe('DELETE')
+    expect(calls[0]!.url.pathname).toBe('/rest/v1/transcript_windows')
+    expect(calls[0]!.url.searchParams.get('meeting_id')).toBe('eq.m1')
+    expect(calls[0]!.url.searchParams.has('idx')).toBe(false)
+  })
+
   it('searches through the SQL function with a vector literal and a clamped limit', async () => {
     const calls = stub(() => [{
       idx: 1, first_segment_idx: 1, last_segment_idx: 2, start_ms: 1000, end_ms: 1999,
@@ -417,6 +464,7 @@ describe('supabase transcript index repository', () => {
     ['listKeys', () => repo.listKeys('m1')],
     ['upsertWindows', () => repo.upsertWindows('m1', [window(0, axis(0))])],
     ['deleteExcept', () => repo.deleteExcept('m1', [0])],
+    ['deleteForMeeting', () => repo.deleteForMeeting('m1')],
     ['search', () => repo.search('m1', axis(0), { model: 'm', limit: 1 })],
     ['searchAcrossMeetings', () => repo.searchAcrossMeetings(axis(0), { model: 'm', meetingLimit: 1, perMeetingLimit: 1 })],
   ])('surfaces a database error from %s', async (_name, run) => {

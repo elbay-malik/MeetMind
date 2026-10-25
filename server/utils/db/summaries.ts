@@ -5,6 +5,8 @@ export interface SummaryRepository {
   /** Replace a meeting's whole extraction. Re-running is idempotent. */
   replaceForMeeting(meetingId: string, summary: MeetingSummary): Promise<void>
   getForMeeting(meetingId: string): Promise<MeetingSummary | null>
+  /** Remove the summary, decisions and action items. Idempotent. */
+  deleteForMeeting(meetingId: string): Promise<void>
 }
 
 export type SummaryRow = {

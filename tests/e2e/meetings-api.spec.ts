@@ -287,3 +287,32 @@ describe('GET /api/meetings/:id', () => {
     expect((await fetch('/api/meetings/not-a-uuid/complete', { method: 'POST' })).status).toBe(404)
   })
 })
+
+describe('DELETE /api/meetings/:id without an admin token configured', () => {
+  it('404s like an unknown route, even for a meeting that exists, and deletes nothing', async () => {
+    // This file runs with NUXT_ADMIN_TOKEN unset, which is how a deployment
+    // that never opted in looks. The route must neither work nor reveal itself
+    // there. An old, uploaded meeting, so no upload window or claim could be
+    // what refuses the delete: only the missing token stands in the way.
+    const { meeting } = await register()
+    await backdateMeeting(meeting.id, 3 * 60 * 60_000)
+
+    const res = await fetch(`/api/meetings/${meeting.id}`, {
+      method: 'DELETE',
+      headers: { authorization: 'Bearer anything-at-all-anything-at-all-anything' },
+    })
+    expect(res.status).toBe(404)
+    expect(res.headers.get('www-authenticate')).toBeNull()
+    expect((await fetch(`/api/meetings/${meeting.id}`)).status).toBe(200)
+  })
+})
+
+/** Age a meeting's whole row, as though it were registered `msAgo` and
+ * uploaded then, so the delete route has no blocker to cite. */
+async function backdateMeeting(id: string, msAgo: number): Promise<void> {
+  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+  const meeting = await storage.getItem<Meeting>(`meetings/${id}`)
+  if (!meeting) throw new Error(`no local meeting row for ${id}`)
+  const then = new Date(Date.now() - msAgo).toISOString()
+  await storage.setItem(`meetings/${id}`, { ...meeting, status: 'ready', createdAt: then, updatedAt: then, uploadedAt: then })
+}

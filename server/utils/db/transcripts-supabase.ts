@@ -46,6 +46,12 @@ export function createSupabaseTranscriptRepository(options: SupabaseOptions): Tr
       if (error) fail('transcript insert', error)
     },
 
+    async deleteForMeeting(meetingId) {
+      // Normally a no-op by the time it runs: deleting the meeting cascades.
+      const { error } = await table().delete().eq('meeting_id', meetingId)
+      if (error) fail('transcript delete', error)
+    },
+
     async listForMeeting(meetingId) {
       // PostgREST enforces a server-side row cap (Supabase's "Max rows",
       // 1000 by default) and returns a short array with no error and no signal.

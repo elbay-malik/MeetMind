@@ -42,7 +42,7 @@ const rank = (similarity: number): number => (Number.isNaN(similarity) ? Number.
  * SQL function returns, at a size where a scan is trivially cheap.
  *
  * Unlike the Supabase table, nothing here cascades when a meeting is deleted;
- * nothing in the app deletes meetings yet.
+ * the delete route calls `deleteForMeeting` itself.
  */
 export function createLocalTranscriptIndexRepository(options: { dataDir: string }): TranscriptIndexRepository {
   const base = join(options.dataDir, 'db')
@@ -80,6 +80,12 @@ export function createLocalTranscriptIndexRepository(options: { dataDir: string 
         const current = await read(meetingId)
         const remaining = current.filter(w => kept.has(w.idx))
         if (remaining.length !== current.length) await write(meetingId, remaining)
+      })
+    },
+
+    async deleteForMeeting(meetingId) {
+      await serialize(meetingId, async () => {
+        await (await storageFor(base)).removeItem(windowsKey(meetingId))
       })
     },
 

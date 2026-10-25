@@ -5,17 +5,7 @@ import { conflict, notFound, requireMeetingId } from '../../../utils/http'
 import { useEmbedder } from '../../../utils/qa'
 import { EmbeddingError } from '../../../utils/qa/embedder'
 import { indexMeeting } from '../../../utils/qa/indexing'
-
-/**
- * Runs already in flight in this process, by meeting. A second request for the
- * same meeting — a double click, or a second tab — joins the first run instead
- * of embedding the same windows twice against a daily quota.
- *
- * Per process only, like the Groq pacer. Two processes can still both index one
- * meeting; that costs quota but not correctness, since every write is an
- * idempotent upsert of the same windows, keyed by index and hash.
- */
-const inFlight = new Map<string, Promise<SearchIndexStatus>>()
+import { indexingInFlight } from '../../../utils/qa/in-flight'
 
 /**
  * Index a meeting's transcript for questions (ADR-0007). Idempotent and
@@ -24,20 +14,28 @@ const inFlight = new Map<string, Promise<SearchIndexStatus>>()
  */
 export default defineEventHandler(async (event): Promise<{ index: SearchIndexStatus }> => {
   const id = requireMeetingId(event)
-  const meeting = await useMeetingRepository(event).get(id)
-  if (!meeting) throw notFound('Meeting not found')
-  if (!transcriptionFinished(meeting)) {
-    throw conflict(`Meeting is ${meeting.status}; it has no finished transcript to index yet`)
-  }
 
-  let run = inFlight.get(id)
+  let run = indexingInFlight.get(id)
   if (!run) {
+    const meetings = useMeetingRepository(event)
+    const transcripts = useTranscriptRepository(event)
     const embedder = useEmbedder(event)
     const repo = useTranscriptIndexRepository(event)
-    run = useTranscriptRepository(event).listForMeeting(id)
-      .then(segments => indexMeeting({ meetingId: id, segments, embedder, repo }))
-      .finally(() => inFlight.delete(id))
-    inFlight.set(id, run)
+    // Registered BEFORE the meeting is read, not after. The delete route
+    // relies on it: once it has deleted the row it waits for whatever run is
+    // registered here, and only a run registered before its own read is
+    // guaranteed to be visible by then. A request that joins this run shares
+    // its checks and its outcome, 404 and 409 included.
+    run = (async () => {
+      const meeting = await meetings.get(id)
+      if (!meeting) throw notFound('Meeting not found')
+      if (!transcriptionFinished(meeting)) {
+        throw conflict(`Meeting is ${meeting.status}; it has no finished transcript to index yet`)
+      }
+      const segments = await transcripts.listForMeeting(id)
+      return indexMeeting({ meetingId: id, segments, embedder, repo })
+    })().finally(() => indexingInFlight.delete(id))
+    indexingInFlight.set(id, run)
   }
 
   try {

@@ -10,9 +10,10 @@ import { useMeetingRepository } from './db'
  * GB-month for as long as the object exists, so unlike the per-request
  * operation charges it accumulates and recurs.
  *
- * Nothing bounded it before. `POST /api/meetings` is anonymous and there is no
- * DELETE route anywhere in the API, so an upload loop could grow a standing
- * monthly bill with no in-app way to reverse it. The bucket's lifecycle rule
+ * Nothing bounded it before. `POST /api/meetings` is anonymous, so an upload
+ * loop could grow a standing monthly bill; the only way to reverse it is the
+ * admin-only DELETE (ADR-0011), which an anonymous caller cannot reach and an
+ * operator has to notice the need for. The bucket's lifecycle rule
  * caps how long each object survives, which bounds slow growth, but it does
  * nothing inside a burst -- a script can add hundreds of gigabytes in a day and
  * pay for all of it for a month. This is the part that stops rather than warns.

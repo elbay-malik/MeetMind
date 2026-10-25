@@ -78,6 +78,12 @@ export function createSupabaseTranscriptIndexRepository(options: SupabaseOptions
       if (error) fail('windows delete', error)
     },
 
+    async deleteForMeeting(meetingId) {
+      // Normally a no-op by the time it runs: deleting the meeting cascades.
+      const { error } = await windows().delete().eq('meeting_id', meetingId)
+      if (error) fail('windows delete', error)
+    },
+
     async search(meetingId, query, { model, limit }) {
       const { data, error } = await clientFor(options).rpc('match_transcript_windows', {
         p_meeting_id: meetingId,

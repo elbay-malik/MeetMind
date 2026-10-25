@@ -26,6 +26,10 @@ export default defineNuxtConfig({
     // knows which uploads Cloudflare has already deleted. 0 means no rule, so
     // nothing is assumed to expire.
     r2RetentionDays: 30, // NUXT_R2_RETENTION_DAYS
+    // Bearer token for the admin-only routes (DELETE /api/meetings/:id). Empty
+    // means those routes answer 404; set means at least 32 characters, or they
+    // refuse to run. Generate with `openssl rand -base64 32`.
+    adminToken: '', // NUXT_ADMIN_TOKEN
     // Local drivers only (dev/tests): HMAC secret for upload URLs and data root.
     uploadTokenSecret: '', // NUXT_UPLOAD_TOKEN_SECRET (random per process when empty)
     dataDir: '.data', // NUXT_DATA_DIR

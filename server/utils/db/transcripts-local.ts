@@ -38,6 +38,12 @@ export function createLocalTranscriptRepository(options: { dataDir: string }): T
       })
     },
 
+    async deleteForMeeting(meetingId) {
+      await serialize(meetingId, async () => {
+        await (await storageFor(base)).removeItem(transcriptKey(meetingId))
+      })
+    },
+
     async listForMeeting(meetingId) {
       return serialize(meetingId, async () => {
         const stored = await (await storageFor(base)).getItem<TranscriptSegment[]>(transcriptKey(meetingId))

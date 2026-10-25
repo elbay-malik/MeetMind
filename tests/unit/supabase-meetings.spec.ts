@@ -163,6 +163,40 @@ describe('claim', () => {
   })
 })
 
+describe('delete', () => {
+  it('sends one DELETE fenced on id, status and updated_at, asking for the deleted row back', async () => {
+    const calls = stubPostgrest([{ ...row, status: 'ready' }])
+    const deleted = await repo.delete(row.id, { status: 'ready', updatedAt: row.updated_at })
+
+    expect(calls).toHaveLength(1)
+    const call = calls[0]!
+    expect(call.method).toBe('DELETE')
+    expect(call.url.pathname).toBe('/rest/v1/meetings')
+    expect(call.url.searchParams.get('id')).toBe(`eq.${row.id}`)
+    // The fence. The route checked for a live claim with a read; a claim that
+    // lands between that read and this request moves status or updated_at, and
+    // only these two filters stop the delete from removing the meeting out
+    // from under the pipeline step that now holds it.
+    expect(call.url.searchParams.get('status')).toBe('eq.ready')
+    expect(call.url.searchParams.get('updated_at')).toBe(`eq.${row.updated_at}`)
+    // Without the representation PostgREST answers 204 with no body, and a
+    // delete that removed the row is indistinguishable from one that lost.
+    expect(call.headers.get('prefer')).toMatch(/return=representation/)
+
+    expect(deleted).toMatchObject({ id: row.id, status: 'ready', sourceFileName: 'weekly-sync.mp4' })
+  })
+
+  it('returns null when nothing matched, so the route can tell a lost race from a delete', async () => {
+    stubPostgrest([])
+    expect(await repo.delete(row.id, { status: 'ready', updatedAt: row.updated_at })).toBeNull()
+  })
+
+  it('surfaces a database error rather than reporting a lost race', async () => {
+    stubPostgrest({ code: '42501', message: 'permission denied', details: '', hint: '' }, { status: 403 })
+    await expect(repo.delete(row.id, { status: 'ready', updatedAt: row.updated_at })).rejects.toThrow(/42501/)
+  })
+})
+
 describe('update', () => {
   it('patches only the given columns for the given id', async () => {
     const calls = stubPostgrest([{ ...row, status: 'uploaded', uploaded_at: '2026-09-05T12:05:00.000Z' }])

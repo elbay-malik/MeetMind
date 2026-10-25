@@ -70,6 +70,19 @@ export function createSupabaseSummaryRepository(options: SupabaseOptions): Summa
       }
     },
 
+    async deleteForMeeting(meetingId) {
+      // Normally a no-op by the time it runs -- deleting the meeting cascades
+      // to all three tables -- but stated rather than assumed, so this method
+      // means the same thing on both drivers. Items before the summary they
+      // belong to.
+      const removedDecisions = await decisions().delete().eq('meeting_id', meetingId)
+      if (removedDecisions.error) fail('decisions delete', removedDecisions.error)
+      const removedActions = await actionItems().delete().eq('meeting_id', meetingId)
+      if (removedActions.error) fail('action items delete', removedActions.error)
+      const removedSummary = await summaries().delete().eq('meeting_id', meetingId)
+      if (removedSummary.error) fail('summary delete', removedSummary.error)
+    },
+
     async getForMeeting(meetingId): Promise<MeetingSummary | null> {
       const { data, error } = await summaries()
         .select().eq('meeting_id', meetingId).maybeSingle()

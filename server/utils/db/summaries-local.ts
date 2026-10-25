@@ -37,6 +37,12 @@ export function createLocalSummaryRepository(options: { dataDir: string }): Summ
       })
     },
 
+    async deleteForMeeting(meetingId) {
+      await serialize(meetingId, async () => {
+        await (await storageFor(base)).removeItem(summaryKey(meetingId))
+      })
+    },
+
     async getForMeeting(meetingId) {
       return serialize(meetingId, async () => {
         return (await (await storageFor(base)).getItem<MeetingSummary>(summaryKey(meetingId))) ?? null

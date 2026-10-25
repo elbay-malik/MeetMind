@@ -46,6 +46,21 @@ export interface MeetingRepository {
    * registrations from all passing the check and then all uploading.
    */
   storedAudioBytes(options: StorageUsageWindow): Promise<number>
+  /**
+   * Remove the row, but only if it is still exactly the row the caller
+   * inspected: same `status`, same `updatedAt`. Returns the deleted row, or
+   * `null` when no row has that id or it changed in the meantime.
+   *
+   * Fenced for the same reason `claim` is. The delete route refuses while a
+   * pipeline step holds a live claim, and that check is a read; without the
+   * fence a claim landing between the read and the delete would have its
+   * meeting removed from under it.
+   *
+   * On Supabase the child rows (transcript, summary, windows) go with it by
+   * `on delete cascade`. The local driver has no cascade; the caller removes
+   * those through their own repositories.
+   */
+  delete(id: string, expected: Pick<Meeting, 'status' | 'updatedAt'>): Promise<Meeting | null>
 }
 
 /**

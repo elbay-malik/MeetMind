@@ -5,6 +5,8 @@ export interface TranscriptRepository {
   /** Replace a meeting's whole transcript. Re-running transcription is idempotent. */
   replaceForMeeting(meetingId: string, segments: TranscriptSegment[]): Promise<void>
   listForMeeting(meetingId: string): Promise<TranscriptSegment[]>
+  /** Remove the whole transcript. Idempotent: nothing stored is not an error. */
+  deleteForMeeting(meetingId: string): Promise<void>
 }
 
 /** Postgres row shape for `transcript_segments`. */

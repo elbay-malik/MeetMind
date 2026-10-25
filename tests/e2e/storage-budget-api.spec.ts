@@ -43,9 +43,9 @@ function register(audioBytes: number): Promise<Response> {
 /**
  * R2 has no spending cap, so this is the only thing that stops storage cost
  * growing: past the free allowance Cloudflare bills rather than refusing.
- * `POST /api/meetings` is anonymous and nothing in the API can delete a
- * recording, so without this an upload loop grows a standing monthly bill with
- * no in-app way to reverse it.
+ * `POST /api/meetings` is anonymous and deleting a recording is admin-only
+ * (ADR-0011), so without this an upload loop grows a standing monthly bill
+ * until an operator notices. delete-api.spec.ts proves deleting makes room again.
  *
  * These run in order and share one store: each registration adds to the total
  * the next one is measured against, which is the behaviour under test.

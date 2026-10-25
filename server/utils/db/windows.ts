@@ -47,6 +47,12 @@ export interface TranscriptIndexRepository {
   /** Remove every stored window whose index is not in `keep`. */
   deleteExcept(meetingId: string, keep: number[]): Promise<void>
   /**
+   * Remove every window of the meeting, leaving nothing behind for a
+   * cross-meeting scan to find. Idempotent. Not `deleteExcept(id, [])`: on the
+   * local driver that leaves an empty file, which is still a key.
+   */
+  deleteForMeeting(meetingId: string): Promise<void>
+  /**
    * The nearest windows to `query` within one meeting and one model, nearest
    * first, ties broken by index. `limit` is clamped to 1..MAX_MATCHES.
    */
