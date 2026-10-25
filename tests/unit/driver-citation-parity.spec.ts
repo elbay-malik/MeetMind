@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { normalise, occurs } from '../../server/utils/summary/reconcile'
+import { MAX_QUOTE_SEGMENTS, normalise, occurs, quoteStartsAt } from '../../server/utils/summary/reconcile'
 import {
   NO_SPACE_SCRIPT as driverNoSpaceScript,
   normalise as driverNormalise,
   occurs as driverOccurs,
+  MAX_QUOTE_SEGMENTS as DRIVER_MAX_QUOTE_SEGMENTS,
+  quoteStartsAt as driverQuoteStartsAt,
 } from '../../scripts/lib/citation-match.mjs'
 import { NO_SPACE_SCRIPT } from '../../server/utils/summary/plan'
 
@@ -85,5 +87,58 @@ describe('driver citation matcher parity', () => {
         `disagreed on haystack=${JSON.stringify(haystack)} needle=${JSON.stringify(needle)}`,
       ).toBe(occurs(normalise(haystack), normalise(needle)))
     }
+  })
+
+  // The citation check itself, not only the matching under it: the browser
+  // driver verifies every stored citation with this, and a mirror that still
+  // demanded one segment would fail the smoke run on a correct summary.
+  describe('quoteStartsAt', () => {
+    it('allows the same number of segments', () => {
+      expect(DRIVER_MAX_QUOTE_SEGMENTS).toBe(MAX_QUOTE_SEGMENTS)
+    })
+
+    const seg = (idx: number, text: string) => ({ idx, startMs: idx * 1000, endMs: idx * 1000 + 999, text })
+    const split = [seg(5, 'we agreed to keep the current'), seg(6, 'scope for onboarding and'), seg(7, 'revisit it later'), seg(9, 'unrelated')]
+    // A wordless segment directly before speech, as Whisper emits them.
+    split.unshift(seg(4, '♪'))
+    const cases: Array<[string, number, string]> = [
+      ['within one segment', 5, 'agreed to keep'],
+      ['across two', 5, 'keep the current scope for onboarding'],
+      ['across three', 5, 'current scope for onboarding and revisit it'],
+      ['begins later, cited early', 5, 'scope for onboarding'],
+      ['across an index gap', 7, 'revisit it later unrelated'],
+      ['unknown segment', 99, 'agreed to keep'],
+      ['empty quote', 5, '  '],
+      ['wordless segment before the quote', 4, 'we agreed to keep'],
+    ]
+    it.each(cases)('agrees on %s', (_label, idx, quote) => {
+      expect(driverQuoteStartsAt(split, idx, quote)).toBe(quoteStartsAt(split, idx, quote))
+    })
+
+    it('agrees across randomised transcripts, including gaps in the indices', () => {
+      // '...' and '♪' normalise to nothing, which is the case the first
+      // version of this got wrong.
+      const words = ['we', 'agreed', 'to', 'ship', 'it', 'on', 'friday', '3.5', '東京', 'ok', '...', '♪']
+      let seed = 4242
+      const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
+      const pickWords = (n: number) => Array.from({ length: n }, () => words[Math.floor(random() * words.length)]).join(' ')
+      for (let round = 0; round < 1000; round++) {
+        let idx = 0
+        const segments = Array.from({ length: 2 + Math.floor(random() * 5) }, () => {
+          idx += random() < 0.2 ? 2 : 1
+          return seg(idx, pickWords(1 + Math.floor(random() * 4)))
+        })
+        // Quotes cut from the joined text, so matches across boundaries are
+        // common rather than all-false agreement.
+        const joined = segments.map(s => s.text).join(' ').split(' ')
+        const from = Math.floor(random() * joined.length)
+        const quote = joined.slice(from, from + 1 + Math.floor(random() * 8)).join(' ')
+        const cited = segments[Math.floor(random() * segments.length)]!.idx
+        expect(
+          driverQuoteStartsAt(segments, cited, quote),
+          `disagreed on ${JSON.stringify({ segments: segments.map(s => [s.idx, s.text]), cited, quote })}`,
+        ).toBe(quoteStartsAt(segments, cited, quote))
+      }
+    })
   })
 })

@@ -16,7 +16,7 @@ import { chromium } from 'playwright-core'
 // server-side. A copy, because this is plain Node — but one that
 // tests/unit/driver-citation-parity.spec.ts holds to the real implementation,
 // rather than the hand-synced block that used to live here and drifted twice.
-import { normalise, occurs } from './lib/citation-match.mjs'
+import { quoteStartsAt } from './lib/citation-match.mjs'
 
 const [
   baseURL = 'http://localhost:3000',
@@ -198,9 +198,9 @@ try {
   else {
     console.log(`summary stored: ${summary.decisions.length} decisions, ${summary.actionItems.length} action items`)
 
-    // Every citation must point at a segment that exists and quote it, using
-    // the same contract reconciliation itself checks against — see occurs()
-    // above.
+    // Every citation must point at a segment that exists and begin there, using
+    // the same contract reconciliation itself checks against -- see
+    // quoteStartsAt in lib/citation-match.mjs.
     const { segments: lines } = await (await fetch(`${baseURL}/api/meetings/${meetingId}/transcript`)).json()
     const byIdx = new Map(lines.map(l => [l.idx, l]))
     for (const item of [...summary.decisions, ...summary.actionItems]) {
@@ -208,8 +208,8 @@ try {
       if (!cited) fail(`an item cites segment ${item.segmentIdx}, which does not exist`)
       // The COMPLETE quote (not just a prefix) via the same rules
       // reconciliation itself checks against.
-      else if (!occurs(normalise(cited.text), normalise(item.quote))) {
-        fail(`an item quotes text that segment ${item.segmentIdx} does not contain`)
+      else if (!quoteStartsAt(lines, item.segmentIdx, item.quote)) {
+        fail(`an item quotes text that does not begin at segment ${item.segmentIdx}`)
       }
     }
     console.log('every citation resolves to a real transcript segment')
@@ -256,12 +256,12 @@ try {
 
   const { segments: servedSegments } = await (await fetch(`${baseURL}/api/meetings/${meetingId}/transcript`)).json()
   for (const c of cited) {
-    const line = servedSegments.find(s => occurs(normalise(s.text), normalise(c.quote ?? '')))
+    const line = servedSegments.find(s => quoteStartsAt(servedSegments, s.idx, c.quote ?? ''))
     if (!line) fail(`answer cites a quote that is not in the transcript: "${c.quote}"`)
   }
   console.log('every answer citation is a real transcript line')
 
-  const target = servedSegments.find(s => occurs(normalise(s.text), normalise(cited.at(-1)?.quote ?? '')))
+  const target = servedSegments.find(s => quoteStartsAt(servedSegments, s.idx, cited.at(-1)?.quote ?? ''))
   // Park the player far from the cited line first. Resetting to 0 would make
   // this check pass without the click doing anything whenever the citation is
   // the first line, which starts at 0:00.

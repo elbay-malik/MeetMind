@@ -185,6 +185,69 @@ export interface Attested {
   quote: string
 }
 
+/**
+ * How many consecutive segments one quote may run across.
+ *
+ * Whisper ends a segment at a pause or a length limit, not at the end of a
+ * sentence, so an ordinary sentence is regularly split over two segments
+ * ("...we agreed to keep the current" / "scope for customer onboarding..."). A
+ * model quoting that sentence verbatim is right, and requiring the quote to sit
+ * inside one segment threw it away: measured on a one-hour meeting, 57 of 73
+ * correctly quoted action items and 29 of 73 decisions were dropped that way,
+ * with nothing to say so. Three covers a long sentence over short segments
+ * without letting a "quote" stitch together remarks from across the meeting.
+ */
+export const MAX_QUOTE_SEGMENTS = 3
+
+const bounded = (key: string): string => `${TOKEN_SEP}${key}${TOKEN_SEP}`
+const containsKey = (haystackKey: string, needleKey: string): boolean =>
+  bounded(haystackKey).includes(bounded(needleKey))
+
+/**
+ * How many segments, starting at `position`, the quote runs across: the
+ * shortest run of consecutive segments (by index, not merely adjacent in the
+ * array -- a gap is a different moment) that contains it, or 0 when none does.
+ *
+ * Also 0 when the quote fits wholly inside the later part of that run: then it
+ * starts in a later segment, and is found from there. A citation always points
+ * at the segment the quoted words BEGIN in, which is where a listener has to
+ * seek to hear them.
+ */
+function spanFrom(segments: readonly TranscriptSegment[], keys: readonly string[], position: number, needleKey: string): number {
+  const join = (from: number, to: number) => keys.slice(from, to + 1).filter(Boolean).join(TOKEN_SEP)
+  for (let length = 1; length <= MAX_QUOTE_SEGMENTS; length++) {
+    const last = position + length - 1
+    if (last >= segments.length) return 0
+    if (length > 1 && segments[last]!.idx !== segments[last - 1]!.idx + 1) return 0
+    if (!containsKey(join(position, last), needleKey)) continue
+    // "Without the segment it would begin in", sliced BEFORE wordless segments
+    // are dropped. Whisper emits those ("...", a music note) and normalisation
+    // keeps them; slicing the filtered run instead removed the next segment
+    // with words, so a wordless one just before a quote was cited as its start
+    // and the citation sought the listener to the music, not the words.
+    if (length > 1 && containsKey(join(position + 1, last), needleKey)) return 0
+    return length
+  }
+  return 0
+}
+
+/** Each segment's normalised tokens, the form every comparison here is made in. */
+const segmentKeys = (segments: readonly TranscriptSegment[]): string[] =>
+  segments.map(segment => tokenKey(normalise(segment.text)))
+
+/**
+ * Whether `quote` begins in the segment with index `segmentIdx` -- the contract
+ * every stored citation satisfies, allowing for a quote that runs on into the
+ * next segment or two. For checks made outside reconciliation (the e2e suite,
+ * and its plain-JS mirror in scripts/lib/citation-match.mjs).
+ */
+export function quoteStartsAt(segments: readonly TranscriptSegment[], segmentIdx: number, quote: string): boolean {
+  const position = segments.findIndex(segment => segment.idx === segmentIdx)
+  const needleKey = tokenKey(normalise(quote))
+  if (position < 0 || !needleKey) return false
+  return spanFrom(segments, segmentKeys(segments), position, needleKey) > 0
+}
+
 interface Candidate {
   segment: TranscriptSegment
   distance: number
@@ -216,7 +279,29 @@ interface Candidate {
 export function attestQuote(
   quote: string,
   claimedIdx: number,
-  segments: TranscriptSegment[],
+  segments: readonly TranscriptSegment[],
+): Attested | null {
+  return createQuoteAttester(segments)(quote, claimedIdx)
+}
+
+/**
+ * {@link attestQuote} for many quotes against one transcript: each segment is
+ * normalised and tokenized once rather than once per quote. Reconciliation
+ * checks every item of a summary against every segment of the meeting, which
+ * ADR-0009 lists among the routes' CPU costs on Workers.
+ */
+export function createQuoteAttester(
+  segments: readonly TranscriptSegment[],
+): (quote: string, claimedIdx: number) => Attested | null {
+  const keys = segmentKeys(segments)
+  return (quote, claimedIdx) => attestAgainst(quote, claimedIdx, segments, keys)
+}
+
+function attestAgainst(
+  quote: string,
+  claimedIdx: number,
+  segments: readonly TranscriptSegment[],
+  keys: readonly string[],
 ): Attested | null {
   const needle = normalise(quote)
   if (!needle) return null
@@ -234,16 +319,24 @@ export function attestQuote(
   // TWO UTF-16 units, and would otherwise clear a floor of 2 on its own.
   const needleCodePoints = [...needle].length
 
+  if (!needleKey) return null
+
   const candidates: Candidate[] = []
-  for (const segment of segments) {
-    const segmentText = normalise(segment.text)
-    // Same tokenizing as occurs() below, and for the same reason: a
-    // no-space script's "entire text" still has to match despite a
+  for (const [position, segment] of segments.entries()) {
+    // Compared as token keys, the same as occurs(), and for the same reason:
+    // a no-space script's "entire text" still has to match despite a
     // punctuation-turned-space difference (a comma the model's quote omits,
     // say) that a whitespace-sensitive script would rightly treat as real.
-    const full = tokenKey(segmentText) === needleKey
-    if (!full && !occurs(segmentText, needle)) continue
-    candidates.push({ segment, distance: Math.abs(segment.idx - claimedIdx), full })
+    const full = keys[position] === needleKey
+    const length = full ? 1 : spanFrom(segments, keys, position, needleKey)
+    if (length === 0) continue
+    // Nearest to the claim anywhere in the span: a model may give the number
+    // of any line its quote touches, not only the first.
+    let distance = Infinity
+    for (let i = position; i < position + length; i++) {
+      distance = Math.min(distance, Math.abs(segments[i]!.idx - claimedIdx))
+    }
+    candidates.push({ segment, distance, full })
   }
 
   const usable = candidates.filter(c => c.full
@@ -276,10 +369,11 @@ export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Re
   const actionItems: ActionItem[] = []
   let droppedDecisions = 0
   let droppedActionItems = 0
+  const attest = createQuoteAttester(segments)
 
   const seenDecisions = new Set<string>()
   for (const item of model.decisions) {
-    const attested = attestQuote(item.quote, item.segmentIdx, segments)
+    const attested = attest(item.quote, item.segmentIdx)
     const text = item.decision.trim()
     if (!attested || !text) {
       droppedDecisions++
@@ -302,7 +396,7 @@ export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Re
 
   const seenActions = new Set<string>()
   for (const item of model.actionItems) {
-    const attested = attestQuote(item.quote, item.segmentIdx, segments)
+    const attested = attest(item.quote, item.segmentIdx)
     const task = item.task.trim()
     if (!attested || !task) {
       droppedActionItems++

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { attestQuote, reconcile } from '../../server/utils/summary/reconcile'
+import { attestQuote, MAX_QUOTE_SEGMENTS, quoteStartsAt, reconcile } from '../../server/utils/summary/reconcile'
 import type { TranscriptSegment } from '../../shared/types/meeting'
 import type { WireSummary } from '../../shared/schemas/summary'
 
@@ -296,6 +296,113 @@ describe('attestQuote', () => {
     // Segment 0 merely contains the phrase (fragment, distance 0); segment 5
     // IS the phrase (full match, distance 5). Full wins despite being farther.
     expect(attestQuote(quote, 0, segs)).toMatchObject({ segmentIdx: 5 })
+  })
+})
+
+/**
+ * Whisper ends a segment at a pause or a length limit, not at the end of a
+ * sentence. These lines are verbatim from the one-hour meeting measured in the
+ * Phase 9 spike, where requiring a quote to sit inside one segment dropped 57 of
+ * 73 action items and 29 of 73 decisions that the model had quoted perfectly.
+ */
+describe('quotes that run across segments', () => {
+  const split = [
+    seg(325, 0, 'raised a concern that this will not scale unless we invest more time in'),
+    seg(326, 4000, 'planning and testing. After some discussion, we agreed to keep the current'),
+    seg(327, 8000, 'scope for customer onboarding and revisit the larger changes in the planning session.'),
+    seg(328, 12_000, 'Action item. Laina will write up the open questions about customer onboarding and share'),
+    seg(329, 16_000, 'them with the group by next week.'),
+  ]
+  const decisionQuote = 'After some discussion, we agreed to keep the current scope for customer onboarding and revisit the larger changes in the planning session.'
+  const actionQuote = 'Action item. Laina will write up the open questions about customer onboarding and share them with the group by next week.'
+
+  it('attests a quote split over two segments, citing the segment it begins in', () => {
+    expect(attestQuote(decisionQuote, 326, split)).toMatchObject({ segmentIdx: 326, startMs: 4000 })
+    expect(attestQuote(actionQuote, 328, split)).toMatchObject({ segmentIdx: 328, startMs: 12_000 })
+  })
+
+  it('cites where the quote begins even when the model gave a later line it touches', () => {
+    expect(attestQuote(actionQuote, 329, split)).toMatchObject({ segmentIdx: 328 })
+  })
+
+  it('keeps such items through reconcile, which is where they were being lost', () => {
+    const result = reconcile({
+      summary: '',
+      decisions: [{ quote: decisionQuote, segmentIdx: 326, decision: 'Keep the onboarding scope' }],
+      actionItems: [{ quote: actionQuote, segmentIdx: 328, task: 'Write up open questions', assignee: 'Laina', dueDateText: 'by next week' }],
+    }, split)
+    expect(result.decisions).toHaveLength(1)
+    expect(result.actionItems).toHaveLength(1)
+    expect(result.droppedDecisions + result.droppedActionItems).toBe(0)
+  })
+
+  it('measures nearness to the claim from every line the quote touches, not only its first', () => {
+    // The words occur twice: across 5-7, and inside 8. The model gave line 7,
+    // the last line of the first occurrence -- the one it read. Measured from
+    // the first line alone, 5 is two away and 8 only one, and the citation
+    // would jump to the other occurrence.
+    const repeated = [
+      seg(5, 5000, 'so to be clear'), seg(6, 6000, 'we will ship'), seg(7, 7000, 'on friday then'),
+      seg(8, 8000, 'so to be clear we will ship on friday then'),
+    ]
+    expect(attestQuote('to be clear we will ship on friday', 7, repeated)).toMatchObject({ segmentIdx: 5 })
+  })
+
+  it('attributes a quote that fits wholly in a later segment to that segment, not to one before it', () => {
+    // "scope for customer onboarding" sits entirely in 327; the run 326-327
+    // also contains it, but the words do not begin in 326.
+    expect(attestQuote('scope for customer onboarding and revisit', 326, split)).toMatchObject({ segmentIdx: 327 })
+  })
+
+  it(`accepts a run of up to ${MAX_QUOTE_SEGMENTS} segments and no longer`, () => {
+    const short = [
+      seg(0, 0, 'we will move'), seg(1, 1000, 'the launch to'), seg(2, 2000, 'the second week'),
+      seg(3, 3000, 'of March'),
+    ]
+    expect(attestQuote('we will move the launch to the second week', 0, short)).toMatchObject({ segmentIdx: 0 })
+    expect(attestQuote('we will move the launch to the second week of March', 0, short)).toBeNull()
+  })
+
+  it('does not stitch together segments that are not consecutive in the transcript', () => {
+    // A gap in the indices is a different moment of the meeting, even when the
+    // two segments sit side by side in the array (as retrieved Q&A windows do).
+    const gapped = [seg(10, 0, 'we agreed to keep the current'), seg(40, 90_000, 'scope for customer onboarding')]
+    expect(attestQuote('we agreed to keep the current scope for customer onboarding', 10, gapped)).toBeNull()
+  })
+
+  it('still rejects words that span segments but were never said together', () => {
+    expect(attestQuote('keep the current scope for the data migration', 326, split)).toBeNull()
+  })
+
+  it('never cites a segment with no words as where a quote begins', () => {
+    // Whisper emits segments like these and normalisation keeps them. Before
+    // the fix one standing before the quote won the tie and the citation
+    // sought the listener to the music, not the words.
+    const noisy = [seg(4, 0, '♪'), seg(5, 1000, '...'), seg(6, 2000, 'we agreed to keep the current scope'), seg(7, 3000, 'for onboarding')]
+    expect(attestQuote('agreed to keep the current scope', 6, noisy)).toMatchObject({ segmentIdx: 6 })
+    expect(attestQuote('agreed to keep the current scope', 4, noisy)).toMatchObject({ segmentIdx: 6 })
+    expect(attestQuote('keep the current scope for onboarding', 6, noisy)).toMatchObject({ segmentIdx: 6 })
+    expect(quoteStartsAt(noisy, 4, 'agreed to keep the current scope')).toBe(false)
+    expect(quoteStartsAt(noisy, 5, 'agreed to keep the current scope')).toBe(false)
+  })
+
+  it('still bridges a wordless segment in the middle of a quote', () => {
+    const paused = [seg(1, 0, 'we will ship'), seg(2, 1000, '...'), seg(3, 2000, 'on friday then')]
+    expect(attestQuote('we will ship on friday then', 1, paused)).toMatchObject({ segmentIdx: 1 })
+  })
+
+  it('applies the fragment floor to a quote that spans segments', () => {
+    const tiny = [seg(0, 0, 'ok so'), seg(1, 1000, 'yes we do')]
+    // 11 characters across a boundary: real, but too generic to pin a claim to.
+    expect(attestQuote('so yes we do', 0, tiny)).toBeNull()
+  })
+
+  it('quoteStartsAt states the same contract for checks made outside reconciliation', () => {
+    expect(quoteStartsAt(split, 326, decisionQuote)).toBe(true)
+    expect(quoteStartsAt(split, 327, decisionQuote)).toBe(false)
+    expect(quoteStartsAt(split, 325, decisionQuote)).toBe(false)
+    expect(quoteStartsAt(split, 999, decisionQuote)).toBe(false)
+    expect(quoteStartsAt(split, 326, '   ')).toBe(false)
   })
 })
 

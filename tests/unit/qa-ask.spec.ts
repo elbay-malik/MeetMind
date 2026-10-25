@@ -103,6 +103,25 @@ describe('askMeeting', () => {
       .toEqual({ found: false, answer: null, citations: [] })
   })
 
+  // Whisper splits sentences across segments, and the answering model quotes
+  // the sentence. Lines 10 and 11 are consecutive and both retrieved by a
+  // budget question; a quote running from one into the other is real speech.
+  it('keeps a citation whose quote runs from one retrieved line into the next', async () => {
+    const segments = await indexed('a12')
+    const { answerer } = scriptedAnswerer({
+      citations: [{ quote: 'by twenty percent next quarter. Finance will circulate the revised budget', segmentIdx: 10 }],
+      answer: 'It was cut by a fifth.',
+    })
+    const answer = await ask('a12', 'What did we decide about the marketing budget?', segments, answerer)
+    expect(answer.found).toBe(true)
+    if (!answer.found) return
+    expect(answer.citations).toEqual([{
+      quote: 'by twenty percent next quarter. Finance will circulate the revised budget',
+      segmentIdx: 10,
+      startMs: 50_000,
+    }])
+  })
+
   it('drops a real quote from a line that was never retrieved', async () => {
     // Line 60 exists in the meeting, but a budget question does not retrieve
     // it — so the model cannot have read it, and citing it is invention even

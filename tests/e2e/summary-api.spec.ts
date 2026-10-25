@@ -7,7 +7,7 @@ import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
-import { normalise, occurs } from '../../server/utils/summary/reconcile'
+import { quoteStartsAt } from '../../server/utils/summary/reconcile'
 import type { CreateMeetingResponse, Meeting, MeetingSummary, TranscriptSegment } from '../../shared/types/meeting'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
@@ -117,8 +117,10 @@ describe('POST /api/meetings/:id/summarize', () => {
       // mid-word fabrication ("approved" inside "disapproved") and rejects a
       // legitimate no-space-script citation that differs from the transcript
       // only by punctuation — the two bugs occurs() exists to avoid,
-      // reintroduced here if this check does not share its exact rules.
-      expect(occurs(normalise(cited!.text), normalise(item.quote))).toBe(true)
+      // reintroduced here if this check does not share its exact rules. And a
+      // quote may run on into the next segment, so it is checked from where it
+      // begins rather than against the one segment's text.
+      expect(quoteStartsAt(segments, item.segmentIdx, item.quote)).toBe(true)
     }
   })
 

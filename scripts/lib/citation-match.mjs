@@ -58,3 +58,33 @@ export function occurs(haystack, needle) {
   if (!needleKey) return false
   return `${TOKEN_SEP}${tokenKey(haystack)}${TOKEN_SEP}`.includes(`${TOKEN_SEP}${needleKey}${TOKEN_SEP}`)
 }
+
+// Mirrors reconcile.ts's MAX_QUOTE_SEGMENTS and quoteStartsAt: a quote may run
+// on from the segment it begins in into the next one or two, because Whisper
+// splits sentences across segments. A citation points at the segment the
+// quote BEGINS in.
+export const MAX_QUOTE_SEGMENTS = 3
+
+const bounded = key => `${TOKEN_SEP}${key}${TOKEN_SEP}`
+const containsKey = (haystackKey, needleKey) => bounded(haystackKey).includes(bounded(needleKey))
+
+function spanFrom(segments, keys, position, needleKey) {
+  const join = (from, to) => keys.slice(from, to + 1).filter(Boolean).join(TOKEN_SEP)
+  for (let length = 1; length <= MAX_QUOTE_SEGMENTS; length++) {
+    const last = position + length - 1
+    if (last >= segments.length) return 0
+    if (length > 1 && segments[last].idx !== segments[last - 1].idx + 1) return 0
+    if (!containsKey(join(position, last), needleKey)) continue
+    if (length > 1 && containsKey(join(position + 1, last), needleKey)) return 0
+    return length
+  }
+  return 0
+}
+
+export function quoteStartsAt(segments, segmentIdx, quote) {
+  const position = segments.findIndex(segment => segment.idx === segmentIdx)
+  const needleKey = tokenKey(normalise(quote))
+  if (position < 0 || !needleKey) return false
+  const keys = segments.map(segment => tokenKey(normalise(segment.text)))
+  return spanFrom(segments, keys, position, needleKey) > 0
+}

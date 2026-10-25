@@ -821,3 +821,43 @@ Found in the same run and fixed separately: `reconcile` dropped most of those
 correctly quoted items, because Whisper splits sentences across segments and a
 quote was only accepted within one segment.
 
+## Addendum, 2026-10-25: a quote may run across consecutive segments
+
+Whisper ends a segment at a pause or a length limit, not at the end of a
+sentence, so an ordinary sentence is regularly split over two segments. The
+model quotes the sentence, which is correct, but `attestQuote` only accepted a
+quote found inside one segment and silently dropped the item otherwise.
+Measured on a one-hour meeting in the Phase 9 spike, it kept **16 of 73**
+action items and 44 decisions on 15 distinct lines, all of which the model had
+quoted verbatim. Q&A citations go through the same check and had the same loss.
+
+A quote may now run across up to **`MAX_QUOTE_SEGMENTS` = 3** consecutive
+segments.
+
+- "Consecutive" means by index, not by array position. Retrieved Q&A windows
+  sit side by side in the array with gaps between them, and a gap is a
+  different moment of the meeting.
+- The citation points at the segment the quote **begins** in, which is where a
+  listener has to seek to hear it. A quote that fits wholly inside a later
+  segment belongs to that segment. A wordless segment ("...", a music note)
+  can never be where a quote begins: review caught the first version citing
+  one.
+- Nearness to the model's claimed line is measured from every line the quote
+  touches, since a model may give any of them.
+- Every other rule is unchanged: the fragment floor, the full-segment
+  preference, and the fact that only the quote is checked. The prompt is
+  unchanged too; the model already quoted whole sentences and gave the line
+  they begin on.
+
+The same one-hour meeting, with the token-budget fix above, now keeps **72 of
+73** action items and 62 decisions on 46 distinct lines. The decisions that
+remain merged are a property of the synthetic meeting, not of the matcher:
+every block repeats "After some discussion, we agreed to keep the current
+scope for…", so a shortened quote occurs in many blocks and goes to the
+nearest one.
+
+`quoteStartsAt` states the contract for checks made outside reconciliation.
+Its plain-JS copy in `scripts/lib/citation-match.mjs` is held to it by
+`driver-citation-parity.spec.ts`, including a randomised corpus with index
+gaps and wordless segments. Reconciliation now tokenizes each segment once
+per summary instead of once per quote, through `createQuoteAttester`.
