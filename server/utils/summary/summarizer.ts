@@ -23,12 +23,23 @@ export interface Summarizer {
   summarizeChunk(input: SummarizeInput): Promise<AttestedChunk>
 }
 
+/**
+ * The request was held back rather than failed: no request slot was free
+ * (`busy`, nothing sent), or the provider answered 429 (`rate-limited`). A
+ * step-wise caller parks until `retryAt` without spending an attempt (ADR-0012 §5).
+ */
+export interface ProviderHold {
+  kind: 'busy' | 'rate-limited'
+  retryAt: Date
+}
+
 /** Raised when the provider refuses or fails; carries what the UI should say. */
 export class SummarizationError extends Error {
   constructor(
     message: string,
     readonly statusCode: number,
     readonly retryable: boolean,
+    readonly hold?: ProviderHold,
   ) {
     super(message)
     this.name = 'SummarizationError'

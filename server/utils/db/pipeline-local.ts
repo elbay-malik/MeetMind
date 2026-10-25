@@ -4,6 +4,7 @@ import { createStorage, type Storage } from 'unstorage'
 import type { Meeting, MeetingSummary } from '#shared/types/meeting'
 import { serialize } from './local'
 import {
+  assertReleasable,
   assertStorableResult,
   assertValidLease,
   assertValidPlan,
@@ -70,8 +71,9 @@ function laterThan(previous: string): string {
 /**
  * The run ledger as one JSON file per meeting under `<dataDir>/db/`, for
  * development and tests. A deliberate mirror of the SQL functions in
- * supabase/migrations/20261026120000_pipeline_runs.sql; tests/unit/pipeline-ledger.spec.ts
- * asserts this against the cases scripts/verify-migrations.sh asserts the SQL against.
+ * supabase/migrations/20261026120000_pipeline_runs.sql and the two migrations
+ * after it; tests/unit/pipeline-ledger.spec.ts asserts this against the cases
+ * scripts/verify-migrations.sh asserts the SQL against.
  */
 export function createLocalPipelineRepository(options: { dataDir: string }): PipelineRepository {
   const base = join(options.dataDir, 'db')
@@ -102,7 +104,7 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
   return {
     kind: 'local',
 
-    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun = false, resetAttempts = false }) {
+    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun = false, resetAttempts = false, moveTo }) {
       assertValidLease(leaseMs)
       if (chunkNo !== undefined && newRun) throw new Error('A new run has no chunks to claim yet')
       return withLedger(meetingId, async (s, state) => {
@@ -137,12 +139,20 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
 
         state.runs[stage] = run
         await s.setItem<LedgerState>(ledgerKey(meetingId), state)
-        await s.setItem<Meeting>(meetingKey(meetingId), { ...meeting, updatedAt: laterThan(meeting.updatedAt) })
+        await s.setItem<Meeting>(meetingKey(meetingId), {
+          ...meeting,
+          ...(moveTo ? { status: moveTo, errorMessage: null, failedStage: null } : {}),
+          updatedAt: laterThan(meeting.updatedAt),
+        })
         return { token: run.stepToken, runId: run.runId, cursor: run.cursor, attempts }
       })
     },
 
-    async releaseStep(meetingId, stage, token, { error, retryAt, refundAttempt = false }) {
+    async releaseStep(meetingId, stage, token, { error, retryAt, refundAttempt = false, cursor, failFrom }) {
+      assertReleasable(stage, failFrom)
+      if (cursor !== undefined && (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor))) {
+        throw new Error('The cursor must be a JSON object')
+      }
       return withLedger(meetingId, async (s, state) => {
         const run = liveRun(state, stage, token)
         if (!run) return false
@@ -154,9 +164,22 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
           else if (run.stepChunkNo == null) run.attempts = Math.max(run.attempts - 1, 0)
         }
         endStep(run)
+        if (cursor !== undefined) run.cursor = structuredClone(cursor)
         run.lastError = error
         run.retryAt = retryAt ? retryAt.getTime() : null
         await s.setItem<LedgerState>(ledgerKey(meetingId), state)
+        if (failFrom !== undefined) {
+          const meeting = await s.getItem<Meeting>(meetingKey(meetingId))
+          if (meeting && meeting.status === failFrom) {
+            await s.setItem<Meeting>(meetingKey(meetingId), {
+              ...meeting,
+              status: 'failed',
+              failedStage: stage as Exclude<PipelineStage, 'search_index'>,
+              errorMessage: error ?? `The ${stage} step failed`,
+              updatedAt: laterThan(meeting.updatedAt),
+            })
+          }
+        }
         return true
       })
     },

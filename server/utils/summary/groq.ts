@@ -164,10 +164,10 @@ export class ProviderBusyError extends Error {
 }
 
 /**
- * How long extraction waits in-request for its slot. Long, for now: the routes
- * still run a whole extraction in one request and have nowhere else to wait.
- * ADR-0012's step-wise routes stop waiting server-side and return `retryAt`.
- * Questions wait far less; see `askMaxSlotWaitMs` in nuxt.config.ts.
+ * How long a whole-transcript `summarize()` waits in-request for its slot.
+ * Step-wise extraction does not wait at all (useStepSummarizer): it parks the
+ * chunk and returns `retryAt`, and the browser does the waiting (ADR-0012).
+ * Questions wait 20 s; see `askMaxSlotWaitMs` in nuxt.config.ts.
  */
 export const DEFAULT_MAX_SLOT_WAIT_MS = 10 * 60_000
 
@@ -289,8 +289,12 @@ export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer
     })
 
     if (!response.ok) {
-      // Recorded before anything else, so every other caller waits it out too.
-      if (response.status === 429) await pacer.rateLimited(retryAfterMs(response.headers.get('retry-after')))
+      if (response.status === 429) {
+        // Recorded before anything else, so every other caller waits it out too.
+        const blockMs = retryAfterMs(response.headers.get('retry-after'))
+        await pacer.rateLimited(blockMs)
+        throw await describeFailure(response, new Date(Date.now() + blockMs))
+      }
       throw await describeFailure(response)
     }
 
@@ -338,6 +342,7 @@ export function createGroqSummarizer(options: GroqSummarizerOptions): Summarizer
           `Summarization is queued behind other requests. Try again after ${err.retryAt.toISOString()}.`,
           429,
           false,
+          { kind: 'busy', retryAt: err.retryAt },
         )
       }
       // The ledger itself failed (a database blip). Retryable, like a
@@ -405,7 +410,8 @@ export function isJsonValidationFailure(status: number, body: string): boolean {
   return status === 400 && body.includes('"json_validate_failed"')
 }
 
-async function describeFailure(response: Response): Promise<SummarizationError> {
+/** `rateLimitedUntil`: for a 429, when the provider will take requests again. */
+async function describeFailure(response: Response, rateLimitedUntil?: Date): Promise<SummarizationError> {
   // Classified on the whole body, quoted from a prefix of it.
   const body = await response.text().catch(() => '')
   const detail = body.slice(0, 300)
@@ -413,15 +419,14 @@ async function describeFailure(response: Response): Promise<SummarizationError> 
   if (response.status === 429) {
     // Not retryable here: withRetries has no backoff, so an immediate retry
     // would hit the same throttle again and double the quota pressure that
-    // triggered it. The chunk-level failure surfaces to summarize.post.ts,
-    // whose own 60s cooldown (RETRY_COOLDOWN_MS) before a `failed` meeting
-    // can be retried is the backoff — instant retries are exactly what that
-    // cooldown exists to stop.
+    // triggered it. The hold says when to come back; a step-wise caller parks
+    // the chunk until then (summary/steps.ts).
     const retryAfter = response.headers.get('retry-after')
     return new SummarizationError(
       `Summarization quota is exhausted for now.${retryAfter ? ` Try again in ${retryAfter}s.` : ''}`,
       429,
       false,
+      { kind: 'rate-limited', retryAt: rateLimitedUntil ?? new Date(Date.now() + DEFAULT_RATE_LIMIT_BLOCK_MS) },
     )
   }
   if (response.status === 401 || response.status === 403) {

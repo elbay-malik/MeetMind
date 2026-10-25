@@ -58,6 +58,11 @@ export interface ClaimOptions {
   newRun?: boolean
   /** Count this claim as attempt 1, as when a failed run is retried. */
   resetAttempts?: boolean
+  /**
+   * Move the meeting to this status with the claim, clearing its error: how a
+   * step enters its stage, from `summarizing` or a cooled-down `failed`.
+   */
+  moveTo?: MeetingStatus
 }
 
 export interface ReleaseOutcome {
@@ -68,6 +73,14 @@ export interface ReleaseOutcome {
    * call: its request slot was not free, or the provider refused with a 429.
    */
   refundAttempt?: boolean
+  /** Replace the run's cursor; left as it is when omitted. */
+  cursor?: Record<string, unknown>
+  /**
+   * Move the meeting to `failed` for this stage, with `error`, if it is still
+   * in this status. Fenced on the token like the rest of the release, so a
+   * step whose lease ran out cannot fail a run another step has taken over.
+   */
+  failFrom?: MeetingStatus
 }
 
 export interface PipelineRepository {
@@ -158,6 +171,13 @@ export function parseStoredResult(chunk: ChunkPlan, stored: unknown): AttestedCh
 export function assertStorableResult(chunk: ChunkPlan, result: AttestedChunk): void {
   const problem = resultProblem(chunk, result)
   if (problem !== null) throw new Error(`Chunk ${chunk.chunkNo}'s result cannot be stored: ${problem}`)
+}
+
+/** Only transcription and extraction have a failed stage of their own; the SQL refuses alike. */
+export function assertReleasable(stage: PipelineStage, failFrom: MeetingStatus | undefined): void {
+  if (failFrom !== undefined && stage === 'search_index') {
+    throw new Error('The search_index stage cannot fail the meeting')
+  }
 }
 
 export function assertValidPlan(chunks: readonly ChunkPlan[]): void {

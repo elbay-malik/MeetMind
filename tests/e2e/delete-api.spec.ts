@@ -8,7 +8,7 @@ import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { fetch, setup } from '@nuxt/test-utils/e2e'
 import type { Meeting } from '../../shared/types/meeting'
-import { audioObjectKey, TRANSCRIBE_CLAIM_LEASE_MS } from '../../shared/utils/meeting'
+import { audioObjectKey } from '../../shared/utils/meeting'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-delete-'))
@@ -234,19 +234,23 @@ describe('DELETE /api/meetings/:id while the meeting may still be written', () =
     expect(((await after.json()) as { meeting: Meeting }).meeting.status).toBe('transcribing')
   })
 
-  it('409s while an indexing claim is live, for the summarise lease rather than the transcribe one', async () => {
-    // Summarisation holds its claim for hours, not minutes. A Retry-After past
-    // the transcribe lease is what shows the route measured this meeting by the
-    // longer lease: by the shorter one the caller would come back, find the
-    // claim apparently abandoned, and delete a meeting whose summary is still
-    // on its way.
+  it('deletes an indexing meeting whose extraction is paused between steps, however recently it moved', async () => {
+    // Extraction runs in short steps under their own leases (ADR-0012). A run
+    // parked between them holds nothing, so an `indexing` status a moment old
+    // no longer refuses the delete -- the old 4 h status lease made a paused
+    // extraction undeletable for hours.
     const meeting = await seedMeeting({ status: 'indexing', updatedAt: new Date().toISOString() })
+    await db.setItem(`pipeline/${meeting.id}`, ledger(null))
+    expect((await del(meeting.id)).status).toBe(204)
+    expect(await db.hasItem(`pipeline/${meeting.id}`)).toBe(false)
+  })
+
+  it('409s an indexing meeting while one of its steps is live', async () => {
+    const meeting = await seedMeeting({ status: 'indexing', updatedAt: new Date().toISOString() })
+    await db.setItem(`pipeline/${meeting.id}`, ledger(Date.now() + 90_000))
     const refused = await del(meeting.id)
     expect(refused.status).toBe(409)
-    expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(TRANSCRIBE_CLAIM_LEASE_MS / 1000)
-    const after = await fetch(`/api/meetings/${meeting.id}`)
-    expect(after.status).toBe(200)
-    expect(((await after.json()) as { meeting: Meeting }).meeting.status).toBe('indexing')
+    expect(Number(refused.headers.get('retry-after'))).toBeLessThanOrEqual(90)
   })
 })
 

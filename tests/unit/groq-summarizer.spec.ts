@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { createLocalSlotRepository } from '../../server/utils/db/slots-local'
 import { createGroqSummarizer, createSlotPacer, type RequestPacer } from '../../server/utils/summary/groq'
-import type { SummarizationError } from '../../server/utils/summary/summarizer'
+import { SummarizationError } from '../../server/utils/summary/summarizer'
 import type { TranscriptSegment } from '../../shared/types/meeting'
 
 const segments: TranscriptSegment[] = [
@@ -320,9 +320,9 @@ describe('failures and retries', () => {
 
   it('explains quota exhaustion in the user\'s terms, and does not instantly retry it', async () => {
     // withRetries has no backoff, so retrying a 429 immediately would just
-    // hit the same throttle again. Only one request should go out; the
-    // 60s cooldown before a failed meeting can be retried (summarize.post.ts)
-    // is where the actual backoff lives.
+    // hit the same throttle again. Only one request should go out; the hold
+    // says when to come back, and a step-wise caller parks the chunk until
+    // then (summary/steps.ts).
     const calls = stubFetch([
       new Response('rate limited', { status: 429, headers: { 'retry-after': '17' } }),
       new Response('rate limited', { status: 429, headers: { 'retry-after': '17' } }),
@@ -330,11 +330,30 @@ describe('failures and retries', () => {
     const err = await summarizer.summarize({ segments }).catch((e: SummarizationError) => e)
     expect(err.message).toMatch(/quota is exhausted.*17s/s)
     expect(err.retryable).toBe(false)
+    expect(err.hold?.kind).toBe('rate-limited')
+    expect(Math.abs(err.hold!.retryAt.getTime() - (Date.now() + 17_000))).toBeLessThan(2000)
     expect(calls).toHaveLength(1)
     // And it reached the shared ledger, so every other caller -- in any
     // isolate -- waits out the same 17s instead of colliding again. 17, not
     // 60: a summarizer that ignored the header would record the 60s default.
     expect(rateLimited).toEqual([17_000])
+  })
+
+  it('holds a chunk back, sending nothing, when its slot is not free now (step-wise, ADR-0012)', async () => {
+    const slots = createLocalSlotRepository({ dataDir: mkdtempSync(join(ledgerRoot, 'ledger-')) })
+    const stepwise = createGroqSummarizer({
+      apiKey: 'gsk-test',
+      maxAttempts: 1,
+      pacer: createSlotPacer({ slots, provider: 'groq-chat', intervalMs: 60_000, maxWaitMs: 0 }),
+    })
+    const calls = stubFetch([reply(goodPayload), reply(goodPayload)])
+    await stepwise.summarizeChunk({ segments })
+    const before = Date.now()
+    const err = await stepwise.summarizeChunk({ segments }).catch((e: SummarizationError) => e)
+    expect(err).toBeInstanceOf(SummarizationError)
+    expect(err.hold?.kind).toBe('busy')
+    expect(err.hold!.retryAt.getTime()).toBeGreaterThan(before + 55_000)
+    expect(calls).toHaveLength(1)
   })
 
   // What a reply cut off by the output budget looks like on the wire: the

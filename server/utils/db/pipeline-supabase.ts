@@ -5,6 +5,7 @@ import { actionItemToRow, decisionToRow } from './summaries'
 import {
   assertStorableResult,
   assertValidLease,
+  assertReleasable,
   assertValidPlan,
   parseStoredResult,
   rowToRun,
@@ -48,7 +49,7 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
   return {
     kind: 'supabase',
 
-    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun, resetAttempts }) {
+    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun, resetAttempts, moveTo }) {
       assertValidLease(leaseMs)
       const { data, error } = await db().rpc('claim_step', {
         p_meeting: meetingId,
@@ -58,6 +59,7 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
         p_chunk_no: chunkNo ?? null,
         p_new_run: newRun ?? false,
         p_reset_attempts: resetAttempts ?? false,
+        p_move_to: moveTo ?? null,
       })
       if (error) fail('claim step', error)
       const row = data?.[0]
@@ -65,7 +67,8 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
       return { token: row.step_token, runId: row.run_id, cursor: row.run_cursor, attempts: row.attempts } satisfies StepClaim
     },
 
-    async releaseStep(meetingId, stage, token, { error: reason, retryAt, refundAttempt }) {
+    async releaseStep(meetingId, stage, token, { error: reason, retryAt, refundAttempt, cursor, failFrom }) {
+      assertReleasable(stage, failFrom)
       const { data, error } = await db().rpc('release_step', {
         p_meeting: meetingId,
         p_stage: stage,
@@ -73,6 +76,8 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
         p_error: reason,
         p_retry_at: retryAt ? retryAt.toISOString() : null,
         p_refund_attempt: refundAttempt ?? false,
+        p_cursor: cursor ?? null,
+        p_fail_from: failFrom ?? null,
       })
       if (error) fail('release step', error)
       return granted('release step', data)

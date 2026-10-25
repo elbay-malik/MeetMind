@@ -189,6 +189,26 @@ describe('claimStep', () => {
     expect(retried!.attempts).toBe(1)
   })
 
+  // Entering a stage is one write with the claim (step 6): a separate status
+  // compare-and-swap after it left a crash window with the meeting moved and
+  // the new run unplanned.
+  it('moves the meeting into the stage with the claim, clearing the failure it leaves', async () => {
+    const m = await newMeeting()
+    const { meetings, pipeline } = repos()
+    await meetings.update(m.id, { status: 'failed', failedStage: 'summarization', errorMessage: 'boom' })
+    const claim = await pipeline.claimStep(m.id, 'summarization', { status: 'failed', leaseMs: LEASE, moveTo: 'indexing' })
+    expect(claim).not.toBeNull()
+    expect(await meetings.get(m.id)).toMatchObject({ status: 'indexing', failedStage: null, errorMessage: null })
+  })
+
+  it('moves nothing when the claim is refused', async () => {
+    const m = await newMeeting('summarizing')
+    const { meetings, pipeline } = repos()
+    await pipeline.claimStep(m.id, 'summarization', { status: 'summarizing', leaseMs: LEASE })
+    expect(await pipeline.claimStep(m.id, 'summarization', { status: 'summarizing', leaseMs: LEASE, moveTo: 'indexing' })).toBeNull()
+    expect((await meetings.get(m.id))!.status).toBe('summarizing')
+  })
+
   it.each([0, 0.4, -5, 2_147_483_648, Number.NaN])('refuses a lease of %s ms, as Postgres\'s integer parameter would', async (leaseMs) => {
     const m = await newMeeting()
     await expect(repos().pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs })).rejects.toThrow(/whole number/)
@@ -232,6 +252,64 @@ describe('releaseStep', () => {
     await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE })
     expect(await pipeline.releaseStep(m.id, 'summarization', randomUUID(), { error: 'x', retryAt: null })).toBe(false)
     expect((await pipeline.listRuns(m.id))[0]!.stepLeaseUntil).not.toBeNull()
+  })
+
+  // Three 429s in a row end a run, so the count has to outlive the request.
+  it('replaces the run\'s cursor when asked, and keeps it otherwise', async () => {
+    const m = await newMeeting()
+    const { pipeline } = repos()
+    const first = (await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE }))!
+    await pipeline.releaseStep(m.id, 'summarization', first.token, { error: null, retryAt: null, cursor: { rateLimited: { chunkNo: 1, count: 2 } } })
+    const second = (await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE }))!
+    expect(second.cursor).toEqual({ rateLimited: { chunkNo: 1, count: 2 } })
+    await pipeline.releaseStep(m.id, 'summarization', second.token, { error: null, retryAt: null })
+    expect((await pipeline.listRuns(m.id))[0]!.cursor).toEqual({ rateLimited: { chunkNo: 1, count: 2 } })
+  })
+
+  it.each([[[1, 2]], [null], ['x']])('refuses a cursor that is not a JSON object (%j)', async (cursor) => {
+    const m = await newMeeting()
+    const { pipeline } = repos()
+    const claim = (await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE }))!
+    await expect(pipeline.releaseStep(m.id, 'summarization', claim.token, {
+      error: null, retryAt: null, cursor: cursor as unknown as Record<string, unknown>,
+    })).rejects.toThrow(/JSON object/)
+  })
+
+  it('fails the meeting for its stage under the live token', async () => {
+    const m = await newMeeting()
+    const { meetings, pipeline } = repos()
+    const claim = (await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE }))!
+    expect(await pipeline.releaseStep(m.id, 'summarization', claim.token, { error: 'quota', retryAt: null, failFrom: 'indexing' })).toBe(true)
+    expect(await meetings.get(m.id)).toMatchObject({ status: 'failed', failedStage: 'summarization', errorMessage: 'quota' })
+  })
+
+  // The case the fence is for: a step that waited out its lease on the provider
+  // must not fail a run another step has taken over since.
+  it('does not fail the meeting under a token that is no longer live', async () => {
+    const m = await newMeeting()
+    const { meetings, pipeline } = repos()
+    const stale = (await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: 1 }))!
+    await expire()
+    await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE })
+    expect(await pipeline.releaseStep(m.id, 'summarization', stale.token, { error: 'late', retryAt: null, failFrom: 'indexing' })).toBe(false)
+    expect((await meetings.get(m.id))!.status).toBe('indexing')
+  })
+
+  it('does not fail a meeting that has left the status it was to fail from', async () => {
+    const m = await newMeeting()
+    const { meetings, pipeline } = repos()
+    const claim = (await pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs: LEASE }))!
+    await meetings.update(m.id, { status: 'ready' })
+    expect(await pipeline.releaseStep(m.id, 'summarization', claim.token, { error: 'x', retryAt: null, failFrom: 'indexing' })).toBe(true)
+    expect((await meetings.get(m.id))!.status).toBe('ready')
+  })
+
+  it('refuses to fail the meeting from the search_index stage, which has no failed stage of its own', async () => {
+    const m = await newMeeting()
+    const { pipeline } = repos()
+    const claim = (await pipeline.claimStep(m.id, 'search_index', { status: 'indexing', leaseMs: LEASE }))!
+    await expect(pipeline.releaseStep(m.id, 'search_index', claim.token, { error: 'x', retryAt: null, failFrom: 'indexing' }))
+      .rejects.toThrow(/cannot fail the meeting/)
   })
 })
 

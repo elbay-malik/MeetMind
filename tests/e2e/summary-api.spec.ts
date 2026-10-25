@@ -8,7 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
 import { quoteStartsAt } from '../../server/utils/summary/reconcile'
-import type { CreateMeetingResponse, Meeting, MeetingSummary, TranscriptSegment } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, ExtractionStepResponse, Meeting, MeetingSummary, TranscriptSegment } from '../../shared/types/meeting'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-summary-'))
@@ -49,8 +49,27 @@ async function transcribedMeeting(): Promise<Meeting> {
   return done.meeting
 }
 
-const summarize = (id: string) =>
-  $fetch<{ meeting: Meeting, summary: MeetingSummary }>(`/api/meetings/${id}/summarize`, { method: 'POST' })
+/** One extraction step: a 200 when done, a 202 with progress otherwise. */
+async function step(id: string): Promise<{ status: number, body: unknown }> {
+  const res = await fetch(`/api/meetings/${id}/summarize`, { method: 'POST' })
+  return { status: res.status, body: await res.json() }
+}
+
+/**
+ * Drive extraction to the end, as the progress page does: one step per
+ * request, waiting (shortened here) when told to. A refusal or failure rejects
+ * with its status code, like `$fetch` would.
+ */
+async function summarize(id: string): Promise<{ meeting: Meeting, summary: MeetingSummary }> {
+  for (let i = 0; i < 50; i++) {
+    const { status, body } = await step(id)
+    if (status === 200) return body as { meeting: Meeting, summary: MeetingSummary }
+    if (status !== 202) throw Object.assign(new Error(JSON.stringify(body)), { statusCode: status })
+    const progress = body as ExtractionStepResponse
+    if (progress.next === 'wait') await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  throw new Error(`extraction of ${id} did not finish in 50 steps`)
+}
 
 /** Reach past the repository interface to simulate the row being physically
  * gone — there is no application flow that deletes a summary directly. */
@@ -81,6 +100,17 @@ async function backdateUpdatedAt(id: string, msAgo: number): Promise<void> {
 }
 
 describe('POST /api/meetings/:id/summarize', () => {
+  it('answers 202 with progress while steps remain, starting with the plan', async () => {
+    const meeting = await transcribedMeeting()
+    const { status, body } = await step(meeting.id)
+    expect(status).toBe(202)
+    const progress = body as ExtractionStepResponse
+    expect(progress.meeting.status).toBe('indexing')
+    expect(progress.progress).toEqual({ done: 0, total: 1, lastError: null })
+    expect(progress.next).toBe('continue')
+    expect(progress.retryAt).toBeNull()
+  })
+
   it('extracts a summary and advances the meeting to ready', async () => {
     const meeting = await transcribedMeeting()
     expect(meeting.status).toBe('summarizing')
@@ -196,49 +226,38 @@ describe('POST /api/meetings/:id/summarize', () => {
     expect(after.errorMessage).toBeNull()
   })
 
-  it('converges concurrent callers on one stored summary, refusing the rest with 409', async () => {
-    // Renamed from "lets exactly one of several concurrent callers do the
-    // work", which it never checked: the provider runs in the server process,
-    // so how many callers actually extracted is not observable from here, and
-    // both "one did the work" and "all three did" left `status === 'ready'`.
-    // What IS observable is asserted instead. That exactly one claim can win is
-    // proven where it can be — meeting-claim.spec.ts, against the CAS itself.
+  it('converges concurrent drivers on one stored summary', async () => {
+    // Each step is claimed under a token, so concurrent drivers take turns
+    // rather than refuse each other: every one of them reaches the end. That
+    // each chunk is extracted exactly once is proven where the provider calls
+    // can be counted, in extraction-steps.spec.ts.
     const meeting = await transcribedMeeting()
-    const attempts = await Promise.allSettled([
-      summarize(meeting.id), summarize(meeting.id), summarize(meeting.id),
-    ])
-    const winners = attempts.filter(a => a.status === 'fulfilled')
-    expect(winners.length).toBeGreaterThanOrEqual(1)
-    for (const loser of attempts.filter(a => a.status === 'rejected')) {
-      expect((loser as PromiseRejectedResult).reason?.statusCode).toBe(409)
-    }
+    const results = await Promise.all([summarize(meeting.id), summarize(meeting.id), summarize(meeting.id)])
     const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('ready')
     const { summary: stored } = await $fetch<{ summary: MeetingSummary }>(`/api/meetings/${meeting.id}/summary`)
-    for (const winner of winners) {
-      expect((winner as PromiseFulfilledResult<{ summary: MeetingSummary }>).value.summary).toEqual(stored)
-    }
+    for (const result of results) expect(result.summary).toEqual(stored)
   })
 
-  it('does not hand out a stale summary while a fresh extraction is genuinely in progress', async () => {
+  it('does not hand out a stale summary while a fresh extraction is in progress', async () => {
     // Re-transcription cascades a stale summary's citations away but leaves
     // meeting_summaries itself in place (see ADR-0006), so a meeting mid a
-    // FRESH extraction run can still have an old summary sitting in storage.
-    // Simulates that exact shape directly, since there is no re-transcription
-    // route yet to reach it through: complete one extraction, then move the
-    // meeting back to `indexing` without touching the stored summary.
+    // FRESH extraction can still have an old summary sitting in storage. There
+    // is no re-transcription route yet, so this puts the meeting back where one
+    // would leave it -- transcribed, summary row untouched -- and marks the old
+    // summary so a stale answer would show.
     const meeting = await transcribedMeeting()
     await summarize(meeting.id)
-    const repo = createLocalMeetingRepository({ dataDir })
-    await repo.update(meeting.id, { status: 'indexing' })
+    const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+    const old = await storage.getItem<MeetingSummary>(`summaries/${meeting.id}`)
+    await storage.setItem(`summaries/${meeting.id}`, { ...old, summary: 'stale summary from before' })
+    await createLocalMeetingRepository({ dataDir }).update(meeting.id, { status: 'summarizing' })
 
-    const res = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
-    expect(res.status).toBe(409)
-    // A 409 for any unrelated reason passed before. Require the refusal to be
-    // the in-progress one, and the stale summary to be nowhere in the body.
-    const text = await res.text()
-    expect(text).toMatch(/already running/i)
-    expect(text).not.toContain('[stub] Placeholder decision')
+    const first = await step(meeting.id)
+    expect(first.status).toBe(202)
+    expect(JSON.stringify(first.body)).not.toContain('stale summary from before')
+    const { summary } = await summarize(meeting.id)
+    expect(summary.summary).not.toBe('stale summary from before')
   })
 
   it('finishes a silent recording with an empty summary instead of getting stuck in summarizing', async () => {

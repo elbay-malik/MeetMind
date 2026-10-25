@@ -1,6 +1,6 @@
 import type { H3Event } from 'h3'
 import type { Meeting } from '#shared/types/meeting'
-import { audioObjectKey, claimLooksStale, SUMMARIZE_CLAIM_LEASE_MS, TRANSCRIBE_CLAIM_LEASE_MS } from '#shared/utils/meeting'
+import { audioObjectKey, claimLooksStale, TRANSCRIBE_CLAIM_LEASE_MS } from '#shared/utils/meeting'
 import { usePipelineRepository, useSummaryRepository, useTranscriptIndexRepository, useTranscriptRepository } from './db'
 import type { MeetingRepository } from './db/meetings'
 import { liveStepLease, type PipelineRepository, type PipelineRun } from './db/pipeline'
@@ -41,16 +41,17 @@ export interface DeletionBlocker {
  *   see and only the bucket's lifecycle rule would ever remove. Measured from
  *   `createdAt`, which is written just AFTER the URL is minted, so it can only
  *   overestimate the URL's life.
- * - **A live claim.** Transcription and summarisation write their results after
- *   holding the claim for minutes or hours. The fenced delete would stop the
- *   route's own status write, but not the child rows it writes first -- and on
- *   the local driver nothing would refuse those. A claim past its lease is
- *   treated the way the routes themselves treat it: as abandoned.
+ * - **A live transcription claim.** Transcription writes its result after
+ *   holding the claim for minutes. The fenced delete would stop the route's own
+ *   status write, but not the segments it writes first -- and on the local
+ *   driver nothing would refuse those. A claim past its lease is treated the
+ *   way the route itself treats it: as abandoned.
  * - **A live pipeline step** (ADR-0012). A step writes its result back when it
  *   finishes, fenced on its token; the cascade would make that write match
  *   nothing on Supabase, but a step part-way through a provider call has
  *   already spent the quota for a result that would be thrown away. A run
- *   parked between steps holds no lease and does not block.
+ *   parked between steps holds no lease and does not block: an `indexing`
+ *   meeting whose extraction is paused is deletable.
  */
 export function deletionBlocker(
   meeting: Pick<Meeting, 'status' | 'createdAt' | 'updatedAt'>,
@@ -65,13 +66,10 @@ export function deletionBlocker(
     }
   }
 
-  const lease = meeting.status === 'transcribing'
-    ? TRANSCRIBE_CLAIM_LEASE_MS
-    : meeting.status === 'indexing' ? SUMMARIZE_CLAIM_LEASE_MS : undefined
-  if (lease !== undefined && !claimLooksStale(meeting, now)) {
+  if (meeting.status === 'transcribing' && !claimLooksStale(meeting, now)) {
     return {
       reason: `It is ${meeting.status}, and that work would write its results back after the delete`,
-      retryAfterSec: Math.ceil((Date.parse(meeting.updatedAt) + lease - now) / 1000),
+      retryAfterSec: Math.ceil((Date.parse(meeting.updatedAt) + TRANSCRIBE_CLAIM_LEASE_MS - now) / 1000),
     }
   }
 
