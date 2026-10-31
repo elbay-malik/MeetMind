@@ -211,6 +211,13 @@ Several playbook instructions were changed after re-checking their premises — 
 rate limiting (which cross-meeting search's open endpoint makes more pressing —
 see ADR-0008), Cloudflare Workers.
 
+## Acknowledgements
+
+MeetMind is built with the help of [Claude](https://www.anthropic.com/claude), Anthropic's
+AI model, working through [Claude Code](https://claude.com/claude-code) on design,
+implementation, reviews and documentation throughout the project. This note stands in
+for per-commit co-author credits.
+
 ## License
 
 [MIT](LICENSE)
