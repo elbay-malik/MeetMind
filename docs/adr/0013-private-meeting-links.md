@@ -86,7 +86,9 @@ can reach it from the home page, so its notice says that instead.
 
 `NUXT_PUBLIC_DEMO_MEETING_ID`, empty by default, makes the home page link to that
 meeting. No demo meeting is created here. This is public runtime config, so the id is in
-every page's payload by design; it must only ever name a meeting meant to be seen.
+every page's payload by design; it must only ever name a meeting meant to be seen. A
+value that is not a UUID hides the link and logs a warning. An id whose meeting was deleted
+still shows it and opens a 404, since catching that needs a lookup on every home page visit.
 
 ### 6. `Referrer-Policy: same-origin` on every route.
 

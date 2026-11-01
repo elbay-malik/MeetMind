@@ -1,9 +1,17 @@
 <script setup lang="ts">
+import { meetingIdSchema } from '#shared/schemas/meeting'
 import type { ExtractOptions } from '../workers/ffmpeg.protocol'
 
 useSeoMeta({ title: 'MeetMind — Upload' })
 
-const { demoMeetingId } = useRuntimeConfig().public
+// An id the server's own check refuses could only open a 404, so no button for it. This
+// cannot catch a well-formed id with no meeting behind it: that would take a lookup on
+// every visit to the home page.
+const configuredDemoId = useRuntimeConfig().public.demoMeetingId
+const demoMeetingId = meetingIdSchema.safeParse(configuredDemoId).success ? configuredDemoId : ''
+if (configuredDemoId && !demoMeetingId) {
+  console.warn('NUXT_PUBLIC_DEMO_MEETING_ID is not a meeting id, so the home page shows no demo link')
+}
 
 const { state, extract, cancel, reset: resetExtraction } = useAudioExtract()
 const uploader = useMeetingUpload()
