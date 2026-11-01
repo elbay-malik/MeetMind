@@ -44,7 +44,9 @@ const browser = await chromium.launch({
   headless: true,
   ...(process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {}),
 })
-const page = await browser.newPage()
+// Clipboard access, for reading back what the Copy link control copied.
+const context = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] })
+const page = await context.newPage()
 const consoleLines = []
 page.on('console', m => consoleLines.push(`[console:${m.type()}] ${m.text()}`))
 page.on('pageerror', e => consoleLines.push(`[pageerror] ${e.message}`))
@@ -282,10 +284,34 @@ try {
   console.log(`clicking the citation moved the player to ${seekedTo.toFixed(2)}s (line starts at ${(target.startMs / 1000).toFixed(2)}s)`)
   if (Math.abs(seekedTo - target.startMs / 1000) > 1.5) fail('clicking an answer citation did not seek to its line')
 
-  // The archive lists the new meeting.
+  // The link to keep is the meeting's own, whichever page copies it.
+  await page.getByRole('button', { name: 'Copy link' }).click()
+  await page.getByText('Link copied.').waitFor({ timeout: 5_000 })
+  const copied = await page.evaluate(() => navigator.clipboard.readText())
+  console.log('copied link:', copied)
+  if (copied !== `${baseURL}/meetings/${meetingId}`) fail(`Copy link copied ${copied}`)
+
+  // Your meetings (ADR-0013): this browser remembers the upload...
+  const listed = page.getByRole('link', { name: /Drive-script upload/ })
   await page.goto(`${baseURL}/meetings`, { waitUntil: 'networkidle' })
-  await page.getByRole('link', { name: /Drive-script upload/ }).first().waitFor({ timeout: 10_000 })
-  console.log('archive lists the meeting')
+  await listed.first().waitFor({ timeout: 10_000 })
+  console.log('Your meetings lists the upload')
+
+  // ...and nothing else does. The server's copy of this page holds no id, and the
+  // list comes back empty once this browser's storage is gone: the check a list
+  // still fed by the server would fail.
+  const served = await (await fetch(`${baseURL}/meetings`)).text()
+  if (served.includes(meetingId)) fail('the server-rendered meetings page carries the meeting id')
+  await page.evaluate(() => localStorage.clear())
+  await page.reload({ waitUntil: 'networkidle' })
+  if (await listed.count() !== 0) fail('the meeting is still listed with this browser\'s storage cleared')
+  console.log('cleared storage, cleared list')
+
+  // Corrupt storage must leave a working page, not an error page.
+  await page.evaluate(() => localStorage.setItem('meetmind.your-meetings.v1', '{not json'))
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByText('No meetings uploaded from this browser').waitFor({ timeout: 5_000 })
+  console.log('corrupt storage renders as an empty list')
 }
 catch (err) {
   fail(err.message)
