@@ -362,4 +362,26 @@ describe('GET /api/meetings/:id/transcript', () => {
   it('404s for an unknown meeting', async () => {
     expect((await fetch('/api/meetings/9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d/transcript')).status).toBe(404)
   })
+
+  // Only the progress page asks for the next step, so nothing is running here.
+  it('does not tell the meeting page a paused run is running, or that part of a transcript is all of it', async () => {
+    const { id } = await uploadedMeeting()
+    const step = () => fetch(`/api/meetings/${id}/transcribe`, { method: 'POST' })
+    const page = async () => (await fetch(`/meetings/${id}`)).text()
+
+    expect((await step()).status).toBe(202)
+    const none = await page()
+    expect(none).not.toContain('Transcription is running')
+    expect(none).toContain('Transcription is not finished')
+
+    expect((await step()).status).toBe(202)
+    const partial = await page()
+    expect(partial).toMatch(/2(<!--.*?-->)? transcript segments so far/)
+    expect(partial).toContain('This transcript is not finished')
+
+    expect((await step()).status).toBe(200)
+    const finished = await page()
+    expect(finished).not.toContain('so far')
+    expect(finished).not.toContain('This transcript is not finished')
+  })
 })

@@ -242,12 +242,28 @@ const emptyTranscript = computed(() => {
     return { title: 'No audio to transcribe', description: 'The uploaded audio was rejected and removed. Upload the recording again.' }
   }
   if (status === 'transcribing') {
-    return { title: 'Transcription is running', description: 'The transcript will appear here when it finishes.' }
+    return { title: 'Transcription is not finished', description: 'It moves only while its progress page is open. Open Pipeline to resume it.' }
   }
   if (status === 'pending_upload') {
     return { title: 'Waiting for audio', description: 'The upload has not been confirmed yet.' }
   }
   return { title: 'No transcript yet', description: 'Run transcription from the progress screen to see the meeting\'s words here.' }
+})
+
+/**
+ * Pages of a transcript are readable as they are stored, and after an attempt
+ * that failed part-way until a retry replaces them. What to say about lines that
+ * are not all of it; null when they are.
+ */
+const incompleteTranscript = computed(() => {
+  const { status, failedStage } = meeting.value
+  if (status === 'transcribing') {
+    return { title: 'This transcript is not finished', description: 'These are the lines so far. Transcription moves only while its progress page is open. Open Pipeline to resume it.' }
+  }
+  if (status === 'failed' && failedStage === 'transcription') {
+    return { title: 'This transcript is not finished', description: 'Transcription failed part-way, so these lines may stop early. Retry it from Pipeline.' }
+  }
+  return null
 })
 
 const audioSrc = computed(() => `/api/meetings/${meetingId.value}/audio`)
@@ -288,7 +304,7 @@ onMounted(() => {
         <template v-if="meeting.durationSec">
           · {{ formatDuration(meeting.durationSec) }}
         </template>
-        · {{ segments.length }} transcript segments
+        · {{ segments.length }} transcript segments{{ incompleteTranscript ? ' so far' : '' }}
       </p>
     </div>
 
@@ -424,6 +440,15 @@ onMounted(() => {
     <MeetingQuestions
       :meeting-id="meetingId"
       @seek="seekToCitation"
+    />
+
+    <UAlert
+      v-if="segments.length && incompleteTranscript"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-hourglass"
+      :title="incompleteTranscript.title"
+      :description="incompleteTranscript.description"
     />
 
     <UCard v-if="segments.length">
