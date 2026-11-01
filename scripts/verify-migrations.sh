@@ -613,9 +613,9 @@ ledger_meeting() { # ledger_meeting <uuid> <status>
               insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text)
               select '$1', g, g * 1000, g * 1000 + 900, 'line ' || g from generate_series(0, 9) g;"
 }
-claim() { # claim <label> <meeting> <stage> <status> <lease_ms> [chunk_no|null] [new_run] [reset_attempts] ['move_to'|null] [redo]
+claim() { # claim <label> <meeting> <stage> <status> <lease_ms> [chunk_no|null] [new_run] [reset_attempts] ['move_to'|null] [redo] [expected_updated_at]
   psql -q -c "insert into vl_c select '$1', step_token, run_id, attempts
-              from public.claim_step('$2', '$3', '$4', $5, ${6:-null}, ${7:-false}, ${8:-false}, ${9:-null}, ${10:-false});"
+              from public.claim_step('$2', '$3', '$4', $5, ${6:-null}, ${7:-false}, ${8:-false}, ${9:-null}, ${10:-false}, ${11:-null});"
 }
 tok() { echo "(select step_token from vl_c where label = '$1')"; }
 got() { echo "(select $2 from vl_c where label = '$1')"; }
@@ -970,6 +970,20 @@ finish f5 "$T5" "$(tok t5)" "$PLAN"
 check "finish_transcription finishes nothing under a token that is not the live one" \
   "select $(got f5 attempts) = 0 and (select status from public.meetings where id = '$T5') = 'transcribing'
           and not exists (select 1 from public.summary_chunks where meeting_id = '$T5')"
+# A stale retry out of `failed` cannot reopen what another caller has ended.
+T6=a0000000-0000-0000-0000-000000000016
+empty_meeting "$T6" uploaded
+psql -q -c "update public.meetings set status = 'failed', failed_stage = 'summarization', error_message = 'too long' where id = '$T6';"
+claim staleretry "$T6" transcription failed 60000 null false true "'transcribing'" false "'2000-01-01T00:00:00Z'::timestamptz"
+check "claim_step claims nothing when the meeting has changed since p_expected_updated_at" \
+  "select not $(claimed staleretry)
+          and (select status = 'failed' and failed_stage = 'summarization' and error_message = 'too long'
+                 from public.meetings where id = '$T6')"
+claim freshretry "$T6" transcription failed 60000 null false true "'transcribing'" false "(select updated_at from public.meetings where id = '$T6')"
+check "claim_step claims when the meeting is exactly as the caller read it" \
+  "select $(claimed freshretry) and (select status from public.meetings where id = '$T6') = 'transcribing'"
+psql -q -c "delete from public.meetings where id = '$T6';"
+
 psql -q -c "delete from public.meetings where id in ('$T1', '$T2', '$T3', '$T4', '$T5');"
 check "deleting a meeting removes what transcription wrote" \
   "select not exists (select 1 from public.transcript_segments where meeting_id in ('$T1', '$T2', '$T3', '$T4', '$T5'))

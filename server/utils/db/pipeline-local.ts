@@ -106,12 +106,13 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
   return {
     kind: 'local',
 
-    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun = false, resetAttempts = false, moveTo, redo = false }) {
+    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun = false, resetAttempts = false, moveTo, redo = false, expectedUpdatedAt }) {
       assertValidLease(leaseMs)
       if (chunkNo !== undefined && newRun) throw new Error('A new run has no chunks to claim yet')
       return withLedger(meetingId, async (s, state) => {
         const meeting = await s.getItem<Meeting>(meetingKey(meetingId))
         if (!meeting || meeting.status !== status) return null
+        if (expectedUpdatedAt !== undefined && meeting.updatedAt !== expectedUpdatedAt) return null
 
         const now = Date.now()
         const current = state.runs[stage]

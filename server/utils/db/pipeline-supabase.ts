@@ -50,7 +50,7 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
   return {
     kind: 'supabase',
 
-    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun, resetAttempts, moveTo, redo }) {
+    async claimStep(meetingId, stage, { status, leaseMs, chunkNo, newRun, resetAttempts, moveTo, redo, expectedUpdatedAt }) {
       assertValidLease(leaseMs)
       const { data, error } = await db().rpc('claim_step', {
         p_meeting: meetingId,
@@ -62,6 +62,7 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
         p_reset_attempts: resetAttempts ?? false,
         p_move_to: moveTo ?? null,
         p_redo: redo ?? false,
+        p_expected_updated_at: expectedUpdatedAt ?? null,
       })
       if (error) fail('claim step', error)
       const row = data?.[0]

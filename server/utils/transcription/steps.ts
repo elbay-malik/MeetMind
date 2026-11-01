@@ -129,7 +129,10 @@ export async function advanceTranscription(meetingId: string, deps: Transcriptio
     const waitMs = cooldownEnds(meeting, run) - now()
     if (waitMs > 0) return { kind: 'refused', statusCode: 409, message: cooldownMessage(waitMs) }
     // Resumes from the cursor: a page that failed does not spend Whisper again.
-    return steps.claimAndRun({ status: 'failed', moveTo: 'transcribing', resetAttempts: true, leaseMs: leaseFor(run) })
+    // Only from the failure checked above: another caller may have finished the
+    // transcript since, leaving the status `failed` for extraction's reasons, or
+    // failed again and restarted the cooldown.
+    return steps.claimAndRun({ status: 'failed', moveTo: 'transcribing', resetAttempts: true, leaseMs: leaseFor(run), expectedUpdatedAt: meeting.updatedAt })
   }
 
   const parked = waitingOn(run, now())
