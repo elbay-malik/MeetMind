@@ -23,7 +23,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-JOBS=(lint typecheck test e2e migrations browser)
+JOBS=(lint typecheck test audit e2e migrations browser)
 LOG_DIR=.data/ci-local
 PORT_BASE=3000
 
@@ -37,6 +37,7 @@ job_command() {
     lint)       echo 'pnpm lint' ;;
     typecheck)  echo 'pnpm typecheck' ;;
     test)       echo 'pnpm test' ;;
+    audit)      echo 'pnpm audit --prod --audit-level=high' ;;
     e2e)        echo 'pnpm test:e2e' ;;
     migrations) echo 'bash scripts/verify-migrations.sh' ;;
     browser)    echo '(multi-step: make-fixture.sh, pnpm build, drive-upload.mjs, drive-player.mjs, drive-search.mjs)' ;;
@@ -96,7 +97,7 @@ record() { RESULTS+=("$1|$2|$3"); }
 
 # --- preflight ---------------------------------------------------------------
 # CI gets a clean checkout and runs `pnpm install --frozen-lockfile` in every
-# job. Doing that six times here would be pointless, but skipping it entirely
+# job. Doing that for every job here would be pointless, but skipping it entirely
 # would miss the one thing it actually catches: a lockfile that no longer
 # matches package.json. So: install only when the lockfile is newer than the
 # installed tree, which is exactly that case.
