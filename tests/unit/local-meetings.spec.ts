@@ -77,6 +77,18 @@ describe('readLocalMeetings', () => {
     expect(readLocalMeetings(memory(raw)).meetings).toEqual([entry(1)])
   })
 
+  it.each([
+    ['before', `../../api/health/${entry(1).id}`],
+    ['after', `${entry(1).id}/../../api/health`],
+  ])('drops an id with a path %s its UUID, which would steer the link', (_where, id) => {
+    expect(readLocalMeetings(memory(JSON.stringify([{ ...entry(1), id }]))).meetings).toEqual([])
+  })
+
+  it('keeps an id written in capitals, which is still a UUID', () => {
+    const upper = { ...entry(1), id: entry(1).id.toUpperCase() }
+    expect(readLocalMeetings(memory(JSON.stringify([upper]))).meetings).toEqual([upper])
+  })
+
   it('sorts newest first whatever order was stored', () => {
     const raw = JSON.stringify([entry(1), entry(3), entry(2)])
     expect(readLocalMeetings(memory(raw)).meetings.map(m => m.title)).toEqual(['Meeting 3', 'Meeting 2', 'Meeting 1'])
