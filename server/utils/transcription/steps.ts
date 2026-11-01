@@ -1,7 +1,7 @@
 import type { Meeting, TranscriptSegment } from '#shared/types/meeting'
 import { AUDIO_MIME, MAX_AUDIO_BYTES, whisperReplyKey } from '#shared/utils/meeting'
 import type { MeetingRepository } from '../db/meetings'
-import type { ClaimOptions, PipelineRepository, PipelineRun, ReleaseOutcome, StepClaim } from '../db/pipeline'
+import { MAX_SEGMENT_MS, type ClaimOptions, type PipelineRepository, type PipelineRun, type ReleaseOutcome, type StepClaim } from '../db/pipeline'
 import type { SlotRepository } from '../db/slots'
 import { RangeNotSatisfiableError, type AudioStore } from '../storage/audio-store'
 import { CHUNK_BUDGET_TOKENS } from '../summary/groq'
@@ -411,6 +411,11 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
 
       const lines = containOutliers(parseSegments(scanned.objects), { floorSec: reply.lastStartMs / 1000, audioEndSec: reply.audioEndSec })
       const segments = continueFrom(normalizeSegments(lines), reply)
+      // What containOutliers could not rule out. The database would refuse it on
+      // every retry of this page, so this is the same as a reply that is malformed.
+      if (segments.some(s => s.endMs > MAX_SEGMENT_MS)) {
+        throw new ReplyFormatError('Transcription service returned an unexpected response: a timestamp is too large')
+      }
 
       const cursor: TranscriptionCursor = {
         reply: {

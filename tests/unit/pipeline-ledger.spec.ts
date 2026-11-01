@@ -642,6 +642,19 @@ describe('appendSegments and finishTranscription (step 7)', () => {
     await expect(repos().pipeline.appendSegments(m.id, claim.token, page)).rejects.toThrow(message)
   })
 
+  // Postgres refuses these, so the local driver has to, or no run here would show it.
+  it.each([
+    ['a NUL in the text', { text: 'a\u0000b' }, /cannot be stored/],
+    ['a lone surrogate in the text', { text: '\ud83d' }, /cannot be stored/],
+    ['a start past an integer', { startMs: 3_000_000_000, endMs: 3_000_000_000 }, /cannot be stored/],
+    ['an end past an integer', { endMs: 3_000_000_000 }, /cannot be stored/],
+    ['an infinite time', { endMs: Number.POSITIVE_INFINITY }, /cannot be stored/],
+  ])('refuses %s, as the SQL does', async (_, patch, message) => {
+    const { m, claim } = await transcribing()
+    const page = { fromIdx: 0, segments: [{ ...line(0), ...patch }], cursor: {} }
+    await expect(repos().pipeline.appendSegments(m.id, claim.token, page)).rejects.toThrow(message)
+  })
+
   it('finishes in one move: a new extraction run with the plan, summarizing, the step ended', async () => {
     const { m, claim } = await transcribing()
     const { meetings, pipeline } = repos()

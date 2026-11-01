@@ -429,6 +429,7 @@ Step 5 (`20261026120000_pipeline_runs.sql`) differs from §3 in these ways:
 - The same step can store its reply after the meeting was deleted or its transcript finished. It finds that out when its write is refused, and removes the object then, but only in those two cases: while the meeting is still being transcribed another step may be reading it.
 - `stored_audio_bytes` and `audioIsStored` are untouched and do not count it, as above.
 - A reply that is gone, changed or malformed clears the cursor and fails the run, so the retry after the cooldown calls Whisper again. It never re-sends by itself: that spends quota, and the same reply may come back.
+- **A reply the transcript table cannot hold** is handled before the database sees it, because a refused page would otherwise keep its cursor and fail the same way on every retry. `normalizeSegments` drops a NUL and replaces a lone surrogate, keeping the line; a timestamp past `start_ms`'s integer that `containOutliers` did not catch counts as malformed. `assertValidPage` refuses all of these in both drivers, as Postgres does.
 
 **Failures:**
 - **429:** `failed`/transcription as before, with `run.retryAt` from `Retry-After`, so the cooldown is `max(updatedAt + 60 s, retryAt)`. A 429 with no header assumes 60 s (`retryAfterMs`, shared with extraction); the stub sends none. The block goes to `note_rate_limit('groq-whisper')`, and a Whisper step reads `blockedUntil` before sending, parking without spending an attempt. No slot is reserved, as §4 says.

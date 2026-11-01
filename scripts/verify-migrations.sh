@@ -912,6 +912,14 @@ reject "append_segments refuses a cursor that is not an object" \
   "select public.append_segments('$T1', $(tok t1d), 0, '[]', '[1]')" "must be a JSON object"
 reject "append_segments refuses segments that are not an array" \
   "select public.append_segments('$T1', $(tok t1d), 0, '{}', '{}')" "must be a JSON array"
+# The reason normalizeSegments cleans text, and a page checks its times first:
+# refused every time, these would stop a page for good.
+reject "append_segments refuses a NUL in the text" \
+  "select public.append_segments('$T1', $(tok t1d), 0, '[{\"idx\":0,\"start_ms\":0,\"end_ms\":1,\"text\":\"a\\u0000b\"}]', '{}')" "unsupported Unicode escape"
+reject "append_segments refuses a lone surrogate in the text" \
+  "select public.append_segments('$T1', $(tok t1d), 0, '[{\"idx\":0,\"start_ms\":0,\"end_ms\":1,\"text\":\"\\ud83d\"}]', '{}')" "low surrogate"
+reject "append_segments refuses a time past an integer" \
+  "select public.append_segments('$T1', $(tok t1d), 0, '[{\"idx\":0,\"start_ms\":3000000000,\"end_ms\":3000000000,\"text\":\"x\"}]', '{}')" "out of range"
 
 claim other7 "$T1" summarization transcribing 60000
 append wrongstage "$T1" "$(tok other7)" 0 "[$(line 0)]" '{}'

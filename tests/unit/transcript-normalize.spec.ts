@@ -133,6 +133,17 @@ describe('spokenMs', () => {
   })
 })
 
+describe('normalizeSegments, on text Postgres would refuse', () => {
+  it('drops a NUL and replaces a lone surrogate, keeping a whole pair', () => {
+    const texts = normalizeSegments([raw(0, 1, 'a\u0000b'), raw(1, 2, 'x\ud83dy'), raw(2, 3, '\ud83d\ude00')]).map(s => s.text)
+    expect(texts).toEqual(['ab', 'x\ufffdy', '\ud83d\ude00'])
+  })
+
+  it('drops a line that held nothing else', () => {
+    expect(normalizeSegments([raw(0, 1, ' \u0000 ')])).toEqual([])
+  })
+})
+
 describe('containOutliers', () => {
   const at = (...starts: number[]) => starts.map(start => ({ start, end: start + 1, text: `at ${start}` }))
   const contain = (lines: ReturnType<typeof at>, audioEndSec: number | null = null, floorSec = 0) => containOutliers(lines, { floorSec, audioEndSec })

@@ -219,11 +219,17 @@ export function assertReleasable(stage: PipelineStage, failFrom: MeetingStatus |
   }
 }
 
-/** Refuse a page the transcript's gapless numbering could not hold; the SQL refuses alike. */
+/** The latest time `start_ms` and `end_ms` hold: Postgres's `integer`. */
+export const MAX_SEGMENT_MS = 2_147_483_647
+
+/** Refuse a page the transcript's gapless numbering or its columns could not hold; the SQL refuses alike. */
 export function assertValidPage({ fromIdx, segments, cursor }: SegmentPage): void {
   if (!Number.isInteger(fromIdx) || fromIdx < 0) throw new Error(`A page must start at a segment index, got ${fromIdx}`)
   segments.forEach((s, i) => {
     if (s.idx !== fromIdx + i) throw new Error(`A page must be numbered consecutively from ${fromIdx}, got ${s.idx} at ${i}`)
+    if (s.startMs > MAX_SEGMENT_MS || s.endMs > MAX_SEGMENT_MS || s.text.includes('\u0000') || !s.text.isWellFormed()) {
+      throw new Error(`Segment ${s.idx} cannot be stored: its times or its text are out of range for the transcript's columns`)
+    }
   })
   if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) throw new Error('The cursor must be a JSON object')
 }

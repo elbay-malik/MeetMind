@@ -978,3 +978,38 @@ describe('a Whisper step whose reply arrives after it lost the run', () => {
     expect(await replyStored(m.id)).toBe(true)
   })
 })
+
+// Postgres refuses these, every time, and a page that fails that way used to
+// keep its cursor: each retry read the same bytes and failed again, and nothing
+// asked Whisper. The local driver stores anything, so it would not show.
+describe('a reply holding what the transcript table cannot store', () => {
+  const lineOf = (start: number, end: number, text: string) => ({ start, end, text })
+  const noDuration = (segments: unknown[]) => new TextEncoder().encode(JSON.stringify({ task: 'transcribe', text: 'x', segments }))
+
+  it('stores the line without a NUL or a lone surrogate, rather than lose the transcript', async () => {
+    const m = await newMeeting()
+    const reply = replyOf([lineOf(0, 1, 'a\u0000b'), lineOf(1, 2, 'half \ud83d emoji'), lineOf(2, 3, '\u0000'), lineOf(3, 4, 'whole \ud83d\ude00')])
+    const deps = depsWith(scripted(reply).transcriber)
+    expect((await drive(m.id, deps)).at(-1)).toMatchObject({ kind: 'done', meeting: { status: 'summarizing' } })
+    expect((await transcript(m.id)).map(s => s.text)).toEqual(['ab', 'half \ufffd emoji', 'whole \ud83d\ude00'])
+  })
+
+  it.each([
+    ['a start', lineOf(3_000_000, 3_000_001, 'far')],
+    ['an end', lineOf(1, 3_000_000, 'long')],
+    ['a start that overflows to infinity', lineOf(1e306, 1e306, 'absurd')],
+  ])('fails the run over %s past what an integer holds, so the retry asks Whisper again', async (_, bad) => {
+    const script = scripted(noDuration([lineOf(0, 1, 'fine'), bad]))
+    const m = await newMeeting()
+    const deps = depsWith(script.transcriber)
+    await advanceTranscription(m.id, deps)
+    expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'failed', statusCode: 502, message: expect.stringMatching(/too large/) })
+    expect(await getMeeting(m.id)).toMatchObject({ status: 'failed', failedStage: 'transcription' })
+    expect((await run(m.id))!.cursor).toEqual({})
+
+    deps.time.advance(RETRY_COOLDOWN_MS + 1000)
+    await advanceTranscription(m.id, deps)
+    expect(script.calls()).toBe(2)
+  })
+})
+
