@@ -13,6 +13,10 @@ onMounted(() => {
 })
 const link = computed(() => `${origin.value}${path.value}`)
 
+/** The home page links to this one for every visitor, so its link is not a secret to keep. */
+const { demoMeetingId } = useRuntimeConfig().public
+const isDemo = computed(() => !!demoMeetingId && demoMeetingId.toLowerCase() === props.meetingId.toLowerCase())
+
 const notRemembered = useNotRememberedMeetings()
 const remembered = computed(() => !notRemembered.value.includes(props.meetingId))
 
@@ -35,9 +39,19 @@ async function copyLink() {
 <template>
   <UCard>
     <h2 class="font-semibold">
-      Keep this link
+      {{ isDemo ? 'Link to this meeting' : 'Keep this link' }}
     </h2>
-    <p class="mt-1 text-sm text-muted">
+    <p
+      v-if="isDemo"
+      class="mt-1 text-sm text-muted"
+    >
+      This is the public demo meeting. Anyone can open it from the home page, read the
+      transcript and summary and play the audio.
+    </p>
+    <p
+      v-else
+      class="mt-1 text-sm text-muted"
+    >
       It is the only way back to this meeting: there are no accounts, and if you lose it
       you lose access. Anyone with this link can read the transcript and summary and play
       the audio.

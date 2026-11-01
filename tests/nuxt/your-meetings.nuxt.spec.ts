@@ -165,6 +165,29 @@ describe('MeetingLinkNotice', () => {
     expect(page.find('[role="status"]').text()).toContain('Could not copy automatically')
   })
 
+  describe('on the public demo meeting', () => {
+    const setDemo = (id: string) => {
+      useRuntimeConfig().public.demoMeetingId = id
+    }
+    afterEach(() => setDemo(''))
+
+    it.each([ID, ID.toUpperCase()])('does not claim the link is the only way back (%s)', async (demoId) => {
+      setDemo(demoId)
+      const page = await mount()
+      expect(page.text()).toContain('public demo meeting')
+      expect(page.text()).not.toContain('only way back')
+      expect(page.text()).not.toContain('lose access')
+      expect(page.find('input').exists()).toBe(true)
+    })
+
+    it('still warns on any other meeting when a demo is configured', async () => {
+      setDemo(ID.replace('9b1', 'ab1'))
+      const page = await mount()
+      expect(page.text()).toContain('only way back')
+      expect(page.text()).not.toContain('public demo meeting')
+    })
+  })
+
   it('says nothing extra about a meeting this browser did remember', async () => {
     const page = await mount()
     expect(page.text()).not.toContain('could not add this meeting')
