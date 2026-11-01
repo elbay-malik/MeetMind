@@ -295,6 +295,23 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
     }
   }
 
+  /** Best effort: the delete path and the bucket's lifecycle rule both remove one left behind. */
+  async function deleteReply(): Promise<void> {
+    await store.delete(replyKey).catch(err => console.warn('[meetmind] could not delete a raw transcription reply:', err))
+  }
+
+  /**
+   * A step that lost its token can still have just stored a reply, since R2 has
+   * no write fence. That object is dead once the meeting is gone or past
+   * transcription, and nothing else would remove it. Short of that, another step
+   * may be reading it.
+   */
+  async function replyHasNoReader(): Promise<boolean> {
+    const current = await deps.meetings.get(meetingId)
+    if (!current) return true
+    return PAST_TRANSCRIPTION.includes(current.status) || (current.status === 'failed' && current.failedStage !== STAGE)
+  }
+
   /** The one provider call: its reply goes to storage as it came, and the first page starts from there. */
   async function whisper(claimed: StepClaim): Promise<TranscriptionOutcome> {
     // Claims that ended without an answer -- killed mid-request, most likely --
@@ -335,7 +352,11 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
         },
       }
       // Index 0 clears whatever an earlier attempt of this run left behind.
-      if (!await pipeline.appendSegments(meetingId, claimed.token, { fromIdx: 0, segments: [], cursor })) return await snapshot()
+      if (!await pipeline.appendSegments(meetingId, claimed.token, { fromIdx: 0, segments: [], cursor })) {
+        const outcome = await snapshot()
+        if (await replyHasNoReader()) await deleteReply()
+        return outcome
+      }
       return await progress(null, { cursor, lastError: null })
     }
     catch (err) {
@@ -435,9 +456,8 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
     catch (err) {
       return stepFailed(claimed, err, MAX_STEP_ATTEMPTS)
     }
-    // After the commit, and best effort: the delete path and the bucket's
-    // lifecycle rule both remove one left behind.
-    await store.delete(replyKey).catch(err => console.warn('[meetmind] could not delete a raw transcription reply:', err))
+    // After the commit, when nothing can need it any more.
+    await deleteReply()
     const current = await deps.meetings.get(meetingId)
     if (!current) return { kind: 'refused', statusCode: 404, message: 'Meeting not found' }
     return { kind: 'done', meeting: current }
