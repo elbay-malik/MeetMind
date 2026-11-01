@@ -945,8 +945,10 @@ T3=a0000000-0000-0000-0000-000000000013
 empty_meeting "$T3" uploaded
 claim t3 "$T3" transcription uploaded 60000 null false true "'transcribing'"
 claim stale3 "$T3" summarization transcribing 60000
+append a3p "$T3" "$(tok t3)" 0 "[$(line 0)]" '{"at":3}'
+claim t3b "$T3" transcription transcribing 60000
 psql -q -At -c "select public.plan_chunks('$T3', $(tok stale3), '[{\"chunk_no\":0,\"seg_from\":90,\"seg_to\":99,\"est_tokens\":1}]');" >/dev/null
-finish f3 "$T3" "$(tok t3)" "$PLAN"
+finish f3 "$T3" "$(tok t3b)" "$PLAN"
 check "finish_transcription starts a new extraction run with the plan, moves to summarizing and ends the step" \
   "select $(got f3 attempts) = 1
           and (select status = 'summarizing' and failed_stage is null and error_message is null
@@ -991,6 +993,10 @@ claim freshretry "$T6" transcription failed 60000 null false true "'transcribing
 check "claim_step claims when the meeting is exactly as the caller read it" \
   "select $(claimed freshretry) and (select status from public.meetings where id = '$T6') = 'transcribing'"
 psql -q -c "delete from public.meetings where id = '$T6';"
+
+check "step 7's functions are not executable by PUBLIC, whose default grant would open them to anon" \
+  "select count(*) = 3 and bool_and(not exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a where a.grantee = 0))
+     from pg_proc p where p.proname in ('claim_step', 'append_segments', 'finish_transcription')"
 
 psql -q -c "delete from public.meetings where id in ('$T1', '$T2', '$T3', '$T4', '$T5');"
 check "deleting a meeting removes what transcription wrote" \

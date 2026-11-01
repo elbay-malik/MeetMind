@@ -675,6 +675,14 @@ describe('appendSegments and finishTranscription (step 7)', () => {
     expect((await meetings.get(m.id))!.status).toBe('indexing')
   })
 
+  it('clears the cursor the pages left when it finishes', async () => {
+    const { m, claim } = await transcribing()
+    const { pipeline } = repos()
+    await pipeline.appendSegments(m.id, claim.token, { fromIdx: 0, segments: [line(0)], cursor: { at: 1 } })
+    expect(await pipeline.finishTranscription(m.id, (await next(m.id)).token, { chunks: plan, refusal: null })).toBe(true)
+    expect((await pipeline.listRuns(m.id)).find(r => r.stage === 'transcription')!.cursor).toEqual({})
+  })
+
   it('with a refusal, writes no plan and moves to failed for summarization', async () => {
     const { m, claim } = await transcribing()
     const { meetings, pipeline } = repos()
