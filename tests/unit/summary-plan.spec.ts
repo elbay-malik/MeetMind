@@ -245,4 +245,11 @@ describe('the incremental plan (ADR-0012 §2)', () => {
     }
     expect(closePlan(plan, 5).count).toBe(total)
   })
+
+  it('counts the open chunk when closing but does not retain it past the limit', () => {
+    const range = (n: number) => ({ segFrom: n, segTo: n, estTokens: 1 })
+    const atLimit = { count: 2, chunks: [range(0), range(1)], open: range(2) }
+    expect(closePlan(atLimit, 2)).toEqual({ count: 3, chunks: [range(0), range(1)] })
+    expect(closePlan(atLimit, 3)).toEqual({ count: 3, chunks: [range(0), range(1), range(2)] })
+  })
 })

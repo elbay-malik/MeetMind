@@ -328,6 +328,106 @@ describe('the happy path', () => {
     const deps = depsWith(scripted(replyOf([{ start: 0, end: 1, text: 'x'.repeat(MAX_PAGE_BYTES * 2) }])).transcriber)
     const m = await newMeeting()
     expect((await drive(m.id, deps)).at(-1)).toMatchObject({ kind: 'failed', statusCode: 502, message: expect.stringMatching(/too large/) })
+    // Nothing can read it, so the retry asks again rather than hit this forever.
+    expect((await run(m.id))!.cursor).toEqual({})
+    expect(await replyStored(m.id)).toBe(false)
+  })
+})
+
+describe('reading across pages', () => {
+  it('goes back to a normal window after the page that needed a wider one', async () => {
+    const huge = 'x'.repeat(PAGE_BYTES * 3)
+    const deps = depsWith(scripted(replyOf([{ start: 0, end: 1, text: huge }, { start: 1, end: 2, text: 'last' }])).transcriber)
+    const append = vi.spyOn(deps.pipeline, 'appendSegments')
+    const m = await newMeeting()
+    await drive(m.id, deps)
+    const windows = append.mock.calls.map(([, , page]) => ({
+      huge: page.segments.some(s => s.text === huge),
+      pageBytes: (page.cursor as { reply: { pageBytes: number } }).reply.pageBytes,
+    }))
+    expect(Math.max(...windows.map(w => w.pageBytes))).toBeGreaterThan(PAGE_BYTES)
+    expect(windows.find(w => w.huge)!.pageBytes).toBe(PAGE_BYTES)
+  })
+
+  // Whisper's envelope carries the whole transcript's text ahead of the segments,
+  // so this is what any long meeting looks like. It is no object, so it never
+  // needs a window that holds it.
+  it('walks an envelope longer than any page, without widening', async () => {
+    const long = 'word '.repeat(MAX_PAGE_BYTES / 2)
+    const reply = new TextEncoder().encode(JSON.stringify({ duration: 3, text: long, segments: [{ start: 0, end: 1, text: 'only line' }] }))
+    const deps = depsWith(scripted(reply).transcriber)
+    const m = await newMeeting()
+    expect((await drive(m.id, deps)).at(-1)).toMatchObject({ kind: 'done', meeting: { status: 'summarizing' } })
+    expect((await transcript(m.id)).map(s => s.text)).toEqual(['only line'])
+  })
+
+  it('numbers the transcript without gaps when a page drops blank lines', async () => {
+    const lines = whisperSegments(SEGMENTS_PER_PAGE * 2).map((s, i) => (i % 2 === 0 ? { ...s, text: '   ' } : s))
+    const deps = depsWith(scripted(replyOf(lines)).transcriber)
+    const m = await newMeeting()
+    await drive(m.id, deps)
+    expect((await transcript(m.id)).map(s => s.idx)).toEqual(Array.from({ length: SEGMENTS_PER_PAGE }, (_, i) => i))
+  })
+
+  it('keeps the time order across a page that held nothing but blank lines', async () => {
+    const lines = [
+      ...Array.from({ length: SEGMENTS_PER_PAGE }, (_, i) => ({ start: 500 + i, end: 500.5 + i, text: `line ${i}` })),
+      ...Array.from({ length: SEGMENTS_PER_PAGE }, (_, i) => ({ start: 600 + i, end: 600.5 + i, text: ' ' })),
+      { start: 100, end: 100.5, text: 'behind the rest' },
+    ]
+    const deps = depsWith(scripted(replyOf(lines)).transcriber)
+    const m = await newMeeting()
+    await drive(m.id, deps)
+    const stored = await transcript(m.id)
+    expect(stored.at(-1)).toMatchObject({ text: 'behind the rest', startMs: stored.at(-2)!.startMs })
+  })
+
+  it('takes a validator the store reports without its quotes for the same one', async () => {
+    const deps = depsWith(scripted().transcriber)
+    const unquoted = {
+      ...deps,
+      store: {
+        ...deps.store,
+        put: async (...args: Parameters<typeof deps.store.put>) => {
+          const { etag } = await deps.store.put(...args)
+          return { etag: etag!.replaceAll('"', '') }
+        },
+      },
+    }
+    const m = await newMeeting()
+    expect((await drive(m.id, unquoted)).at(-1)).toMatchObject({ kind: 'done', meeting: { status: 'summarizing' } })
+  })
+
+  it('still sees a reply change size when the store reports no validator', async () => {
+    const deps = depsWith(scripted().transcriber)
+    const noValidator = {
+      ...deps,
+      store: {
+        ...deps.store,
+        put: async (...args: Parameters<typeof deps.store.put>) => {
+          await deps.store.put(...args)
+          return { etag: null }
+        },
+        openRange: async (...args: Parameters<typeof deps.store.openRange>) => {
+          const opened = await deps.store.openRange(...args)
+          return opened && { ...opened, etag: null }
+        },
+      },
+    }
+    const m = await newMeeting()
+    await advanceTranscription(m.id, noValidator)
+    await store().put(whisperReplyKey(m.id), new TextEncoder().encode('a straggler\'s reply, of another size'), 'application/json')
+    expect(await advanceTranscription(m.id, noValidator)).toMatchObject({ kind: 'failed', message: expect.stringMatching(/changed/) })
+  })
+
+  it('fails a reply holding bytes that are not UTF-8, rather than store a patched-over line', async () => {
+    const reply = replyOf([{ start: 0, end: 1, text: 'caf@' }])
+    reply[reply.lastIndexOf(0x40)] = 0xFF
+    const deps = depsWith(scripted(reply).transcriber)
+    const m = await newMeeting()
+    expect((await drive(m.id, deps)).at(-1)).toMatchObject({ kind: 'failed', statusCode: 502, message: expect.stringMatching(/could not read/) })
+    expect(await transcript(m.id)).toEqual([])
+    expect((await run(m.id))!.cursor).toEqual({})
   })
 })
 
@@ -402,6 +502,32 @@ describe('the incremental plan', () => {
     const { meetings, pipeline, transcripts, summaries } = repos()
     const retried = await advanceExtraction(m.id, { meetings, pipeline, transcripts, summaries, summarizer: createStubSummarizer() })
     expect(retried).toMatchObject({ kind: 'failed', statusCode: 413 })
+  })
+
+  it('never holds more than MAX_CHUNKS ranges in the cursor, and hands the drivers no plan with a refusal', async () => {
+    const deps = depsWith(scripted(replyOf(whisperSegments(MAX_CHUNKS * 3, 1500))).transcriber)
+    const append = vi.spyOn(deps.pipeline, 'appendSegments')
+    const finish = vi.spyOn(deps.pipeline, 'finishTranscription')
+    const m = await newMeeting()
+    await drive(m.id, deps)
+    const plans = append.mock.calls.map(([, , page]) => (page.cursor as { reply: { plan: { count: number, chunks: unknown[] } } }).reply.plan)
+    expect(plans.at(-1)!.count).toBeGreaterThan(MAX_CHUNKS)
+    expect(Math.max(...plans.map(p => p.chunks.length))).toBe(MAX_CHUNKS)
+    expect(finish.mock.calls[0]![2]).toEqual({ chunks: [], refusal: expect.stringMatching(/over the 40 limit/) })
+  })
+
+  it('takes a transcript of exactly MAX_CHUNKS to extraction, and refuses one more', async () => {
+    const overBudgetLines = (count: number) => whisperSegments(count, 3000)
+    expect(planChunks(normalizeSegments(overBudgetLines(MAX_CHUNKS)), CHUNK_BUDGET_TOKENS)).toHaveLength(MAX_CHUNKS)
+
+    const fits = await newMeeting()
+    await drive(fits.id, depsWith(scripted(replyOf(overBudgetLines(MAX_CHUNKS))).transcriber))
+    expect(await getMeeting(fits.id)).toMatchObject({ status: 'summarizing', errorMessage: null })
+    expect(await repos().pipeline.listChunks(fits.id)).toHaveLength(MAX_CHUNKS)
+
+    const over = await newMeeting()
+    await drive(over.id, depsWith(scripted(replyOf(overBudgetLines(MAX_CHUNKS + 1))).transcriber))
+    expect(await getMeeting(over.id)).toMatchObject({ status: 'failed', failedStage: 'summarization' })
   })
 
   it('discards an older extraction run: a new transcript\'s plan is the only plan', async () => {
@@ -571,6 +697,124 @@ describe('leases and concurrent drivers', () => {
   })
 })
 
+describe('a caller that claimed on an out-of-date read of the run', () => {
+  it('gives a page\'s lease back rather than call Whisper under it, spending no attempt', async () => {
+    const script = scripted()
+    const deps = depsWith(script.transcriber)
+    const m = await newMeeting('transcribing')
+    const stale = await deps.pipeline.listRuns(m.id)
+    const outOfDate = {
+      ...deps,
+      pipeline: {
+        ...deps.pipeline,
+        listRuns: vi.fn(deps.pipeline.listRuns).mockResolvedValueOnce([
+          ...stale,
+          { stage: 'transcription', runId: 'old', cursor: { reply: {} }, stepLeaseUntil: null, attempts: 0, lastError: null, retryAt: null },
+        ]),
+      },
+    }
+    expect(await advanceTranscription(m.id, outOfDate)).toMatchObject({ kind: 'progress', next: 'continue' })
+    expect(script.calls()).toBe(0)
+    expect(await run(m.id)).toMatchObject({ stepLeaseUntil: null, attempts: 0 })
+  })
+
+  it('retries out of failed under the lease of the step it resumes', async () => {
+    const deps = depsWith(scripted().transcriber)
+    const m = await newMeeting()
+    await advanceTranscription(m.id, deps)
+    for (let i = 0; i < MAX_STEP_ATTEMPTS; i++) {
+      await deps.pipeline.claimStep(m.id, 'transcription', { status: 'transcribing', leaseMs: 60_000 })
+      await expireLease(m.id)
+    }
+    expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'failed', statusCode: 500 })
+    deps.time.advance(RETRY_COOLDOWN_MS + 1000)
+
+    const claimStep = vi.spyOn(deps.pipeline, 'claimStep')
+    await advanceTranscription(m.id, deps)
+    expect(claimStep.mock.calls[0]![2]).toMatchObject({ status: 'failed', leaseMs: PAGE_STEP_LEASE_MS })
+  })
+})
+
+// A write or a release refused under the token means another caller holds the
+// run, or has moved the meeting on. What this step thought it had done is void.
+describe('a step that finds it lost the run when it comes to write', () => {
+  /** Another caller's claim, and optionally what it did with it, landing just before `method` is called. */
+  function overtakenAt<M extends 'appendSegments' | 'finishTranscription' | 'releaseStep'>(
+    deps: ReturnType<typeof depsWith>,
+    id: string,
+    method: M,
+    status: MeetingStatus = 'summarizing',
+  ) {
+    const real = deps.pipeline[method] as (...args: unknown[]) => Promise<boolean>
+    const overtaking = async (...args: unknown[]) => {
+      await expireLease(id)
+      await repos().pipeline.claimStep(id, 'transcription', { status: 'transcribing', leaseMs: 60_000 })
+      await db().setItem(`meetings/${id}`, { ...(await getMeeting(id)), status })
+      return real(...args)
+    }
+    return { ...deps, pipeline: { ...deps.pipeline, [method]: overtaking } }
+  }
+
+  it('a page answers with where things stand, not with its own unwritten cursor', async () => {
+    const deps = depsWith(scripted().transcriber)
+    const m = await newMeeting()
+    await advanceTranscription(m.id, deps)
+    expect(await advanceTranscription(m.id, overtakenAt(deps, m.id, 'appendSegments'))).toMatchObject({ kind: 'done', meeting: { status: 'summarizing' } })
+    expect(await transcript(m.id)).toEqual([])
+  })
+
+  it('a page that was widening answers the same', async () => {
+    const deps = depsWith(scripted(replyOf([{ start: 0, end: 1, text: 'x'.repeat(PAGE_BYTES * 2) }])).transcriber)
+    const m = await newMeeting()
+    await advanceTranscription(m.id, deps)
+    // The first page gets through the envelope and stops at the line it cannot hold.
+    await advanceTranscription(m.id, deps)
+    expect(await advanceTranscription(m.id, overtakenAt(deps, m.id, 'appendSegments'))).toMatchObject({ kind: 'done', meeting: { status: 'summarizing' } })
+  })
+
+  async function parsed(deps: ReturnType<typeof depsWith>) {
+    const m = await newMeeting()
+    for (let i = 0; i < 20; i++) {
+      await advanceTranscription(m.id, deps)
+      if (((await run(m.id))!.cursor as { reply: { parsed: boolean } }).reply.parsed) return m
+    }
+    throw new Error('never parsed')
+  }
+
+  it('the last step leaves the reply to whoever holds the run now, and does not say done', async () => {
+    const deps = depsWith(scripted().transcriber)
+    const m = await parsed(deps)
+    const outcome = await advanceTranscription(m.id, overtakenAt(deps, m.id, 'finishTranscription', 'transcribing'))
+    expect(outcome).toMatchObject({ kind: 'progress', meeting: { status: 'transcribing' } })
+    expect(await replyStored(m.id)).toBe(true)
+  })
+
+  it('the last step keeps the reply until its commit has happened', async () => {
+    const deps = depsWith(scripted().transcriber)
+    const m = await parsed(deps)
+    const down = { ...deps, pipeline: { ...deps.pipeline, finishTranscription: rejects('database down') } }
+    expect(await advanceTranscription(m.id, down)).toMatchObject({ kind: 'progress', next: 'wait' })
+    expect(await replyStored(m.id)).toBe(true)
+  })
+
+  it('a step parking on a retryable failure answers with where things stand', async () => {
+    const script = scripted()
+    script.queue(new TranscriptionError('Service down', 503, true))
+    const deps = depsWith(script.transcriber)
+    const m = await newMeeting()
+    expect(await advanceTranscription(m.id, overtakenAt(deps, m.id, 'releaseStep'))).toMatchObject({ kind: 'done', meeting: { status: 'summarizing' } })
+  })
+
+  it('a step parking on the provider\'s block answers with where things stand', async () => {
+    const script = scripted()
+    const deps = depsWith(script.transcriber)
+    await deps.slots.noteRateLimit('groq-whisper', 60_000)
+    const m = await newMeeting()
+    expect(await advanceTranscription(m.id, overtakenAt(deps, m.id, 'releaseStep'))).toMatchObject({ kind: 'done', meeting: { status: 'summarizing' } })
+    expect(script.calls()).toBe(0)
+  })
+})
+
 describe('429 during transcription', () => {
   const quota = (retryAfterMs: number | null) => new TranscriptionError('Transcription quota is exhausted for now.', 429, true, retryAfterMs)
 
@@ -668,6 +912,27 @@ describe('429 during transcription', () => {
     expect(await advanceTranscription(b.id, deps)).toMatchObject(parked)
     expect(await advanceTranscription(b.id, deps)).toMatchObject(parked)
     expect((await getMeeting(b.id)).errorMessage).toBeNull()
+  })
+
+  it('counts neither the 429 nor a wait on the block as an attempt, and keeps the wait on the run', async () => {
+    const script = scripted()
+    script.queue(quota(60_000))
+    const a = await newMeeting()
+    const b = await newMeeting()
+    const deps = depsWith(script.transcriber)
+    await advanceTranscription(a.id, deps)
+    expect(await run(a.id)).toMatchObject({ attempts: 0 })
+
+    const waiting = await advanceTranscription(b.id, deps)
+    expect(waiting).toMatchObject({ kind: 'progress', next: 'wait' })
+    const onRun = await run(b.id)
+    expect(onRun).toMatchObject({ attempts: 0 })
+    expect(onRun!.retryAt!.getTime()).toBeGreaterThan(Date.now())
+
+    // So the next caller is told to wait without so much as a claim.
+    const claimStep = vi.spyOn(deps.pipeline, 'claimStep')
+    expect(await advanceTranscription(b.id, deps)).toMatchObject({ kind: 'progress', next: 'wait' })
+    expect(claimStep).not.toHaveBeenCalled()
   })
 
   it('still reports the 429 when the block cannot be recorded', async () => {
@@ -994,6 +1259,24 @@ describe('a Whisper step whose reply arrives after it lost the run', () => {
     expect((await transcript(m.id)).length).toBe(5)
   })
 
+  it('removes the reply when the meeting failed in extraction meanwhile', async () => {
+    const m = await newMeeting()
+    const deps = depsWith(answeringAfter(async () => {
+      await db().setItem(`meetings/${m.id}`, { ...(await getMeeting(m.id)), status: 'failed', failedStage: 'summarization', errorMessage: 'too long' })
+    }))
+    expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'refused', statusCode: 409 })
+    expect(await replyStored(m.id)).toBe(false)
+  })
+
+  it('leaves the reply alone when the meeting failed in transcription meanwhile: a retry may read it', async () => {
+    const m = await newMeeting()
+    const deps = depsWith(answeringAfter(async () => {
+      await db().setItem(`meetings/${m.id}`, { ...(await getMeeting(m.id)), status: 'failed', failedStage: 'transcription', errorMessage: 'boom' })
+    }))
+    await advanceTranscription(m.id, deps)
+    expect(await replyStored(m.id)).toBe(true)
+  })
+
   // Another step may be reading it, and would then fail for a reply gone.
   it('leaves the reply alone while the meeting is still being transcribed', async () => {
     const m = await newMeeting()
@@ -1133,4 +1416,3 @@ describe('a run that fails knowing its reply is useless', () => {
     expect(await replyStored(m.id)).toBe(true)
   })
 })
-
