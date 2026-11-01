@@ -211,6 +211,9 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
   async function fail(claim: StepClaim, statusCode: number, message: string, extra: Partial<ReleaseOutcome> = {}): Promise<TranscriptionOutcome> {
     const released = await release(claim, { error: message, retryAt: null, failFrom: 'transcribing', ...extra })
     if (!released) return snapshot()
+    // A cleared cursor means the retry starts at Whisper: nothing will read this
+    // reply again. Only for the step that holds the run, which this one still did.
+    if (extra.cursor) await deleteReply()
     return { kind: 'failed', statusCode, message, retryAt: extra.retryAt ?? null }
   }
 
