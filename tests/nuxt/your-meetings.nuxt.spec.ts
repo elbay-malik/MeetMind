@@ -8,6 +8,18 @@ import { LOCAL_MEETINGS_KEY } from '~/utils/local-meetings'
 const ID = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
 const ENTRY = { id: ID, title: 'Weekly sync', createdAt: '2026-11-01T10:00:00.000Z' }
 
+/** Reads work and writes do not: a full disk, or an origin out of quota. */
+function refuseWrites() {
+  const real = localStorage
+  vi.spyOn(window, 'localStorage', 'get').mockReturnValue({
+    getItem: (key: string) => real.getItem(key),
+    setItem: () => {
+      throw new DOMException('full', 'QuotaExceededError')
+    },
+    removeItem: (key: string) => real.removeItem(key),
+  } as unknown as Storage)
+}
+
 beforeEach(() => localStorage.clear())
 afterEach(() => {
   vi.restoreAllMocks()
@@ -56,6 +68,25 @@ describe('the Your meetings page', () => {
   })
 })
 
+describe('the Your meetings page, when writes are refused and reads are not', () => {
+  it('warns, rather than claiming nothing was uploaded', async () => {
+    refuseWrites()
+    const page = await mountSuspended(MeetingsPage)
+    await flushPromises()
+    expect(page.text()).toContain('not letting MeetMind store anything')
+    expect(page.text()).not.toContain('No meetings uploaded from this browser')
+  })
+
+  it('warns and still lists what it already holds', async () => {
+    localStorage.setItem(LOCAL_MEETINGS_KEY, JSON.stringify([ENTRY]))
+    refuseWrites()
+    const page = await mountSuspended(MeetingsPage)
+    await flushPromises()
+    expect(page.text()).toContain('not letting MeetMind store anything')
+    expect(page.text()).toContain('Weekly sync')
+  })
+})
+
 describe('MeetingLinkNotice', () => {
   const mount = () => mountSuspended(MeetingLinkNotice, { props: { meetingId: ID } })
   const copyButton = (page: Awaited<ReturnType<typeof mount>>) =>
@@ -79,6 +110,11 @@ describe('MeetingLinkNotice', () => {
     await flushPromises()
     expect(select).toHaveBeenCalled()
     expect(page.find('[role="status"]').text()).toContain('Could not copy automatically')
+  })
+
+  it('says nothing extra about a meeting this browser did remember', async () => {
+    const page = await mount()
+    expect(page.text()).not.toContain('could not add this meeting')
   })
 
   it('warns that anyone with the link can read the meeting', async () => {
@@ -122,6 +158,15 @@ describe('useMeetingUpload', () => {
     expect(await uploader.upload(job)).toBeNull()
     expect(uploader.state.status).toBe('error')
     expect(JSON.parse(localStorage.getItem(LOCAL_MEETINGS_KEY)!)).toEqual([ENTRY])
+  })
+
+  it('tells the meeting\'s notice when the browser refused to remember it', async () => {
+    refuseWrites()
+    vi.stubGlobal('XMLHttpRequest', FailingXhr)
+    const { useMeetingUpload } = await import('~/composables/useMeetingUpload')
+    await useMeetingUpload().upload(job)
+    const notice = await mountSuspended(MeetingLinkNotice, { props: { meetingId: ID } })
+    expect(notice.text()).toContain('could not add this meeting to Your meetings')
   })
 
   it('does not let a refused storage stop the upload', async () => {

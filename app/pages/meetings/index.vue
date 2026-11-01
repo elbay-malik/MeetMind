@@ -7,10 +7,14 @@ useSeoMeta({ title: 'MeetMind — Your meetings' })
  * Read once mounted, so the server and the first client render agree: neither can
  * know what is in this browser. `null` until then.
  */
-const stored = ref<{ available: boolean, meetings: LocalMeeting[] } | null>(null)
+const stored = ref<{ available: boolean, writable: boolean, meetings: LocalMeeting[] } | null>(null)
 onMounted(() => {
-  stored.value = readLocalMeetings(browserStorage())
+  const storage = browserStorage()
+  stored.value = { ...readLocalMeetings(storage), writable: canStoreLocalMeetings(storage) }
 })
+
+/** Not `available` alone: storage that reads fine and refuses writes loses uploads too. */
+const refused = computed(() => stored.value !== null && (!stored.value.available || !stored.value.writable))
 </script>
 
 <template>
@@ -35,7 +39,7 @@ onMounted(() => {
     </p>
 
     <UAlert
-      v-if="stored && !stored.available"
+      v-if="refused"
       color="warning"
       variant="subtle"
       icon="i-lucide-triangle-alert"
@@ -43,7 +47,7 @@ onMounted(() => {
       description="Meetings you upload will not appear here, so keep each meeting's link yourself."
     />
 
-    <UCard v-else-if="stored && stored.meetings.length === 0">
+    <UCard v-if="stored && !refused && stored.meetings.length === 0">
       <div class="py-8 text-center text-muted">
         <UIcon
           name="i-lucide-list"
@@ -54,7 +58,7 @@ onMounted(() => {
     </UCard>
 
     <UCard
-      v-else-if="stored"
+      v-if="stored && stored.meetings.length > 0"
       :ui="{ body: 'p-0 sm:p-0' }"
     >
       <ul class="divide-y divide-default">

@@ -54,7 +54,8 @@ happened to it.
 
 The server renders the page's explanation and never a list, and the list is read after
 mounting, so the server and the first client render always agree. Storage that is
-refused says so, corrupt storage counts as empty, one bad entry costs only itself, and
+refused says so, whether it refuses reads or only writes, on the list and on the page of
+the meeting it could not remember. Corrupt storage counts as empty, one bad entry costs only itself, and
 a stored id must look like a UUID before it becomes a link.
 
 ### 4. People are told, before and after they upload.

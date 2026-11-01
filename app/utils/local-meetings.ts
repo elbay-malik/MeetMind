@@ -15,9 +15,13 @@ export interface LocalMeeting {
   createdAt: string
 }
 
-export type LocalMeetingStorage = Pick<Storage, 'getItem' | 'setItem'>
+export type LocalMeetingStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
 export const LOCAL_MEETINGS_KEY = 'meetmind.your-meetings.v1'
+
+/** Written and removed at once, about the size of one more entry. */
+const PROBE_KEY = 'meetmind.your-meetings.probe'
+const PROBE_VALUE = 'x'.repeat(256)
 
 /** The stored id ends up in a link, so a tampered entry must not steer it elsewhere. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -68,6 +72,23 @@ export function readLocalMeetings(storage: LocalMeetingStorage | null): { availa
   }
   catch {
     return { available: true, meetings: [] }
+  }
+}
+
+/**
+ * Whether a new entry would be stored. Separate from `available`, because a full disk
+ * or an origin out of quota reads as normal and refuses only the write, and a list that
+ * could not take the last upload must not say nothing was uploaded.
+ */
+export function canStoreLocalMeetings(storage: LocalMeetingStorage | null): boolean {
+  if (!storage) return false
+  try {
+    storage.setItem(PROBE_KEY, PROBE_VALUE)
+    storage.removeItem(PROBE_KEY)
+    return true
+  }
+  catch {
+    return false
   }
 }
 

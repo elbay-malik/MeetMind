@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   LOCAL_MEETINGS_KEY,
   browserStorage,
+  canStoreLocalMeetings,
   readLocalMeetings,
   rememberLocalMeeting,
   type LocalMeeting,
@@ -20,8 +21,11 @@ function memory(initial?: string): LocalMeetingStorage & { value: string | null 
     getItem() {
       return this.value
     },
-    setItem(_key, value) {
-      this.value = value
+    setItem(key, value) {
+      if (key === LOCAL_MEETINGS_KEY) this.value = value
+    },
+    removeItem(key) {
+      if (key === LOCAL_MEETINGS_KEY) this.value = null
     },
   }
 }
@@ -33,7 +37,17 @@ const refusing: LocalMeetingStorage = {
   setItem: () => {
     throw new Error('QuotaExceededError')
   },
+  removeItem: () => {},
 }
+
+/** Reads fine and refuses to write: a full disk, or an origin out of quota. */
+const full = (initial?: string): LocalMeetingStorage => ({
+  ...memory(initial),
+  getItem: () => initial ?? null,
+  setItem: () => {
+    throw new DOMException('full', 'QuotaExceededError')
+  },
+})
 
 describe('readLocalMeetings', () => {
   it('reports no storage as unavailable, not as an empty list', () => {
@@ -83,6 +97,7 @@ describe('rememberLocalMeeting', () => {
         keys.push(key)
         storage.setItem(key, value)
       },
+      removeItem: () => {},
     }
     expect(rememberLocalMeeting(spying, entry(1))).toBe(true)
     expect(rememberLocalMeeting(spying, entry(2))).toBe(true)
@@ -112,6 +127,33 @@ describe('rememberLocalMeeting', () => {
   it('answers false, without throwing, when it cannot store', () => {
     expect(rememberLocalMeeting(null, entry(1))).toBe(false)
     expect(rememberLocalMeeting(refusing, entry(1))).toBe(false)
+  })
+})
+
+describe('canStoreLocalMeetings', () => {
+  it('is true where a new entry would fit, and leaves nothing behind', () => {
+    const written = new Map<string, string>()
+    const storage: LocalMeetingStorage = {
+      getItem: key => written.get(key) ?? null,
+      setItem: (key, value) => void written.set(key, value),
+      removeItem: key => void written.delete(key),
+    }
+    expect(canStoreLocalMeetings(storage)).toBe(true)
+    expect(written.size).toBe(0)
+  })
+
+  it('is false when writes are refused, even though reads work', () => {
+    expect(readLocalMeetings(full()).available).toBe(true)
+    expect(canStoreLocalMeetings(full())).toBe(false)
+    expect(canStoreLocalMeetings(refusing)).toBe(false)
+    expect(canStoreLocalMeetings(null)).toBe(false)
+  })
+
+  it('does not touch the list when it probes', () => {
+    const raw = JSON.stringify([entry(1)])
+    const storage = memory(raw)
+    canStoreLocalMeetings(storage)
+    expect(readLocalMeetings(storage).meetings).toEqual([entry(1)])
   })
 })
 
