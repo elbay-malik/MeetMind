@@ -194,6 +194,20 @@ function objectEnd(bytes: Uint8Array, start: number): number | null {
   return null
 }
 
+/** Far enough to hold the envelope's fields before its transcript. */
+const DURATION_HEAD_BYTES = 512
+
+/**
+ * How long the provider says the audio is, or null when it does not say so at the
+ * start of its reply. Read from the head only: the whole reply is never parsed.
+ */
+export function replyDuration(reply: Uint8Array): number | null {
+  const head = new TextDecoder().decode(reply.subarray(0, DURATION_HEAD_BYTES))
+  const found = /"duration"\s*:\s*(\d+(?:\.\d+)?)/.exec(head)
+  const seconds = found ? Number(found[1]) : 0
+  return seconds > 0 ? seconds : null
+}
+
 /**
  * Groq never publishes a full verbose_json envelope, only the per-segment
  * fields, which are documented verbatim. So parse leniently: take the fields we

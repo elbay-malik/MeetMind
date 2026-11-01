@@ -13,8 +13,8 @@ import {
   RETRYABLE_PARK_MS,
   waitingOn,
 } from '../summary/steps'
-import { normalizeSegments } from './normalize'
-import { INITIAL_SCAN, parseSegments, ReplyFormatError, scanWindow, type ScanState } from './reply-scanner'
+import { containOutliers, normalizeSegments } from './normalize'
+import { INITIAL_SCAN, parseSegments, replyDuration, ReplyFormatError, scanWindow, type ScanState } from './reply-scanner'
 import { TranscriptionError, type Transcriber } from './transcriber'
 
 /**
@@ -78,6 +78,9 @@ export type TranscriptionOutcome
     /** Nothing was done: the meeting is missing, or not in a state to transcribe. */
     | { kind: 'refused', statusCode: 404 | 409, message: string }
 
+/** Whisper's last line can end just past the length it reports, and that is no outlier. */
+const AUDIO_END_SLACK_SEC = 1
+
 /** How far parsing has got. A type, not an interface, so it is a cursor record. */
 type ReplyCursor = {
   /** What the Whisper step stored. A page that finds anything else is not reading this run's reply. */
@@ -92,6 +95,8 @@ type ReplyCursor = {
   nextIdx: number
   /** The last stored line's start, which the next page's lines may not come before. */
   lastStartMs: number
+  /** Where the audio ends by the provider's account; null when it did not say. */
+  audioEndSec: number | null
   plan: IncrementalPlan
 }
 
@@ -338,6 +343,7 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
 
       const bytes = await deps.transcriber.transcribe({ bytes: audio.bytes, contentType: audio.contentType ?? AUDIO_MIME })
       const { etag } = await store.put(replyKey, bytes, 'application/json')
+      const duration = replyDuration(bytes)
       const cursor: TranscriptionCursor = {
         reply: {
           size: bytes.byteLength,
@@ -348,6 +354,7 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
           parsed: false,
           nextIdx: 0,
           lastStartMs: 0,
+          audioEndSec: duration === null ? null : duration + AUDIO_END_SLACK_SEC,
           plan: EMPTY_PLAN,
         },
       }
@@ -402,7 +409,8 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
         return await widen(claimed, reply)
       }
 
-      const segments = continueFrom(normalizeSegments(parseSegments(scanned.objects)), reply)
+      const lines = containOutliers(parseSegments(scanned.objects), { floorSec: reply.lastStartMs / 1000, audioEndSec: reply.audioEndSec })
+      const segments = continueFrom(normalizeSegments(lines), reply)
 
       const cursor: TranscriptionCursor = {
         reply: {

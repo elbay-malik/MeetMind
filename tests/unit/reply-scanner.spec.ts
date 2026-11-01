@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   INITIAL_SCAN,
   parseSegments,
+  replyDuration,
   ReplyFormatError,
   scanWindow,
   type ScanState,
@@ -185,5 +186,23 @@ describe('parseSegments', () => {
     finally {
       parse.mockRestore()
     }
+  })
+})
+
+describe('replyDuration', () => {
+  const head = (text: string) => new TextEncoder().encode(text)
+
+  it('reads the envelope\'s duration, which comes before the transcript', () => {
+    expect(replyDuration(head('{"task":"transcribe","language":"en","duration": 50.16,"text":"hi","segments":[]}'))).toBe(50.16)
+  })
+
+  it.each([
+    ['absent', '{"task":"transcribe","text":"hi","segments":[]}'],
+    ['not a number', '{"duration":"long","segments":[]}'],
+    ['zero', '{"duration":0,"segments":[]}'],
+    ['only quoted in the transcript', '{"text":"she said \\"duration\\": 5","segments":[]}'],
+    ['too far in to be the envelope', `{"text":"${'x'.repeat(2000)}","duration":5,"segments":[]}`],
+  ])('has nothing to say when it is %s', (_, text) => {
+    expect(replyDuration(head(text))).toBeNull()
   })
 })

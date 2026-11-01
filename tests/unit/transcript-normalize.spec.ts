@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { concatTranscripts, normalizeSegments, spokenMs } from '../../server/utils/transcription/normalize'
+import { concatTranscripts, containOutliers, normalizeSegments, spokenMs } from '../../server/utils/transcription/normalize'
 
 const raw = (start: number, end: number, text: string) => ({ start, end, text })
 
@@ -130,5 +130,42 @@ describe('spokenMs', () => {
 
   it('is zero for an empty transcript', () => {
     expect(spokenMs([])).toBe(0)
+  })
+})
+
+describe('containOutliers', () => {
+  const at = (...starts: number[]) => starts.map(start => ({ start, end: start + 1, text: `at ${start}` }))
+  const contain = (lines: ReturnType<typeof at>, audioEndSec: number | null = null, floorSec = 0) => containOutliers(lines, { floorSec, audioEndSec })
+
+  it('changes nothing in a reply already in order, however far apart its lines', () => {
+    const lines = at(0, 1, 1, 500, 3000)
+    expect(contain(lines)).toEqual(lines)
+  })
+
+  it('brings a line ahead of those after it back to the one before it, as zero-length', () => {
+    expect(contain(at(1, 2, 900, 3, 4)).map(s => [s.start, s.end])).toEqual([[1, 2], [2, 3], [2, 2], [3, 4], [4, 5]])
+  })
+
+  it('does the same for several in a row', () => {
+    expect(contain(at(1, 900, 901, 2, 3, 4)).map(s => s.start)).toEqual([1, 1, 1, 2, 3, 4])
+  })
+
+  it('uses the floor for a first line ahead of the rest', () => {
+    expect(contain(at(900, 11, 12, 13), null, 10).map(s => s.start)).toEqual([10, 11, 12, 13])
+  })
+
+  it('leaves a line behind the others to the sort and the floor, moving nothing else', () => {
+    const lines = at(100, 101, 50, 102, 103)
+    expect(contain(lines)).toEqual(lines)
+    expect(contain(at(8, 10, 9, 11)).map(s => s.start)).toEqual([8, 10, 9, 11])
+  })
+
+  it('catches a last line past the end of the audio, and caps an end past it', () => {
+    expect(contain(at(1, 2, 900), 50).map(s => s.start)).toEqual([1, 2, 2])
+    expect(contain([{ start: 1, end: 900, text: 'long' }], 50)[0]).toMatchObject({ start: 1, end: 50 })
+  })
+
+  it('prefers the earlier of two lines that could each end the order, so an outlier cannot lift the floor', () => {
+    expect(contain(at(5, 900, 6)).map(s => s.start)).toEqual([5, 5, 6])
   })
 })
