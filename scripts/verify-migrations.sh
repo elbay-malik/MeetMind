@@ -853,9 +853,132 @@ check "claim_step claims a chunk with a stored result only with p_redo, which cl
           and (select result is null from public.summary_chunks where meeting_id = '$L7' and chunk_no = 0)"
 psql -q -c "delete from public.meetings where id = '$L7';"
 
+# Step 7: step-wise transcription. The twins of the appendSegments and
+# finishTranscription cases in tests/unit/pipeline-ledger.spec.ts. Every call is
+# its own statement: a call and a read of its effects in ONE statement would read
+# the starting snapshot and pass whatever the function did.
+append() { # append <label> <meeting> <token> <from> <segments-json> <cursor-json>
+  psql -q -c "insert into vl_c (label, attempts)
+              select '$1', public.append_segments('$2', $3, $4, '$5', '$6')::int;"
+}
+finish() { # finish <label> <meeting> <token> <chunks-json> [refusal literal]
+  psql -q -c "insert into vl_c (label, attempts)
+              select '$1', public.finish_transcription('$2', $3, '$4', ${5:-null})::int;"
+}
+line() { echo "{\"idx\":$1,\"start_ms\":$(($1 * 1000)),\"end_ms\":$(($1 * 1000 + 900)),\"text\":\"${2:-line $1}\"}"; }
+tr_run() { echo "(select $2 from public.pipeline_runs where meeting_id = '$1' and stage = 'transcription')"; }
+sum_run() { echo "(select $2 from public.pipeline_runs where meeting_id = '$1' and stage = 'summarization')"; }
+seg_count() { echo "(select count(*) from public.transcript_segments where meeting_id = '$1')"; }
+seg_text() { echo "(select text from public.transcript_segments where meeting_id = '$1' and idx = $2)"; }
+empty_meeting() { # empty_meeting <uuid> <status>: no transcript yet
+  psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+              values ('$1','t','$2','a.mp4',1,'ledger_$1',10);"
+}
+
+T1=a0000000-0000-0000-0000-000000000011   # pages
+empty_meeting "$T1" uploaded
+claim t1 "$T1" transcription uploaded 60000 null false true "'transcribing'"
+check "claim_step enters transcription, counting the first claim as attempt 1" \
+  "select $(claimed t1) and $(got t1 attempts) = 1
+          and (select status from public.meetings where id = '$T1') = 'transcribing'"
+append a1 "$T1" "$(tok t1)" 0 "[$(line 0),$(line 1),$(line 2)]" '{"at":1}'
+check "append_segments stores the page and its cursor, and ends the step with its count started afresh" \
+  "select $(got a1 attempts) = 1 and $(seg_count "$T1") = 3 and $(seg_text "$T1" 1) = 'line 1'
+          and $(tr_run "$T1" cursor) = '{\"at\":1}'::jsonb and $(tr_run "$T1" step_token) is null
+          and $(tr_run "$T1" step_lease_until) is null and $(tr_run "$T1" attempts) = 0"
+claim t1b "$T1" transcription transcribing 60000
+check "the next claim after a page counts from one" "select $(got t1b attempts) = 1"
+append late "$T1" "$(tok t1)" 0 "[$(line 0 late)]" '{"at":9}'
+check "append_segments writes nothing under a token that is not the live one" \
+  "select $(got late attempts) = 0 and $(seg_text "$T1" 0) = 'line 0'
+          and $(tr_run "$T1" cursor) = '{\"at\":1}'::jsonb and $(tr_run "$T1" step_token) is not null"
+append a2 "$T1" "$(tok t1b)" 1 "[$(line 1 again)]" '{"at":2}'
+check "append_segments replaces everything from the page's first index on, so a retried page replaces itself" \
+  "select $(got a2 attempts) = 1 and $(seg_count "$T1") = 2 and $(seg_text "$T1" 0) = 'line 0'
+          and $(seg_text "$T1" 1) = 'again'"
+claim t1c "$T1" transcription transcribing 60000
+append a3 "$T1" "$(tok t1c)" 0 "[]" '{"at":3}'
+check "append_segments clears from the index with an empty page" \
+  "select $(got a3 attempts) = 1 and $(seg_count "$T1") = 0"
+
+claim t1d "$T1" transcription transcribing 60000
+reject "append_segments refuses a page not numbered from its start" \
+  "select public.append_segments('$T1', $(tok t1d), 1, '[$(line 0)]', '{}')" "numbered consecutively"
+reject "append_segments refuses a gap inside a page" \
+  "select public.append_segments('$T1', $(tok t1d), 0, '[$(line 0),$(line 2)]', '{}')" "numbered consecutively"
+reject "append_segments refuses a negative start" \
+  "select public.append_segments('$T1', $(tok t1d), -1, '[]', '{}')" "segment index"
+reject "append_segments refuses a cursor that is not an object" \
+  "select public.append_segments('$T1', $(tok t1d), 0, '[]', '[1]')" "must be a JSON object"
+reject "append_segments refuses segments that are not an array" \
+  "select public.append_segments('$T1', $(tok t1d), 0, '{}', '{}')" "must be a JSON array"
+
+claim other7 "$T1" summarization transcribing 60000
+append wrongstage "$T1" "$(tok other7)" 0 "[$(line 0)]" '{}'
+finish wrongstagef "$T1" "$(tok other7)" '[]'
+check "neither takes another stage's token" \
+  "select $(got wrongstage attempts) = 0 and $(got wrongstagef attempts) = 0 and $(seg_count "$T1") = 0
+          and (select status from public.meetings where id = '$T1') = 'transcribing'"
+
+# A finished transcript is never replaced, even by a token still marked live.
+T2=a0000000-0000-0000-0000-000000000012
+empty_meeting "$T2" uploaded
+claim t2 "$T2" transcription uploaded 60000 null false true "'transcribing'"
+psql -q -c "insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text) values ('$T2', 0, 0, 900, 'finished');"
+psql -q -c "update public.meetings set status = 'ready' where id = '$T2';"
+append past "$T2" "$(tok t2)" 0 "[$(line 0 overwrite)]" '{}'
+finish pastf "$T2" "$(tok t2)" '[]'
+check "a live token writes nothing once the meeting has left transcribing, and the transcript stays" \
+  "select $(got past attempts) = 0 and $(got pastf attempts) = 0 and $(seg_text "$T2" 0) = 'finished'
+          and (select status from public.meetings where id = '$T2') = 'ready'"
+
+# Finishing: the plan, the new run and the status are one move.
+T3=a0000000-0000-0000-0000-000000000013
+empty_meeting "$T3" uploaded
+claim t3 "$T3" transcription uploaded 60000 null false true "'transcribing'"
+claim stale3 "$T3" summarization transcribing 60000
+psql -q -At -c "select public.plan_chunks('$T3', $(tok stale3), '[{\"chunk_no\":0,\"seg_from\":90,\"seg_to\":99,\"est_tokens\":1}]');" >/dev/null
+finish f3 "$T3" "$(tok t3)" "$PLAN"
+check "finish_transcription starts a new extraction run with the plan, moves to summarizing and ends the step" \
+  "select $(got f3 attempts) = 1
+          and (select status = 'summarizing' and failed_stage is null and error_message is null
+                 from public.meetings where id = '$T3')
+          and $(sum_run "$T3" run_id) <> $(got stale3 run_id)
+          and $(sum_run "$T3" step_token) is null and $(sum_run "$T3" attempts) = 0
+          and $(tr_run "$T3" step_token) is null and $(tr_run "$T3" cursor) = '{}'::jsonb
+          and (select count(*) = 2 and bool_and(run_id = $(sum_run "$T3" run_id)) and min(seg_from) = 0 and max(seg_to) = 9
+                 from public.summary_chunks where meeting_id = '$T3')"
+claim c3 "$T3" summarization summarizing 60000 0 false false "'indexing'"
+check "extraction claims the first chunk of that plan, entering its stage" \
+  "select $(claimed c3) and $(got c3 attempts) = 1 and (select status from public.meetings where id = '$T3') = 'indexing'"
+
+T4=a0000000-0000-0000-0000-000000000014
+empty_meeting "$T4" uploaded
+claim t4 "$T4" transcription uploaded 60000 null false true "'transcribing'"
+finish f4 "$T4" "$(tok t4)" "$PLAN" "'too long'"
+check "with a refusal it writes no plan and moves to failed for summarization" \
+  "select $(got f4 attempts) = 1
+          and (select status = 'failed' and failed_stage = 'summarization' and error_message = 'too long'
+                 from public.meetings where id = '$T4')
+          and not exists (select 1 from public.summary_chunks where meeting_id = '$T4')"
+
+T5=a0000000-0000-0000-0000-000000000015
+empty_meeting "$T5" uploaded
+claim t5 "$T5" transcription uploaded 60000 null false true "'transcribing'"
+psql -q -At -c "select public.release_step('$T5', 'transcription', $(tok t5), null, null);" >/dev/null
+finish f5 "$T5" "$(tok t5)" "$PLAN"
+check "finish_transcription finishes nothing under a token that is not the live one" \
+  "select $(got f5 attempts) = 0 and (select status from public.meetings where id = '$T5') = 'transcribing'
+          and not exists (select 1 from public.summary_chunks where meeting_id = '$T5')"
+psql -q -c "delete from public.meetings where id in ('$T1', '$T2', '$T3', '$T4', '$T5');"
+check "deleting a meeting removes what transcription wrote" \
+  "select not exists (select 1 from public.transcript_segments where meeting_id in ('$T1', '$T2', '$T3', '$T4', '$T5'))
+          and not exists (select 1 from public.pipeline_runs where meeting_id in ('$T1', '$T2', '$T3', '$T4', '$T5'))"
+
 check "the ledger functions pin their search_path" \
-  "select bool_and('search_path=public' = any(proconfig)) and count(*) = 6 from pg_proc
-   where proname in ('claim_step', 'release_step', 'locked_step_run', 'plan_chunks', 'record_chunk', 'finalize_summary')"
+  "select bool_and('search_path=public' = any(proconfig)) and count(*) = 8 from pg_proc
+   where proname in ('claim_step', 'release_step', 'locked_step_run', 'plan_chunks', 'record_chunk', 'finalize_summary',
+                     'append_segments', 'finish_transcription')"
 psql -q -c "delete from public.meetings where id in ('$L1', '$L2', '$L3', '$L4');"
 check "deleting a meeting removes its runs and chunks" \
   "select not exists (select 1 from public.pipeline_runs where meeting_id in ('$L1', '$L3', '$L4'))

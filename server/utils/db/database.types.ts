@@ -153,6 +153,16 @@ export interface Database {
         Args: { p_meeting: string, p_token: string, p_chunk_no: number, p_seg_from: number, p_seg_to: number, p_result: unknown }
         Returns: boolean
       }
+      append_segments: {
+        /** p_segments: rows of { idx, start_ms, end_ms, text }. */
+        Args: { p_meeting: string, p_token: string, p_from_idx: number, p_segments: unknown, p_cursor: Record<string, unknown> }
+        Returns: boolean
+      }
+      finish_transcription: {
+        /** p_chunks: rows of { chunk_no, seg_from, seg_to, est_tokens }. */
+        Args: { p_meeting: string, p_token: string, p_chunks: unknown, p_refusal: string | null }
+        Returns: boolean
+      }
       finalize_summary: {
         /** p_decisions and p_action_items: rows in the tables' own column names. */
         Args: {

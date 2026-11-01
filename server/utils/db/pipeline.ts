@@ -1,4 +1,4 @@
-import type { MeetingStatus, MeetingSummary } from '#shared/types/meeting'
+import type { MeetingStatus, MeetingSummary, TranscriptSegment } from '#shared/types/meeting'
 import { attestedChunkSchema, type AttestedChunk } from '../summary/reconcile'
 
 /**
@@ -90,6 +90,16 @@ export interface ReleaseOutcome {
   failFrom?: MeetingStatus
 }
 
+/** One step's write to the transcript. */
+export interface SegmentPage {
+  /** Where this page starts. Given separately because a page can hold no segments. */
+  fromIdx: number
+  /** Numbered consecutively from `fromIdx`. */
+  segments: readonly TranscriptSegment[]
+  /** The run's cursor after this page. */
+  cursor: Record<string, unknown>
+}
+
 export interface PipelineRepository {
   readonly kind: 'supabase' | 'local'
   /**
@@ -126,6 +136,22 @@ export interface PipelineRepository {
    * is no longer `indexing`. Throws while a chunk of the plan has no result.
    */
   finalizeSummary(meetingId: string, token: string, summary: MeetingSummary): Promise<boolean>
+  /**
+   * Store one page of transcript and the cursor that says what comes next, and
+   * end the step: everything from `fromIdx` on is replaced, so a retried page
+   * replaces itself, and rows of an abandoned attempt past the new end go too.
+   * False when `token` is not live or the meeting is no longer `transcribing`,
+   * which is what keeps a finished transcript from ever being replaced.
+   */
+  appendSegments(meetingId: string, token: string, page: SegmentPage): Promise<boolean>
+  /**
+   * Finish transcription and end the step, all or nothing: a new summarization
+   * run with this plan, and `transcribing` to `summarizing`. With `refusal`, no
+   * plan is written and the meeting moves to `failed` for summarization
+   * instead, since it is extraction that cannot go ahead. False when `token` is
+   * not live or the meeting is no longer `transcribing`.
+   */
+  finishTranscription(meetingId: string, token: string, outcome: { chunks: readonly ChunkPlan[], refusal: string | null }): Promise<boolean>
   /** Remove the meeting's runs and chunks. Idempotent; a cascade on Supabase. */
   deleteForMeeting(meetingId: string): Promise<void>
 }
@@ -185,6 +211,15 @@ export function assertReleasable(stage: PipelineStage, failFrom: MeetingStatus |
   if (failFrom !== undefined && stage === 'search_index') {
     throw new Error('The search_index stage cannot fail the meeting')
   }
+}
+
+/** Refuse a page the transcript's gapless numbering could not hold; the SQL refuses alike. */
+export function assertValidPage({ fromIdx, segments, cursor }: SegmentPage): void {
+  if (!Number.isInteger(fromIdx) || fromIdx < 0) throw new Error(`A page must start at a segment index, got ${fromIdx}`)
+  segments.forEach((s, i) => {
+    if (s.idx !== fromIdx + i) throw new Error(`A page must be numbered consecutively from ${fromIdx}, got ${s.idx} at ${i}`)
+  })
+  if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) throw new Error('The cursor must be a JSON object')
 }
 
 export function assertValidPlan(chunks: readonly ChunkPlan[]): void {
