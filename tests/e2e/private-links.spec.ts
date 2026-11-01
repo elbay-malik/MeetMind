@@ -93,6 +93,13 @@ describe('what the pages tell people', () => {
     expect(text).not.toContain('Search your meetings')
   })
 
+  it('the meetings page claims nothing about this browser\'s storage until it has read it', async () => {
+    // The server has no storage to read, so saying "refused" or "empty" here is a guess.
+    const text = words(await (await fetch('/meetings')).text())
+    expect(text).not.toContain('not letting MeetMind store anything')
+    expect(text).not.toContain('No meetings uploaded from this browser')
+  })
+
   it('the upload page is honest about who receives the recording', async () => {
     const text = words(await (await fetch('/')).text())
     expect(text).toContain('This is a demo')
