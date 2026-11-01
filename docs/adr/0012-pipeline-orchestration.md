@@ -398,3 +398,49 @@ Step 5 (`20261026120000_pipeline_runs.sql`) differs from §3 in these ways:
 **Not yet done:**
 - `event.waitUntil` around the step.
 - The chunk step still reads the plan's segments with one range query. Planning, however, reads the whole transcript once per run, until step 7 plans incrementally during transcription.
+
+## Addendum: step-wise transcription as built (step 7, 2026-11-01)
+
+`POST /api/meetings/:id/transcribe` now does one step per request (`server/utils/transcription/steps.ts`, `advanceTranscription`): the Whisper call, one page of its reply, or the last step. It answers 200 with `{ meeting }` once the meeting is past transcription, and 202 with `{ meeting, progress: { done, total, segments, lastError }, next, retryAt, retryAfterMs }` otherwise. `done` and `total` are bytes of the reply. The progress page loops on it the way it loops on summarize; step 9's `/advance` can call the same library.
+
+**One more migration** (`20261101120000_transcription_steps.sql`):
+- `append_segments(p_from_idx, p_segments, p_cursor)` stores a page and the cursor after it and ends the step, in one transaction. It deletes everything from `p_from_idx` on before inserting, rather than upserting, so a retried page replaces itself and rows of an abandoned attempt past the new end go too. It also starts the claim count afresh, so `attempts` means "of this page".
+- `finish_transcription(p_chunks, p_refusal)` starts the summarization run with its plan written and moves `transcribing → summarizing`, in one transaction. With `p_refusal` it writes no plan and moves to `failed`/summarization instead.
+- **Both also require the meeting to be `transcribing`**, read under the meeting's lock. A token says who holds the stage, not what the meeting has become, so this is what actually stops a finished transcript being replaced. The route's own check is only a read.
+
+**Differences from §2:**
+- **The last page is its own step.** The page that sees the array close stores its lines like any other; the next request writes the plan, moves the status and deletes the reply. One more Worker request per meeting, in exchange for one shape of page and one function per job.
+- **A page reads 64 KB and stores at most `SEGMENTS_PER_PAGE` (100).** The scanner finds the top-level `segments` key byte by byte, through a transcript `text` field that can span many pages, keeping its state in the cursor. A key-shaped string in the text, or `segments` nested under another field, is not the array.
+- **A segment bigger than the window** doubles the window for that page, up to `MAX_PAGE_BYTES` (1 MiB); past that the run fails.
+- **The sort is per page, not per reply.** `normalizeSegments` still sorts, but only within a page: a whole-reply sort is what bounded work gives up. The player's `findActiveSegment` binary-searches `startMs`, so order across pages is kept by moving a line that started before the last page's last line up to that line's start (`lastStartMs` in the cursor), with its end clamped to match. That shifts a timestamp rather than reorders lines. Whether Whisper ever does this on a real reply is not known.
+- **The end of the reply is not parsed.** Reading stops at the closing bracket of `segments`, so damage after it goes unnoticed. Nothing after it is used.
+- **The 200 no longer carries `segments`.** Reading the transcript back would grow the last step with the meeting. The page reads `GET .../transcript`, which it already did.
+- **Subrequests** are more than the table says, chiefly the meeting reads either side of a step: Whisper 8–9 (~6 in the table), a page 6 (3–5), the last step 6 (5). All constant.
+
+**How the plan reaches extraction.** The cursor carries `{ count, chunks, open }`. `chunks` stops growing at `MAX_CHUNKS` while `count` carries on, so the cursor stays small however long the meeting. `advanceExtraction` uses a stored plan from `summarizing` only if no chunk has a result yet, since the first chunk's claim leaves that status; otherwise it plans from the transcript as before. So the whole-transcript read in `plan` now happens only for a silent recording, a meeting transcribed before this step, a repair of `ready`, and a retry of `failed`/summarization.
+
+**`MAX_CHUNKS`.** Over the limit, the transcript stays, the meeting goes to `failed`/summarization and the route answers **200**, because transcription did finish. A retry at the summarize route then answers 413 as before.
+
+**The raw reply:**
+- It lives at one key per meeting, `meetings/<id>/whisper-reply.json` (`whisperReplyKey`). Derived from the id like the audio's key, so the delete path can always name it even when the row is gone, and a repeat attempt replaces the last one rather than leaving another behind. It is removed after the last step, best effort; the delete path and the lifecycle rule remove one that stays.
+- R2 has no write fence, so a Whisper step that outlives its lease can still overwrite the reply of the step that re-claimed it. The cursor therefore records the size and validator from the put, and a page finding anything else fails the run rather than stitching two replies into one transcript.
+- `stored_audio_bytes` and `audioIsStored` are untouched and do not count it, as above.
+- A reply that is gone, changed or malformed clears the cursor and fails the run, so the retry after the cooldown calls Whisper again. It never re-sends by itself: that spends quota, and the same reply may come back.
+
+**Failures:**
+- **429:** `failed`/transcription as before, with `run.retryAt` from `Retry-After`, so the cooldown is `max(updatedAt + 60 s, retryAt)`. A 429 with no header assumes 60 s (`retryAfterMs`, shared with extraction); the stub sends none. The block goes to `note_rate_limit('groq-whisper')`, and a Whisper step reads `blockedUntil` before sending, parking without spending an attempt. No slot is reserved, as §4 says.
+- **Retryable failures now park, where the old route reset to `uploaded`.** The ADR was silent; this follows the chunk rule. Attempt 1 parks for 5 s and attempt 2 fails to `failed`/transcription. The reset was the one transition with no attempt limit and no cooldown, and writing it under the token would have needed another function. A parked run's error is on the run, not the meeting, so the page's "The last attempt did not finish" alert now shows only for a row the old route left in `uploaded` with an error.
+- **Claims:** Whisper at most `MAX_WHISPER_ATTEMPTS` (2), so a step that keeps being killed cannot keep spending audio quota. A page or the last step, `MAX_STEP_ATTEMPTS` (3). A retry out of `failed` resumes from the cursor, so a failed page does not spend Whisper again.
+- **Truncated or non-JSON replies** used to count as retryable and reset to `uploaded`. They are now seen a page later, after the reply is stored, and fail the run with the cooldown.
+
+**The status lease is gone.** `TRANSCRIBE_CLAIM_LEASE_MS`, `IN_FLIGHT_LEASE` and `claimLooksStale` are removed: with `indexing` out at step 6 nothing was left in them. `deletionBlocker` reads only the upload window and step leases, so a paused `transcribing` meeting can be deleted at once. The page's "Resume" is offered whenever a meeting is `transcribing` or `indexing`, and the server answers `wait` if a step is live, so the page no longer needs the lease or its wall-clock poll.
+
+**Not done, or unverified:**
+- **The multipart body uses `FormData`, not `FixedLengthStream`.** The fixed-length path needs a real Groq request to verify and was not attempted. So the exception under Consequences stands: this step's CPU grows with the audio, up to 25 MB, and is unmeasured.
+- **CPU per step is unmeasured**, as for every step until Phase 13.
+- **`event.waitUntil` around the step** is still not done.
+- **Nothing here has run against real services.** The new `test:services` cases (the two functions through `advanceTranscription`; a PUT and a range read reporting the same R2 validator) were not run, because the migration has not been applied. The R2 validator check matters most: if a PUT's ETag and a range read's differed beyond their quotes, every page would fail. `sameBytes` ignores quotes, and the case exists to catch anything else.
+- **No real Whisper reply has been through the scanner.** The fixtures follow Groq's documented segment fields and the envelope the old route's schema accepted.
+- **`TranscriptRepository.replaceForMeeting` still exists**, with no caller left in production code. Specs and `test:services` seed with it, and removing it was left out of this step.
+- **A transcript is partly visible while it is written.** `GET .../transcript` returns the rows so far during `transcribing`, and after a failed attempt until the retry's Whisper step clears them. The "Transcribed" tick still waits for the status.
+
