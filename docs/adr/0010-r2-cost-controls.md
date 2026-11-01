@@ -1,6 +1,6 @@
 # ADR-0010: Bounding R2 cost when R2 itself cannot be bounded
 
-- **Status:** Accepted
+- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md)
 - **Date:** 2026-10-23
 
 ## Context
@@ -101,8 +101,9 @@ phase: a check that costs more than the thing it protects. An in-memory counter
 is worse than nothing on Workers, where isolates are short-lived and per-request
 (ADR-0009), so it would under-count silently and give false assurance.
 
-Bounding request volume is **rate limiting's** job, which Phase 9 already owns,
-and ADR-0008 already flags the open search endpoint as the pressing case.
+Bounding request volume is **rate limiting's** job, which PLAYBOOK Phase 10 owns.
+ADR-0013 removed the open search endpoint this used to call the pressing case; what is
+left is open registration and spending through a meeting's link.
 Operations are also now half what they were, so the allowance is ~10M audio
 requests rather than ~5M.
 
