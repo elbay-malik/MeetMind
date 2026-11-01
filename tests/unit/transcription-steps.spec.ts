@@ -891,3 +891,52 @@ describe('a retry that read the meeting before another tab moved it', () => {
     expect(script.calls()).toBe(1)
   })
 })
+
+// R2 has no write fence, so a Whisper step that outlives its lease stores its
+// reply whatever has happened since.
+describe('a Whisper step whose reply arrives after it lost the run', () => {
+  /** A transcriber that lets `during` happen while the provider is answering. */
+  function answeringAfter(during: () => Promise<unknown>): Transcriber {
+    return {
+      kind: 'stub',
+      async transcribe() {
+        await during()
+        return replyOf(whisperSegments(5))
+      },
+    }
+  }
+
+  it('removes the reply when the meeting was deleted meanwhile', async () => {
+    const m = await newMeeting()
+    const deps = depsWith(answeringAfter(async () => {
+      const { meetings, pipeline } = repos()
+      await meetings.delete(m.id, await getMeeting(m.id))
+      await pipeline.deleteForMeeting(m.id)
+    }))
+    expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'refused', statusCode: 404 })
+    expect(await replyStored(m.id)).toBe(false)
+  })
+
+  it('removes the reply when the transcript was finished meanwhile', async () => {
+    const m = await newMeeting()
+    const other = depsWith(scripted().transcriber)
+    const deps = depsWith(answeringAfter(async () => {
+      await expireLease(m.id)
+      expect((await drive(m.id, other)).at(-1)).toMatchObject({ kind: 'done', meeting: { status: 'summarizing' } })
+    }))
+    expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'done' })
+    expect(await replyStored(m.id)).toBe(false)
+    expect((await transcript(m.id)).length).toBe(5)
+  })
+
+  // Another step may be reading it, and would then fail for a reply gone.
+  it('leaves the reply alone while the meeting is still being transcribed', async () => {
+    const m = await newMeeting()
+    const deps = depsWith(answeringAfter(async () => {
+      await expireLease(m.id)
+      await repos().pipeline.claimStep(m.id, 'transcription', { status: 'transcribing', leaseMs: 60_000 })
+    }))
+    expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'progress', meeting: { status: 'transcribing' } })
+    expect(await replyStored(m.id)).toBe(true)
+  })
+})

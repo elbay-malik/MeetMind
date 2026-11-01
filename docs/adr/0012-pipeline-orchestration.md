@@ -425,6 +425,7 @@ Step 5 (`20261026120000_pipeline_runs.sql`) differs from §3 in these ways:
 **The raw reply:**
 - It lives at one key per meeting, `meetings/<id>/whisper-reply.json` (`whisperReplyKey`). Derived from the id like the audio's key, so the delete path can always name it even when the row is gone, and a repeat attempt replaces the last one rather than leaving another behind. It is removed after the last step, best effort; the delete path and the lifecycle rule remove one that stays.
 - R2 has no write fence, so a Whisper step that outlives its lease can still overwrite the reply of the step that re-claimed it. The cursor therefore records the size and validator from the put, and a page finding anything else fails the run rather than stitching two replies into one transcript.
+- The same step can store its reply after the meeting was deleted or its transcript finished. It finds that out when its write is refused, and removes the object then, but only in those two cases: while the meeting is still being transcribed another step may be reading it.
 - `stored_audio_bytes` and `audioIsStored` are untouched and do not count it, as above.
 - A reply that is gone, changed or malformed clears the cursor and fails the run, so the retry after the cooldown calls Whisper again. It never re-sends by itself: that spends quota, and the same reply may come back.
 
