@@ -92,7 +92,6 @@ describe('claim', () => {
     const repo = createLocalMeetingRepository({ dataDir })
     await repo.create(newMeeting('a5'))
     expect(await repo.get('a5')).toMatchObject({ failedStage: null })
-    expect((await repo.list({ limit: 10 })).find(m => m.id === 'a5')).toMatchObject({ failedStage: null })
     expect(await repo.update('a5', { title: 'renamed' })).toMatchObject({ failedStage: null })
     expect(await repo.claim('a5', 'uploaded', { status: 'transcribing' })).toMatchObject({ failedStage: null })
   })

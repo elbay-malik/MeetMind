@@ -148,10 +148,6 @@ describe('upload → complete', () => {
 
     const { meeting: fetched } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
     expect(fetched).toEqual(done)
-
-    const { meetings } = await $fetch<{ meetings: Meeting[] }>('/api/meetings')
-    expect(meetings.map(m => m.id)).toContain(meeting.id)
-    expect(meetings[0]!.createdAt >= meetings.at(-1)!.createdAt).toBe(true)
   })
 
   it('completing twice is idempotent', async () => {

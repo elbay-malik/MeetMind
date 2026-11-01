@@ -3,10 +3,7 @@ import { createStorage, type Storage } from 'unstorage'
 import { serialize } from './local'
 import {
   clampLimit,
-  clampMeetingLimit,
-  clampPerMeetingLimit,
   cosineSimilarity,
-  type CrossMeetingMatch,
   type EmbeddedWindow,
   type TranscriptIndexRepository,
 } from './windows'
@@ -24,14 +21,6 @@ function storageFor(base: string): Promise<Storage> {
 }
 
 const windowsKey = (meetingId: string) => `windows/${meetingId}`
-
-/**
- * `getKeys('windows')` hands back keys normalised to this separator — verified
- * directly against unstorage's fs driver, not assumed — regardless of the `/`
- * `windowsKey` above writes with, so this is what a cross-meeting scan strips
- * to recover each key's meeting id.
- */
-const WINDOWS_KEY_PREFIX = 'windows:'
 
 /** A similarity as an ordering key: NaN sorts as the worst possible value, matching pgvector. */
 const rank = (similarity: number): number => (Number.isNaN(similarity) ? Number.NEGATIVE_INFINITY : similarity)
@@ -106,31 +95,6 @@ export function createLocalTranscriptIndexRepository(options: { dataDir: string 
         // one depending only on index order.
         .sort((a, b) => rank(b.similarity) - rank(a.similarity) || a.idx - b.idx)
         .slice(0, clampLimit(limit))
-    },
-
-    async searchAcrossMeetings(query, { model, meetingLimit, perMeetingLimit }) {
-      const storage = await storageFor(base)
-      const meetingIds = (await storage.getKeys('windows')).map(k => k.slice(WINDOWS_KEY_PREFIX.length))
-      const perMeeting: CrossMeetingMatch[][] = await Promise.all(meetingIds.map(async (meetingId) => {
-        const windows = await serialize(meetingId, () => read(meetingId))
-        return windows
-          .filter(w => w.model === model)
-          .map(({ embedding, model: _model, ...window }) => ({
-            ...window,
-            meetingId,
-            similarity: cosineSimilarity(query, embedding),
-          }))
-          .sort((a, b) => rank(b.similarity) - rank(a.similarity) || a.idx - b.idx)
-          .slice(0, clampPerMeetingLimit(perMeetingLimit))
-      }))
-      // Meetings ranked by their OWN best match — a meeting with no window of
-      // this model contributes an empty array here and drops out before that
-      // ranking, the same as the SQL function's `where w.model = p_model`.
-      return perMeeting
-        .filter(matches => matches.length > 0)
-        .sort((a, b) => rank(b[0]!.similarity) - rank(a[0]!.similarity))
-        .slice(0, clampMeetingLimit(meetingLimit))
-        .flat()
     },
   }
 }

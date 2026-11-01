@@ -95,18 +95,6 @@ export function createLocalMeetingRepository(options: { dataDir: string }): Meet
       })
     },
 
-    async list({ limit }) {
-      const s = await storage()
-      const keys = await s.getKeys('meetings')
-      const items = await s.getItems<Meeting>(keys)
-      return items
-        .map(i => i.value)
-        .filter((m): m is Meeting => !!m)
-        .map(normalize)
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-        .slice(0, limit)
-    },
-
     async storedAudioBytes(window) {
       const s = await storage()
       const keys = await s.getKeys('meetings')
