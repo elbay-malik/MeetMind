@@ -70,7 +70,8 @@ a stored id must look like a UUID before it becomes a link.
 
 The upload page says this is a demo, not to upload anything sensitive, who receives what
 (audio to Groq; the transcript to Groq and Google), that anyone with the link can view
-it, and that they cannot delete it themselves. The old line, "only a small audio file is
+it, that the original file's name, size and type go with the audio, and that they cannot
+delete it themselves. The old line, "only a small audio file is
 sent for transcription", was true of the video and read as if nothing else left.
 
 It does not promise deletion. The R2 lifecycle rule expires audio, but nothing purges
