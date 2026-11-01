@@ -19,7 +19,8 @@ export interface R2Options {
 /**
  * Cloudflare R2 through its S3-compatible API, signed with aws4fetch (SigV4
  * on Web Crypto — runs on Node and Cloudflare Workers alike). The browser
- * PUTs to a presigned URL; the server only ever HEADs or DELETEs objects.
+ * PUTs its audio to a presigned URL; the server reads and deletes objects, and
+ * writes only what it produces itself, such as a raw provider reply.
  *
  * The bucket needs a CORS rule allowing PUT from the app origin with the
  * `content-type` header (see README → Storage setup).
@@ -182,6 +183,16 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
         window: { start: 0, end: total - 1 },
         etag: res.headers.get('etag'),
       }
+    },
+
+    async put(key, body, contentType) {
+      const res = await client.fetch(objectUrl(key).href, {
+        method: 'PUT',
+        headers: { 'content-type': contentType },
+        body: body as BodyInit,
+      })
+      if (!res.ok) throw new Error(`R2 PUT ${key} failed with HTTP ${res.status}`)
+      return { etag: res.headers.get('etag') }
     },
 
     async delete(key) {

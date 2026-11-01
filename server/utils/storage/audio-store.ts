@@ -46,7 +46,18 @@ export interface AudioStore {
    * Returns `null` when the object is not there.
    */
   openRange(key: string, window: ByteWindow | null): Promise<OpenedAudio | null>
+  /**
+   * Write an object the server produced itself, such as a raw provider reply
+   * (ADR-0012), and say which bytes are now there. Audio never takes this path:
+   * the browser uploads that directly.
+   */
+  put(key: string, body: Uint8Array, contentType: string): Promise<PutObject>
   delete(key: string): Promise<void>
+}
+
+/** The store's validator for what was just written, as `head` and `openRange` report it. */
+export interface PutObject {
+  etag: string | null
 }
 
 export interface StoredAudio extends StoredObject {
