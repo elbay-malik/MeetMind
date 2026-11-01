@@ -1058,3 +1058,65 @@ describe('a store that serves the whole reply for a range', () => {
     expect(await advanceTranscription(m.id, ignoringRanges(deps))).toMatchObject({ kind: 'progress', next: 'wait', progress: { segments: 0, lastError: expect.stringMatching(/window/) } })
   })
 })
+
+// Retrying these starts at Whisper, and replaces the object if it ever gets that
+// far. Until someone does, it is bytes nothing counts and nothing will read.
+describe('a run that fails knowing its reply is useless', () => {
+  it.each([
+    ['cut short', () => new TextEncoder().encode('{"segments":[{"start":0,"end":1,"text":"cut')],
+    ['malformed', () => replyOf([{ start: 'soon', end: 1, text: 'x' }])],
+  ])('removes a reply that is %s', async (_, reply) => {
+    const m = await newMeeting()
+    const deps = depsWith(scripted(reply()).transcriber)
+    await advanceTranscription(m.id, deps)
+    expect(await replyStored(m.id)).toBe(true)
+    expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'failed', statusCode: 502 })
+    expect(await replyStored(m.id)).toBe(false)
+  })
+
+  it('removes a reply that has changed since it was stored', async () => {
+    const m = await newMeeting()
+    const deps = depsWith(scripted().transcriber)
+    await advanceTranscription(m.id, deps)
+    await store().put(whisperReplyKey(m.id), new TextEncoder().encode('a straggler\'s reply, of another size'), 'application/json')
+    expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'failed', message: expect.stringMatching(/changed/) })
+    expect(await replyStored(m.id)).toBe(false)
+  })
+
+  it('keeps the reply when the failure is only that a page kept being killed', async () => {
+    const m = await newMeeting()
+    const deps = depsWith(scripted().transcriber)
+    await advanceTranscription(m.id, deps)
+    for (let i = 0; i < MAX_STEP_ATTEMPTS; i++) {
+      await deps.pipeline.claimStep(m.id, 'transcription', { status: 'transcribing', leaseMs: 60_000 })
+      await expireLease(m.id)
+    }
+    expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'failed', statusCode: 500 })
+    expect(await replyStored(m.id)).toBe(true)
+  })
+
+  it('still fails when removing it fails', async () => {
+    const m = await newMeeting()
+    const deps = depsWith(scripted(new TextEncoder().encode('{"segments":[')).transcriber)
+    await advanceTranscription(m.id, deps)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const broken = { ...deps, store: { ...deps.store, delete: rejects('R2 down') } }
+      expect(await advanceTranscription(m.id, broken)).toMatchObject({ kind: 'failed', statusCode: 502 })
+    }
+    finally {
+      warn.mockRestore()
+    }
+  })
+
+  // A caller that no longer holds the step may be racing the one that does.
+  it('leaves the reply alone when the release shows the step was lost', async () => {
+    const m = await newMeeting()
+    const deps = depsWith(scripted(new TextEncoder().encode('{"segments":[')).transcriber)
+    await advanceTranscription(m.id, deps)
+    const lost = { ...deps, pipeline: { ...deps.pipeline, releaseStep: async () => false } }
+    await advanceTranscription(m.id, lost)
+    expect(await replyStored(m.id)).toBe(true)
+  })
+})
+
