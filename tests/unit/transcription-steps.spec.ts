@@ -603,7 +603,20 @@ describe('429 during transcription', () => {
     const retryAfterMs = 10 * RETRY_COOLDOWN_MS
     script.queue(quota(retryAfterMs))
     const m = await newMeeting()
-    const deps = depsWith(script.transcriber)
+    const base = depsWith(script.transcriber)
+    // The local slots read the real clock; these read the test's, so that the
+    // block recorded below can run out along with the cooldown.
+    let blocked: Date | null = null
+    const deps = {
+      ...base,
+      slots: {
+        ...base.slots,
+        noteRateLimit: async (_provider: string, ms: number) => {
+          blocked = new Date(base.time.now() + ms)
+        },
+        blockedUntil: async () => (blocked && blocked.getTime() > base.time.now() ? blocked : null),
+      },
+    }
     const failed = await advanceTranscription(m.id, deps)
     expect(failed).toMatchObject({ kind: 'failed', statusCode: 429 })
     expect((failed as { retryAt: Date }).retryAt.getTime()).toBeGreaterThan(Date.now() + RETRY_COOLDOWN_MS)
@@ -614,7 +627,7 @@ describe('429 during transcription', () => {
 
     deps.time.advance(retryAfterMs)
     expect((await advanceTranscription(m.id, deps)).kind).toBe('progress')
-    expect(script.calls()).toBeGreaterThanOrEqual(1)
+    expect(script.calls()).toBe(2)
   })
 
   it('never lets Retry-After shorten the cooldown', async () => {
@@ -1045,4 +1058,3 @@ describe('a store that serves the whole reply for a range', () => {
     expect(await advanceTranscription(m.id, ignoringRanges(deps))).toMatchObject({ kind: 'progress', next: 'wait', progress: { segments: 0, lastError: expect.stringMatching(/window/) } })
   })
 })
-
