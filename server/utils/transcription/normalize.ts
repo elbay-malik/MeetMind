@@ -8,6 +8,14 @@ export interface RawSegment {
 }
 
 /**
+ * Text Postgres can hold: `jsonb` and `text` refuse a NUL and a lone surrogate,
+ * every time, and a stray character is no reason to lose a whole transcript.
+ */
+function storableText(text: string): string {
+  return text.replaceAll('\u0000', '').toWellFormed().trim()
+}
+
+/**
  * Turn model output into storable segments.
  *
  * Whisper returns float seconds and is not obliged to return them in order,
@@ -25,9 +33,10 @@ export function normalizeSegments(segments: RawSegment[], offsetMs = 0): Transcr
 
   return segments
     .filter(s => Number.isFinite(s.start) && Number.isFinite(s.end))
+    .map(s => ({ ...s, text: storableText(s.text) }))
     // Whitespace-only segments carry no transcript and would only add empty
     // rows the UI has to skip.
-    .filter(s => s.text.trim().length > 0)
+    .filter(s => s.text.length > 0)
     .map((s) => {
       const startMs = Math.max(0, Math.round(s.start * 1000)) + offsetMs
       const endMs = Math.max(0, Math.round(s.end * 1000)) + offsetMs
@@ -37,7 +46,7 @@ export function normalizeSegments(segments: RawSegment[], offsetMs = 0): Transcr
         // database's span check; clamping keeps the row storable and honest
         // about being zero-length.
         endMs: Math.max(startMs, endMs),
-        text: s.text.trim(),
+        text: s.text,
       }
     })
     // Stable sort: equal starts keep the model's original ordering.
