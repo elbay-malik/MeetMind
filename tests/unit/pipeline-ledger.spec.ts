@@ -210,6 +210,23 @@ describe('claimStep', () => {
     expect((await meetings.get(m.id))!.status).toBe('summarizing')
   })
 
+  // A retry out of `failed` decides on an earlier read: the claim has to find the
+  // meeting as that read did, or it can reopen a stage another caller has ended.
+  it('claims only a meeting unchanged since expectedUpdatedAt, when given', async () => {
+    const m = await newMeeting()
+    const { meetings, pipeline } = repos()
+    const seen = (await meetings.update(m.id, { status: 'failed', failedStage: 'transcription', errorMessage: 'boom' }))!
+    await new Promise(resolve => setTimeout(resolve, 2))
+    await meetings.update(m.id, { failedStage: 'summarization' })
+    const options = { status: 'failed', leaseMs: LEASE, moveTo: 'transcribing', expectedUpdatedAt: seen.updatedAt } as const
+    expect(await pipeline.claimStep(m.id, 'transcription', options)).toBeNull()
+    expect(await meetings.get(m.id)).toMatchObject({ status: 'failed', failedStage: 'summarization', errorMessage: 'boom' })
+
+    const current = (await meetings.get(m.id))!
+    expect(await pipeline.claimStep(m.id, 'transcription', { ...options, expectedUpdatedAt: current.updatedAt })).not.toBeNull()
+    expect((await meetings.get(m.id))!.status).toBe('transcribing')
+  })
+
   it.each([0, 0.4, -5, 2_147_483_648, Number.NaN])('refuses a lease of %s ms, as Postgres\'s integer parameter would', async (leaseMs) => {
     const m = await newMeeting()
     await expect(repos().pipeline.claimStep(m.id, 'summarization', { status: 'indexing', leaseMs })).rejects.toThrow(/whole number/)

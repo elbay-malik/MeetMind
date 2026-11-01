@@ -14,6 +14,118 @@
 -- row lock: past transcription, a transcript is never replaced (ADR-0012 §3).
 -- A token alone could not promise that, since it says who holds the stage and
 -- not what the meeting has become.
+--
+-- 3. claim_step can require the meeting to be as the caller read it
+--    (p_expected_updated_at). A retry out of `failed` checks the failed stage and
+--    the cooldown on an earlier read, and `failed` alone does not say which
+--    failure this is: a stale retry could otherwise reopen a meeting whose
+--    transcript another caller finished, or skip a cooldown that just restarted.
+
+drop function public.claim_step(uuid, text, text, integer, integer, boolean, boolean, text, boolean);
+
+create function public.claim_step(
+  p_meeting        uuid,
+  p_stage          text,
+  p_status         text,
+  p_lease_ms       integer,
+  p_chunk_no       integer default null,
+  p_new_run        boolean default false,
+  p_reset_attempts boolean default false,
+  p_move_to        text default null,
+  p_redo           boolean default false,
+  p_expected_updated_at timestamptz default null
+)
+returns table (step_token uuid, run_id uuid, run_cursor jsonb, attempts integer)
+language plpgsql
+set search_path = public
+as $$
+#variable_conflict use_column
+declare
+  v_run public.pipeline_runs%rowtype;
+  v_result jsonb;
+  v_attempts integer;
+begin
+  if p_lease_ms is null or p_lease_ms <= 0 then
+    raise exception 'claim_step: the lease must be positive, got %', p_lease_ms using errcode = '22023';
+  end if;
+  if p_chunk_no is not null and p_new_run then
+    raise exception 'claim_step: a new run has no chunks to claim yet' using errcode = '22023';
+  end if;
+
+  perform 1 from public.meetings m
+   where m.id = p_meeting and m.status = p_status
+     and (p_expected_updated_at is null or m.updated_at = p_expected_updated_at)
+     for update;
+  if not found then
+    return;
+  end if;
+
+  insert into public.pipeline_runs (meeting_id, stage) values (p_meeting, p_stage)
+  on conflict (meeting_id, stage) do nothing;
+
+  select r.* into v_run from public.pipeline_runs r
+   where r.meeting_id = p_meeting and r.stage = p_stage
+     and (r.step_lease_until is null or r.step_lease_until < clock_timestamp())
+   for update;
+  if not found then
+    return;
+  end if;
+
+  -- Checked before anything is written, so a refused chunk claim changes nothing.
+  if p_chunk_no is not null then
+    select c.result into v_result from public.summary_chunks c
+     where c.meeting_id = p_meeting and c.chunk_no = p_chunk_no and c.run_id = v_run.run_id
+     for update;
+    if not found then
+      raise exception 'claim_step: chunk % is not in the current plan', p_chunk_no using errcode = 'P0002';
+    end if;
+    if v_result is not null and not p_redo then
+      return;
+    end if;
+  end if;
+
+  update public.pipeline_runs r
+     set step_token       = gen_random_uuid(),
+         step_lease_until = clock_timestamp() + make_interval(secs => p_lease_ms / 1000.0),
+         step_chunk_no    = p_chunk_no,
+         run_id           = case when p_new_run then gen_random_uuid() else r.run_id end,
+         cursor           = case when p_new_run then '{}'::jsonb else r.cursor end,
+         last_error       = case when p_new_run then null else r.last_error end,
+         retry_at         = case when p_new_run then null else r.retry_at end,
+         attempts         = case
+                              when p_new_run or p_chunk_no is not null then 0
+                              when p_reset_attempts then 1
+                              else r.attempts + 1
+                            end,
+         updated_at       = clock_timestamp()
+   where r.meeting_id = p_meeting and r.stage = p_stage
+  returning r.* into v_run;
+
+  v_attempts := v_run.attempts;
+  if p_chunk_no is not null then
+    update public.summary_chunks c
+       set attempts   = case when p_reset_attempts then 1 else c.attempts + 1 end,
+           result     = case when p_redo then null else c.result end,
+           updated_at = clock_timestamp()
+     where c.meeting_id = p_meeting and c.chunk_no = p_chunk_no and c.run_id = v_run.run_id
+    returning c.attempts into v_attempts;
+  end if;
+
+  -- Entering the stage clears the failure that left it, as the routes' own
+  -- status claims always have.
+  update public.meetings m
+     set updated_at    = clock_timestamp(),
+         status        = coalesce(p_move_to, m.status),
+         error_message = case when p_move_to is null then m.error_message else null end,
+         failed_stage  = case when p_move_to is null then m.failed_stage else null end
+   where m.id = p_meeting;
+
+  return query select v_run.step_token, v_run.run_id, v_run.cursor, v_attempts;
+end
+$$;
+
+comment on function public.claim_step(uuid, text, text, integer, integer, boolean, boolean, text, boolean, timestamptz) is
+  'Claim the next step of a pipeline stage under a fresh token and a short lease, if none is live, the meeting is in p_status (and unchanged since p_expected_updated_at, when given) and the chunk (if any) has no result yet (or p_redo clears an unusable one); optionally moving the meeting to p_move_to (ADR-0012).';
 
 create function public.append_segments(
   p_meeting  uuid,
@@ -141,6 +253,7 @@ declare
   fn text;
 begin
   foreach fn in array array[
+    'public.claim_step(uuid, text, text, integer, integer, boolean, boolean, text, boolean, timestamptz)',
     'public.append_segments(uuid, uuid, integer, jsonb, jsonb)',
     'public.finish_transcription(uuid, uuid, jsonb, text)'
   ] loop

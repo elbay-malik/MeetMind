@@ -70,6 +70,12 @@ export interface ClaimOptions {
    * result failed its read-back check ({@link SummaryChunk.unusable}).
    */
   redo?: boolean
+  /**
+   * Claim only if the meeting's `updatedAt` is still this. A caller deciding on
+   * an earlier read -- a retry out of `failed`, whose status alone does not say
+   * which failure it is, or how recent -- passes what it read.
+   */
+  expectedUpdatedAt?: string
 }
 
 export interface ReleaseOutcome {

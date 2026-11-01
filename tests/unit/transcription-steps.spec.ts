@@ -824,3 +824,70 @@ describe('what cannot be transcribed', () => {
     expect(await advanceTranscription(m.id, depsWith(scripted().transcriber))).toMatchObject({ kind: 'refused', message: expect.stringMatching(/upload the recording again/) })
   })
 })
+
+// Two tabs retrying together. The checks in advanceTranscription are on an
+// earlier read, so what they found has to be what the claim still finds.
+describe('a retry that read the meeting before another tab moved it', () => {
+  /** The same deps, stalling once between the read and the claim while `during` runs. */
+  function stalledBeforeClaim(deps: ReturnType<typeof depsWith>, during: () => Promise<unknown>) {
+    let stalled = false
+    const claimStep: typeof deps.pipeline.claimStep = async (...args) => {
+      if (!stalled) {
+        stalled = true
+        await during()
+      }
+      return deps.pipeline.claimStep(...args)
+    }
+    return { ...deps, pipeline: { ...deps.pipeline, claimStep } }
+  }
+
+  async function killUntilFailed(id: string, deps: ReturnType<typeof depsWith>) {
+    for (let i = 0; i < MAX_STEP_ATTEMPTS; i++) {
+      await deps.pipeline.claimStep(id, 'transcription', { status: 'transcribing', leaseMs: 60_000 })
+      await expireLease(id)
+    }
+    expect(await advanceTranscription(id, deps)).toMatchObject({ kind: 'failed', statusCode: 500 })
+    deps.time.advance(RETRY_COOLDOWN_MS + 1000)
+  }
+
+  it('does not reopen a finished transcript, nor spend Whisper again', async () => {
+    const script = scripted(replyOf(whisperSegments(MAX_CHUNKS * 3, 1500)))
+    const deps = depsWith(script.transcriber)
+    const m = await newMeeting()
+    for (let i = 0; i < 400; i++) {
+      await advanceTranscription(m.id, deps)
+      if (((await run(m.id))!.cursor as { reply: { parsed: boolean } }).reply.parsed) break
+    }
+    await killUntilFailed(m.id, deps)
+
+    const tabA = stalledBeforeClaim(deps, async () => {
+      // Tab B takes the last step: over the limit, so the status stays `failed`.
+      expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'done', meeting: { failedStage: 'summarization' } })
+    })
+    expect(await advanceTranscription(m.id, tabA)).toMatchObject({ kind: 'refused', statusCode: 409, message: expect.stringMatching(/retry summarisation/) })
+
+    expect(await getMeeting(m.id)).toMatchObject({ status: 'failed', failedStage: 'summarization' })
+    expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'refused', statusCode: 409 })
+    expect(script.calls()).toBe(1)
+    expect((await transcript(m.id)).length).toBe(MAX_CHUNKS * 3)
+  })
+
+  it('does not skip the cooldown of a failure that landed after its read', async () => {
+    const script = scripted(replyOf(whisperSegments(250)))
+    const deps = depsWith(script.transcriber)
+    const m = await newMeeting()
+    await advanceTranscription(m.id, deps)
+    await advanceTranscription(m.id, deps)
+    await killUntilFailed(m.id, deps)
+    await store().delete(whisperReplyKey(m.id))
+
+    const tabA = stalledBeforeClaim(deps, async () => {
+      // Tab B's retry finds the reply gone, and fails with a fresh cooldown.
+      expect(await advanceTranscription(m.id, deps)).toMatchObject({ kind: 'failed', statusCode: 502 })
+    })
+    expect(await advanceTranscription(m.id, tabA)).toMatchObject({ kind: 'refused', statusCode: 409 })
+
+    expect(await getMeeting(m.id)).toMatchObject({ status: 'failed', failedStage: 'transcription' })
+    expect(script.calls()).toBe(1)
+  })
+})
