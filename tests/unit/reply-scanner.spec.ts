@@ -103,6 +103,11 @@ describe('scanWindow', () => {
     expect(parseSegments(readAll(bytes, 4096)).map(s => s.start)).toEqual([0])
   })
 
+  it('finishes with a window of envelope, however little of it mattered', () => {
+    const window = encode('{"text":"not there yet')
+    expect(scanWindow(window, INITIAL_SCAN, { atEnd: false, maxObjects: 100 })).toMatchObject({ consumed: window.length, objects: [], finished: false })
+  })
+
   it('is not fooled by a key-shaped string in the transcript text, or a nested segments key', () => {
     const decoy = { text: '"segments":[{"start":99,"end":99,"text":"decoy"}]', meta: { segments: [{ start: 98, end: 98, text: 'nested' }] } }
     const bytes = encode(JSON.stringify({ ...decoy, segments: [segment(0)] }))
