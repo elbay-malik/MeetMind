@@ -130,6 +130,20 @@ describe('the Your meetings page, when writes are refused and reads are not', ()
     expect(page.text()).not.toContain('No meetings uploaded from this browser')
   })
 
+  it('warns when reads are refused and writes are not, rather than claiming the list is empty', async () => {
+    vi.spyOn(window, 'localStorage', 'get').mockReturnValue({
+      getItem: () => {
+        throw new DOMException('denied', 'SecurityError')
+      },
+      setItem: () => {},
+      removeItem: () => {},
+    } as unknown as Storage)
+    const page = await mountSuspended(MeetingsPage)
+    await flushPromises()
+    expect(page.text()).toContain('not letting MeetMind store anything')
+    expect(page.text()).not.toContain('No meetings uploaded from this browser')
+  })
+
   it('warns and still lists what it already holds', async () => {
     localStorage.setItem(LOCAL_MEETINGS_KEY, JSON.stringify([ENTRY]))
     refuseWrites()
@@ -144,6 +158,16 @@ describe('MeetingLinkNotice', () => {
   const mount = () => mountSuspended(MeetingLinkNotice, { props: { meetingId: ID } })
   const copyButton = (page: Awaited<ReturnType<typeof mount>>) =>
     page.findAll('button').find(b => b.text().includes('Copy link'))!
+
+  it('keeps the status region mounted and empty before any click, so the change is announced', async () => {
+    const status = (await mount()).find('[role="status"]')
+    expect(status.exists()).toBe(true)
+    expect(status.text()).toBe('')
+  })
+
+  it('shows the link in a field that cannot be edited', async () => {
+    expect((await mount()).find('input').attributes('readonly')).toBeDefined()
+  })
 
   it('copies the meeting page\'s full URL, not the page it is shown on', async () => {
     const writeText = vi.fn(async () => {})
@@ -180,11 +204,36 @@ describe('MeetingLinkNotice', () => {
       expect(page.find('input').exists()).toBe(true)
     })
 
+    it('is headed as a link to look at, not one to keep', async () => {
+      setDemo(ID)
+      const heading = (await mount()).find('h2').text()
+      expect(heading).toBe('Link to this meeting')
+    })
+
     it('still warns on any other meeting when a demo is configured', async () => {
       setDemo(ID.replace('9b1', 'ab1'))
       const page = await mount()
       expect(page.text()).toContain('only way back')
       expect(page.text()).not.toContain('public demo meeting')
+    })
+  })
+
+  describe('when this browser refused to remember a meeting', () => {
+    afterEach(() => {
+      useNotRememberedMeetings().value = []
+    })
+
+    it('alerts on that meeting', async () => {
+      useNotRememberedMeetings().value = [ID]
+      const alert = (await mount()).find('[role="alert"]')
+      expect(alert.text()).toContain('could not add this meeting to Your meetings')
+    })
+
+    it('says nothing about any other meeting', async () => {
+      useNotRememberedMeetings().value = [ID.replace('9b1', 'ab1')]
+      const page = await mount()
+      expect(page.text()).not.toContain('could not add this meeting')
+      expect(page.find('[role="alert"]').exists()).toBe(false)
     })
   })
 
@@ -314,6 +363,18 @@ describe('useMeetingUpload', () => {
     uploader.reset()
     await uploader.upload(job)
     expect(listedIds().sort()).toEqual([ATTEMPT(1).id, ATTEMPT(2).id].sort())
+  })
+
+  it('keeps the earlier row when the user moves on after a retry that could not register', async () => {
+    vi.stubGlobal('XMLHttpRequest', FailingXhr)
+    registrations = [ATTEMPT(1), 'refused', ATTEMPT(3)]
+    const { useMeetingUpload } = await import('~/composables/useMeetingUpload')
+    const uploader = useMeetingUpload()
+    await uploader.upload(job)
+    await uploader.upload(job)
+    uploader.reset()
+    await uploader.upload(job)
+    expect(listedIds().sort()).toEqual([ATTEMPT(1).id, ATTEMPT(3).id].sort())
   })
 
   it('tells the meeting\'s notice when the browser refused to remember it', async () => {
