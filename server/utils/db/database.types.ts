@@ -2,7 +2,7 @@ import type { MeetingRow } from './meetings'
 import type { TranscriptSegmentRow } from './transcripts'
 import type { ActionItemRow, DecisionRow, SummaryRow } from './summaries'
 import type { PipelineRunRow, SummaryChunkRow } from './pipeline'
-import type { CrossMeetingMatchRow, TranscriptWindowRow, WindowMatchRow } from './windows'
+import type { TranscriptWindowRow, WindowMatchRow } from './windows'
 
 /**
  * Hand-written Supabase schema typing for the tables the server touches.
@@ -82,6 +82,7 @@ export interface Database {
         }
         Returns: WindowMatchRow[]
       }
+      /** In the schema but called by nothing since ADR-0013, until a cleanup migration drops it. */
       match_transcript_windows_across_meetings: {
         Args: {
           /** A vector literal, '[0.1,0.2,…]'. */
@@ -90,7 +91,7 @@ export interface Database {
           p_meeting_limit: number
           p_per_meeting_limit: number
         }
-        Returns: CrossMeetingMatchRow[]
+        Returns: (WindowMatchRow & { meeting_id: string })[]
       }
       stored_audio_bytes: {
         Args: {

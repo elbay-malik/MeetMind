@@ -109,21 +109,6 @@ describe('get', () => {
   })
 })
 
-describe('list', () => {
-  it('asks for the newest meetings first, bounded by the limit', async () => {
-    const calls = stubPostgrest([row])
-    const meetings = await repo.list({ limit: 25 })
-    expect(calls[0]!.url.searchParams.get('order')).toBe('created_at.desc')
-    expect(calls[0]!.url.searchParams.get('limit')).toBe('25')
-    expect(meetings).toHaveLength(1)
-  })
-
-  it('returns an empty list, not null, when there are no meetings', async () => {
-    stubPostgrest([])
-    expect(await repo.list({ limit: 10 })).toEqual([])
-  })
-})
-
 describe('claim', () => {
   it('filters on the current status, which is what makes it atomic', async () => {
     const calls = stubPostgrest([{ ...row, status: 'transcribing' }])

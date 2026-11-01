@@ -10,7 +10,6 @@ export interface MeetingRepository {
   readonly kind: 'supabase' | 'local'
   create(meeting: NewMeeting): Promise<Meeting>
   get(id: string): Promise<Meeting | null>
-  list(options: { limit: number }): Promise<Meeting[]>
   /** Returns the updated row, or `null` when no row has that id. */
   update(id: string, patch: MeetingPatch): Promise<Meeting | null>
   /**

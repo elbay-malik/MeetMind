@@ -56,15 +56,6 @@ export function createSupabaseMeetingRepository(options: SupabaseOptions): Meeti
       return data ? rowToMeeting(data) : null
     },
 
-    async list({ limit }) {
-      const { data, error } = await table()
-        .select()
-        .order('created_at', { ascending: false })
-        .limit(limit)
-      if (error) fail('list', error)
-      return data.map(rowToMeeting)
-    },
-
     async claim(id, from, patch: MeetingPatch, expectedUpdatedAt) {
       assertValidStatusPatch(patch)
       // The extra .eq('status', from) is what makes this atomic: PostgREST

@@ -38,7 +38,6 @@ describe('delete (local driver)', () => {
     const deleted = await repo.delete('d1', { status: created.status, updatedAt: created.updatedAt })
     expect(deleted).toMatchObject({ id: 'd1', status: 'ready' })
     expect(await repo.get('d1')).toBeNull()
-    expect((await repo.list({ limit: 100 })).map(m => m.id)).not.toContain('d1')
   })
 
   it('refuses and keeps the row when the status has moved on', async () => {

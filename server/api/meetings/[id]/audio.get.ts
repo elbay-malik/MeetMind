@@ -17,8 +17,8 @@ import { notFound, requireMeetingId } from '../../../utils/http'
  * Served from our own origin rather than a presigned URL: the local driver is
  * unreachable from the public internet either way, a presigned link is a bearer
  * capability that outlives the page, and same-origin audio keeps Web Audio
- * usable later. The route is unauthenticated, which matches the rest of the API
- * until an auth phase arrives.
+ * usable later. The route is unauthenticated: holding the meeting's id is what
+ * grants access, as on the rest of the API (ADR-0013).
  */
 /**
  * Pass through a store's validator only if it is a well-formed entity tag.
