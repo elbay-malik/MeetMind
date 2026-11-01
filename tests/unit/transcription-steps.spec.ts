@@ -88,8 +88,10 @@ function whisperSegments(count: number, words = 12) {
   }))
 }
 
-const replyOf = (segments: unknown[]) => new TextEncoder().encode(JSON.stringify({
-  task: 'transcribe', language: 'english', duration: 90, text: 'the whole transcript', segments, x_groq: { id: 'req_1' },
+const replyOf = (segments: { end?: unknown }[]) => new TextEncoder().encode(JSON.stringify({
+  task: 'transcribe', language: 'english',
+  duration: Math.max(0, ...segments.map(s => (typeof s.end === 'number' ? s.end : 0))),
+  text: 'the whole transcript', segments, x_groq: { id: 'req_1' },
 }))
 
 /** A transcriber that answers with `reply`, counting calls and throwing whatever a test queues. */
@@ -247,6 +249,42 @@ describe('the happy path', () => {
     expect(stored.map(s => s.startMs)).toEqual([...stored.map(s => s.startMs)].sort((a, b) => a - b))
     expect(stored.find(s => s.text === 'from before the last page')).toMatchObject({ startMs: 199_000, endMs: 199_000 })
     expect(stored.at(-1)).toMatchObject({ startMs: 300_000, endMs: 301_000 })
+  })
+
+  describe('with a line whose timestamp is wrong', () => {
+    const lines = (count: number) => Array.from({ length: count }, (_, i) => ({ start: i * 2, end: i * 2 + 1.5, text: `line ${i}` }))
+    const stored = async (reply: Uint8Array) => {
+      const m = await newMeeting()
+      expect((await drive(m.id, depsWith(scripted(reply).transcriber))).at(-1)).toMatchObject({ kind: 'done' })
+      return transcript(m.id)
+    }
+    const envelope = (segments: unknown[], duration?: number) => new TextEncoder().encode(JSON.stringify({ task: 'transcribe', duration, text: 'x', segments }))
+
+    // One bad line used to lift the floor for every page after it, for good.
+    it('moves only that line when it starts past the end of the audio', async () => {
+      const segments = lines(828)
+      segments[50] = { start: 3600, end: 3602, text: 'wrong' }
+      const result = await stored(envelope(segments, 1656))
+      expect(result[50]).toMatchObject({ text: 'wrong', startMs: 98_000, endMs: 98_000 })
+      result.filter(s => s.idx !== 50).forEach(s => expect(s).toMatchObject({ startMs: s.idx * 2000, endMs: s.idx * 2000 + 1500 }))
+    })
+
+    it('moves it when it is the last of its page, which has no later line to show it is wrong', async () => {
+      const segments = lines(250)
+      segments[SEGMENTS_PER_PAGE - 1] = { start: 3600, end: 3602, text: 'wrong' }
+      const result = await stored(envelope(segments, 500))
+      expect(result[SEGMENTS_PER_PAGE - 1]).toMatchObject({ text: 'wrong', startMs: 196_000 })
+      expect(result[SEGMENTS_PER_PAGE]).toMatchObject({ startMs: SEGMENTS_PER_PAGE * 2000 })
+      expect(result.at(-1)).toMatchObject({ startMs: 249 * 2000 })
+    })
+
+    it('moves it when it is inside the audio, or the reply does not say how long that is', async () => {
+      const segments = lines(250)
+      segments[50] = { start: 450, end: 451, text: 'wrong' }
+      const result = await stored(envelope(segments))
+      expect(result[50]).toMatchObject({ text: 'wrong', startMs: 98_000 })
+      expect(result[150]).toMatchObject({ startMs: 300_000, endMs: 301_500 })
+    })
   })
 
   it('keeps the cursor small however long the meeting is', async () => {
