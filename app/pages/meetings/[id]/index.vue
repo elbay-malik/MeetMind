@@ -274,10 +274,9 @@ const hasAudio = computed(() =>
   meeting.value.status !== 'pending_upload' && !uploadWasRejected(meeting.value))
 
 /**
- * A cross-meeting search result deep-links here as `?t=<startMs>&seg=<segmentIdx>`
- * (app/pages/meetings/index.vue). Both must be present and numeric, or this is
- * some other visit to the page, not a followed link — a half-formed query
- * string should render the page normally, not half-seek it.
+ * A link to one moment: `?t=<startMs>&seg=<segmentIdx>`. Both must be present and
+ * numeric, or this is some other visit to the page, not a followed link — a
+ * half-formed query string should render the page normally, not half-seek it.
  */
 onMounted(() => {
   const startMs = Number(route.query.t)
@@ -307,6 +306,8 @@ onMounted(() => {
         · {{ segments.length }} transcript segments{{ incompleteTranscript ? ' so far' : '' }}
       </p>
     </div>
+
+    <MeetingLinkNotice :meeting-id="meetingId" />
 
     <UCard v-if="hasAudio">
       <audio
@@ -527,9 +528,9 @@ onMounted(() => {
       <UButton
         to="/meetings"
         variant="soft"
-        icon="i-lucide-archive"
+        icon="i-lucide-list"
       >
-        All meetings
+        Your meetings
       </UButton>
     </div>
   </UContainer>

@@ -407,6 +407,8 @@ const activityLabel = computed(() => {
       </UBadge>
     </div>
 
+    <MeetingLinkNotice :meeting-id="meetingId" />
+
     <UCard>
       <template #header>
         <h2 class="font-semibold">

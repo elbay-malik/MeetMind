@@ -91,6 +91,9 @@ export function useMeetingUpload() {
         body: { ...job.meta, audioBytes: job.audio.size } satisfies CreateMeetingInput,
       })
       state.meeting = created.meeting
+      // Now, not on success: the row exists from here on, and this browser's list
+      // is the only place that will ever remember its link (ADR-0013).
+      rememberLocalMeeting(browserStorage(), created.meeting)
 
       state.status = 'uploading'
       await putWithProgress(created.upload.url, created.upload.headers, job.audio)
