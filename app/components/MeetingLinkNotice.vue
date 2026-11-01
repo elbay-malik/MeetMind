@@ -46,15 +46,15 @@ async function copyLink() {
       class="mt-1 text-sm text-muted"
     >
       This is the public demo meeting. Anyone can open it from the home page, read the
-      transcript and summary and play the audio.
+      transcript and summary, play the audio and see the original file's name, size and type.
     </p>
     <p
       v-else
       class="mt-1 text-sm text-muted"
     >
       It is the only way back to this meeting: there are no accounts, and if you lose it
-      you lose access. Anyone with this link can read the transcript and summary and play
-      the audio.
+      you lose access. Anyone with this link can read the transcript and summary, play the
+      audio and see the original file's name, size and type.
     </p>
     <p
       v-if="!remembered"

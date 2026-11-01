@@ -107,7 +107,8 @@ async function uploadAndContinue() {
       </h1>
       <p class="mt-1 text-muted">
         Your video is compressed to audio entirely in this browser, and the video stays on
-        your machine. The compressed audio is what gets uploaded.
+        your machine. The compressed audio is uploaded, with the original file's name, size
+        and type.
       </p>
       <p
         v-if="demoMeetingId"
@@ -135,8 +136,8 @@ async function uploadAndContinue() {
           to summarize and answer questions, and to Google to index it for questions.
         </p>
         <p class="mt-1 text-default">
-          There are no accounts. Anyone with the link to your meeting can view it, and you
-          cannot delete it yourself.
+          There are no accounts. Anyone with the link to your meeting can view it, including
+          the file's name, and you cannot delete it yourself.
         </p>
       </template>
     </UAlert>
@@ -250,7 +251,8 @@ async function uploadAndContinue() {
         <p class="text-sm text-muted">
           Compressed to <strong class="text-default">{{ formatMegabytes(state.outputBytes) }}</strong>
           of 16&nbsp;kHz mono Opus in {{ formatDuration(state.elapsedMs / 1000) }}.
-          Only this audio is uploaded — never the video.
+          The video is never uploaded: only this audio and the original file's name, size and
+          type. Anyone with the meeting's link can see those, even if you change the title below.
         </p>
         <audio
           :src="state.outputUrl ?? undefined"
