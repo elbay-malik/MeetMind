@@ -78,7 +78,8 @@ transcripts, summaries or embeddings yet (SEC-11), so a retention claim would be
 
 The meeting and progress pages tell the holder to keep the link, offer to copy it, and
 repeat who can read it. The link copied is always the meeting page's, with no query
-string, whichever page offers it.
+string, whichever page offers it. The demo meeting (decision 5) is the exception: anyone
+can reach it from the home page, so its notice says that instead.
 
 ### 5. One meeting may be public: the demo.
 
