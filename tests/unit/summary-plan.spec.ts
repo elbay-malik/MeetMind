@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { estimateTokens, planChunks } from '../../server/utils/summary/plan'
+import { closePlan, EMPTY_PLAN, estimateTokens, extendPlan, planChunks, type IncrementalPlan } from '../../server/utils/summary/plan'
 import type { TranscriptSegment } from '../../shared/types/meeting'
 
 const seg = (idx: number, words: number): TranscriptSegment => ({
@@ -164,5 +164,85 @@ describe('planChunks', () => {
     }))
     const chunks = planChunks(segments, 500)
     expect(chunks.length).toBeGreaterThan(1)
+  })
+})
+
+describe('the incremental plan (ADR-0012 §2)', () => {
+  const BUDGET = 100
+
+  /** A small deterministic generator, so a failure reproduces. */
+  function random(seed: number) {
+    let state = seed
+    return (max: number) => {
+      state = (state * 1103515245 + 12345) & 0x7FFFFFFF
+      return state % max
+    }
+  }
+
+  function transcript(seed: number, length: number): TranscriptSegment[] {
+    const next = random(seed)
+    return Array.from({ length }, (_, idx) => ({
+      idx,
+      startMs: idx * 1000,
+      endMs: idx * 1000 + 900,
+      // Mostly small lines, with the odd one at or over the budget on its own.
+      text: Array.from({ length: next(10) === 0 ? 40 + next(120) : 1 + next(20) }, () => 'word').join(' '),
+    }))
+  }
+
+  function asRanges(segments: TranscriptSegment[]) {
+    return planChunks(segments, BUDGET).map(c => ({
+      segFrom: c.segments[0]!.idx,
+      segTo: c.segments.at(-1)!.idx,
+      estTokens: c.estimatedTokens,
+    }))
+  }
+
+  function incremental(segments: TranscriptSegment[], pageSizes: () => number) {
+    let plan: IncrementalPlan = EMPTY_PLAN
+    for (let at = 0; at < segments.length;) {
+      const size = pageSizes()
+      plan = extendPlan(plan, segments.slice(at, at + size), BUDGET, 1000)
+      at += size
+    }
+    return closePlan(plan, 1000)
+  }
+
+  it('equals planChunks however the transcript is split into pages', () => {
+    for (let seed = 1; seed <= 40; seed++) {
+      const segments = transcript(seed, 300)
+      const expected = asRanges(segments)
+      expect(expected.length, 'the case has several chunks').toBeGreaterThan(3)
+      const pages = random(seed * 7)
+      for (const pageSizes of [() => 1, () => 100, () => 1 + pages(37), () => 1000]) {
+        const { count, chunks } = incremental(segments, pageSizes)
+        expect(chunks).toEqual(expected)
+        expect(count).toBe(expected.length)
+      }
+    }
+  })
+
+  it('plans nothing for no segments, and tolerates pages with none', () => {
+    expect(closePlan(EMPTY_PLAN, 40)).toEqual({ count: 0, chunks: [] })
+    expect(closePlan(extendPlan(EMPTY_PLAN, [], BUDGET, 40), 40)).toEqual({ count: 0, chunks: [] })
+  })
+
+  it('gives a segment over budget a chunk of its own, as planChunks does', () => {
+    const line = (idx: number, words: number) => ({ idx, startMs: idx, endMs: idx, text: Array.from({ length: words }, () => 'w').join(' ') })
+    const segments = [line(0, 5), line(1, 500), line(2, 5)]
+    expect(incremental(segments, () => 1).chunks).toEqual(asRanges(segments))
+    expect(asRanges(segments)).toHaveLength(3)
+  })
+
+  it('stops retaining ranges past the limit, so the cursor does not grow with the meeting, and keeps counting', () => {
+    const segments = transcript(3, 2000)
+    const total = asRanges(segments).length
+    expect(total).toBeGreaterThan(5)
+    let plan = EMPTY_PLAN
+    for (let at = 0; at < segments.length; at += 100) {
+      plan = extendPlan(plan, segments.slice(at, at + 100), BUDGET, 5)
+      expect(plan.chunks.length).toBeLessThanOrEqual(5)
+    }
+    expect(closePlan(plan, 5).count).toBe(total)
   })
 })
