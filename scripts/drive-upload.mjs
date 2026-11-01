@@ -49,7 +49,7 @@ const context = await browser.newContext({ permissions: ['clipboard-read', 'clip
 const page = await context.newPage()
 const consoleLines = []
 page.on('console', m => consoleLines.push(`[console:${m.type()}] ${m.text()}`))
-page.on('pageerror', e => consoleLines.push(`[pageerror] ${e.message}`))
+page.on('pageerror', e => fail(`page error: ${e.message}`))
 
 try {
   await page.goto(`${baseURL}/`, { waitUntil: 'networkidle' })
