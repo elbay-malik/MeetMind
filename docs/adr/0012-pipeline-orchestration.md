@@ -136,7 +136,7 @@ All new tables reference `meetings` with `on delete cascade`.
 
 **`meeting_index_state`**
 - `text_hash`, `model`, `window_count`, `complete`
-- This is also the index-completeness marker ADR-0008's addendum deferred, so cross-meeting search reads it as well.
+- This is also the index-completeness marker ADR-0008's addendum deferred. Cross-meeting search was to read it as well, but ADR-0013 removed that search.
 
 **SQL functions** (each is one `rpc()` subrequest and one transaction):
 

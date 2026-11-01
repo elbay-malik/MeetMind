@@ -1,6 +1,6 @@
 # ADR-0011: Deleting a meeting is an admin operation
 
-- **Status:** Accepted
+- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md)
 - **Date:** 2026-10-25
 
 ## Context
@@ -118,3 +118,17 @@ answering 404.
 - **A `deleting` tombstone status.** This is stronger than the time-based
   guards, but needs a migration to the status CHECK and changes to every claim
   path. That is not worth it for an operator route.
+
+## Addendum (2026-11-02): no list, and the only way to revoke a link
+
+ADR-0013 removed `GET /api/meetings` and cross-meeting search, so three things above
+describe the past. The Context's "`GET /api/meetings` lists them" and the table's
+windows row, "which cross-meeting search still scans", no longer hold; an orphan windows
+file on the local driver is now only an orphan. The rejected open DELETE would no longer
+be a loop over a list, but it would still let any link holder destroy a shared meeting,
+so it stays rejected.
+
+Two things follow for the operator. A delete needs an id, which now comes from whoever
+reports the meeting or from the Supabase table, not from the API. And this route is now
+the only way to revoke a leaked link, since an id cannot be rotated. That is the same
+route with the same 30-minute refusal, used for a new reason.

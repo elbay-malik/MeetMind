@@ -3,7 +3,7 @@
 **Meeting videos in. Searchable, timestamped knowledge out. No raw video ever leaves your browser.**
 
 MeetMind turns recorded meetings into timestamped transcripts, structured summaries
-(decisions and action items with assignees), and a semantic Q&A archive — while keeping
+(decisions and action items with assignees), and semantic Q&A over each meeting — while keeping
 the entire video on the user's machine. Audio is extracted and compressed **in the
 browser** with ffmpeg.wasm; only ~7-11 MB of 16 kHz mono Opus per meeting hour is ever
 uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
@@ -34,16 +34,25 @@ uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
 │   transcript segment that is verified before storage        │
 │ gemini-embedding-2 (768d) ─► Supabase pgvector; questions   │
 │   answered by gpt-oss, citations verified like summaries    │
-│ cross-meeting search: same embeddings, no meeting filter,   │
-│   capped per meeting via a LATERAL join, no HNSW yet         │
 └───────────────┬──────────────────────────────────────────────┘
                 ▼
    Transcript ↔ player over a byte-range route (click-to-seek both ways),
-   semantic Q&A with clickable timestamp citations, search across meetings
-   linking straight to the moment a passage was said
+   semantic Q&A with clickable timestamp citations, each meeting reachable
+   only through its own unguessable link
 ```
 
 The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
+
+## Who can see a meeting
+
+MeetMind is a portfolio demo with no accounts, so **a meeting's link is the only key to
+it**. The link holds a random UUID, and nothing on the server lists meetings or searches
+across them. "Your meetings" is a list kept only in the browser that uploaded them, so
+losing the link loses access, and anyone given the link can read the meeting. A leaked
+link can only be revoked by an operator deleting the meeting. Do not upload anything
+sensitive: audio goes to Groq, transcripts go to Groq and Google. Set
+`NUXT_PUBLIC_DEMO_MEETING_ID` to link one preloaded meeting from the home page. See
+[ADR-0013](docs/adr/0013-private-meeting-links.md), including its limits.
 
 ## Architecture Decision Records
 
@@ -56,11 +65,12 @@ The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 | [0005](docs/adr/0005-audio-playback-and-transcript-sync.md) | Playback: same-origin byte-range route, native player before a waveform |
 | [0006](docs/adr/0006-structured-summaries.md) | Summaries: chunked extraction, citations checked against the transcript |
 | [0007](docs/adr/0007-semantic-qa.md) | Semantic Q&A: windowed Gemini embeddings, answers held to the same citation check |
-| [0008](docs/adr/0008-cross-meeting-search.md) | Cross-meeting search: passages across meetings, not a synthesized answer; still no HNSW |
+| [0008](docs/adr/0008-cross-meeting-search.md) | Cross-meeting search: passages across meetings, not a synthesized answer; still no HNSW. Superseded by ADR-0013 |
 | [0009](docs/adr/0009-workers-measurement-spike.md) | Workers measurement spike before Phase 9: what the runtime actually does, measured rather than inferred |
 | [0010](docs/adr/0010-r2-cost-controls.md) | R2 cost controls: a lifecycle rule bounds growth, an application storage budget is the hard stop, per-request op metering rejected |
 | [0011](docs/adr/0011-admin-meeting-delete.md) | Deleting a meeting is admin-only, behind `NUXT_ADMIN_TOKEN`; refused while anything could still write its data |
 | [0012](docs/adr/0012-pipeline-orchestration.md) | Pipeline orchestration on the Workers free plan: one bounded step per request, browser-driven, Postgres rate-limit slots, polling not SSE |
+| [0013](docs/adr/0013-private-meeting-links.md) | A meeting is reached only through its unguessable link: no global list or cross-meeting search, \"Your meetings\" lives in this browser |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -151,7 +161,8 @@ it. Those contracts are the one thing the offline tests cannot prove.
    stop counting against the ceiling at once. Without the token the route
    answers 404. It answers 409 for 30 minutes after a meeting is registered, and
    while transcription or summarisation is running. See
-   [ADR-0011](docs/adr/0011-admin-meeting-delete.md).
+   [ADR-0011](docs/adr/0011-admin-meeting-delete.md). No API lists meetings, so the
+   id comes from the meeting's link or from the Supabase table.
 
 4. Set `NUXT_R2_ACCOUNT_ID`, `NUXT_R2_ACCESS_KEY_ID`, `NUXT_R2_SECRET_ACCESS_KEY`,
    `NUXT_R2_BUCKET`. Scope the token to the one bucket with **Object Read & Write**
@@ -190,7 +201,6 @@ quota; the UI reports it as such.
 | `pnpm test:services` | Exercises the real R2, Supabase, Groq and Gemini services; each group is skipped unless its keys are set, and the banner names which ones skipped |
 | `node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: drop → extract → upload → progress page, then inspects storage |
 | `node scripts/drive-player.mjs <url> <meetingId>` | Headless Chromium: click-to-seek, active-line highlight, transcript keyboard navigation |
-| `node scripts/drive-search.mjs <url> <dataDir>` | Headless Chromium: search across two indexed meetings, click a result, confirm it seeks the right meeting's player |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
 | `pnpm db:migrate` | Applies `supabase/migrations/` to the real project at `SUPABASE_DB_URL`, in order, skipping what a ledger says is already there. Run `verify-migrations.sh` first; pass `--dry-run` to see what is pending |
 | `pnpm ci:local` | Runs every job in `.github/workflows/ci.yml` on this machine — a PR can be judged green without waiting on GitHub. A job it cannot run counts as a failure, not a skip |
@@ -200,16 +210,16 @@ quota; the UI reports it as such.
 Phases 0-8 of the [playbook](docs/PLAYBOOK.md) are done: scaffold, FFmpeg spike,
 in-browser extraction, upload & storage, transcription, the transcript viewer with
 click-to-seek playback, structured summaries with decisions and action items,
-semantic Q&A over a meeting with verified, clickable citations, and search across
-every indexed meeting.
+and semantic Q&A over a meeting with verified, clickable citations. Phase 8's archive
+and cross-meeting search were later removed, leaving each meeting reachable only through
+its own link ([ADR-0013](docs/adr/0013-private-meeting-links.md)).
 Several playbook instructions were changed after re-checking their premises — see
 [ADR-0004](docs/adr/0004-transcription.md),
 [ADR-0005](docs/adr/0005-audio-playback-and-transcript-sync.md),
 [ADR-0006](docs/adr/0006-structured-summaries.md),
 [ADR-0007](docs/adr/0007-semantic-qa.md) and
 [ADR-0008](docs/adr/0008-cross-meeting-search.md). Next: pipeline orchestration,
-rate limiting (which cross-meeting search's open endpoint makes more pressing —
-see ADR-0008), Cloudflare Workers.
+rate limiting, Cloudflare Workers.
 
 ## Acknowledgements
 

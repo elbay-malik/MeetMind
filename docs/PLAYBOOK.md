@@ -41,7 +41,7 @@
 
 1. Write a one-page product definition and the "no raw video leaves the browser" privacy thesis (this is the portfolio differentiator).
 2. Select/record a demo meeting: a 3-5 minute multi-speaker clip (Creative Commons or self-recorded with consent) plus a tiny 30-second fixture for automated tests.
-3. Wireframe five screens: (a) upload/drop zone with in-browser compression progress, (b) multi-stage pipeline progress, (c) transcript + waveform split view, (d) summary/decisions/action-items panel, (e) archive + cross-meeting search.
+3. Wireframe five screens: (a) upload/drop zone with in-browser compression progress, (b) multi-stage pipeline progress, (c) transcript + waveform split view, (d) summary/decisions/action-items panel, (e) archive + cross-meeting search (the archive became a per-browser list and search was removed, see ADR-0013).
 4. Decide scope cuts up front: diarization = stretch goal; live recording = stretch; WebGPU offline = stretch.
 
 **Packages introduced:** none (design tools only).
@@ -156,6 +156,8 @@
 **Acceptance:** Q&A returns relevant answers; every citation timestamp seeks the player to the right moment.
 
 ### Phase 8 — Archive + Cross-Meeting Search (0.5-1 week, ~8h)
+> **Superseded by [ADR-0013](adr/0013-private-meeting-links.md).** This phase was built, then the global list and cross-meeting search were removed: without accounts they handed every meeting to anyone. Meetings are now reached only through their own link, "Your meetings" lives in the uploader's browser, and the demo meeting is linked through `NUXT_PUBLIC_DEMO_MEETING_ID`. The steps below are kept as the original plan.
+
 **Goal:** Browse and search across multiple meetings.
 
 1. Build the archive list with meeting metadata and quick filters.
@@ -263,7 +265,7 @@
 - [ ] Clicking transcript/action-item/citation seeks the player; playback highlights active segment.
 - [ ] Summary + decisions + action items (assignee/task/due date/timestamp) generated and schema-valid.
 - [ ] Semantic Q&A answers with clickable timestamp citations.
-- [ ] Archive + cross-meeting search work; demo meeting preloaded.
+- [ ] Meetings reachable only through their link, "Your meetings" lists this browser's uploads (ADR-0013); demo meeting preloaded.
 - [ ] Rate limiting + demo protection active; cost math documented.
 - [ ] TypeScript strict; Vitest + Playwright green in CI.
 - [ ] Lighthouse/CWV numbers recorded; accessibility (keyboard seek) passes.
