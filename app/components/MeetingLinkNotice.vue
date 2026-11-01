@@ -13,6 +13,9 @@ onMounted(() => {
 })
 const link = computed(() => `${origin.value}${path.value}`)
 
+const notRemembered = useNotRememberedMeetings()
+const remembered = computed(() => !notRemembered.value.includes(props.meetingId))
+
 const input = ref<{ inputRef?: HTMLInputElement } | null>(null)
 const copyStatus = ref('')
 
@@ -38,6 +41,14 @@ async function copyLink() {
       It is the only way back to this meeting: there are no accounts, and if you lose it
       you lose access. Anyone with this link can read the transcript and summary and play
       the audio.
+    </p>
+    <p
+      v-if="!remembered"
+      role="alert"
+      class="mt-2 text-sm font-medium text-warning"
+    >
+      This browser could not add this meeting to Your meetings, so it will not be listed
+      there. Copy the link now: nothing else on this device holds it.
     </p>
     <div class="mt-3 flex flex-wrap items-center gap-2">
       <UInput

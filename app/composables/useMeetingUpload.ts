@@ -41,6 +41,8 @@ export function useMeetingUpload() {
     error: null,
   })
 
+  const notRemembered = useNotRememberedMeetings()
+
   let xhr: XMLHttpRequest | null = null
 
   const busy = computed(() => ['registering', 'uploading', 'confirming'].includes(state.status))
@@ -93,7 +95,9 @@ export function useMeetingUpload() {
       state.meeting = created.meeting
       // Now, not on success: the row exists from here on, and this browser's list
       // is the only place that will ever remember its link (ADR-0013).
-      rememberLocalMeeting(browserStorage(), created.meeting)
+      if (!rememberLocalMeeting(browserStorage(), created.meeting)) {
+        notRemembered.value = [...notRemembered.value, created.meeting.id]
+      }
 
       state.status = 'uploading'
       await putWithProgress(created.upload.url, created.upload.headers, job.audio)
