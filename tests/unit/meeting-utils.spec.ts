@@ -130,4 +130,3 @@ describe('transcriptionActivity', () => {
     expect(label).not.toMatch(/did not finish/)
   })
 })
-
