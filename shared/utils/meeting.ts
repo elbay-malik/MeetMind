@@ -1,4 +1,4 @@
-import type { Meeting } from '#shared/types/meeting'
+import type { Meeting, TranscriptionStepResponse } from '#shared/types/meeting'
 
 /**
  * Limits and naming rules for meeting audio, shared by client and server so
@@ -98,4 +98,29 @@ export function transcriptionFinished(meeting: Pick<Meeting, 'status' | 'failedS
  */
 export function uploadWasRejected(meeting: Pick<Meeting, 'status' | 'failedStage'>): boolean {
   return meeting.status === 'failed' && meeting.failedStage === 'upload'
+}
+
+/** Why a Whisper step is parked when the account's allowance is used up, by this meeting or another. */
+export const PROVIDER_BLOCKED_ERROR = 'The transcription provider\'s quota is used up for now.'
+
+function roughly(ms: number): string {
+  const unit = (count: number, name: string) => `about ${count} ${name}${count === 1 ? '' : 's'}`
+  const minutes = Math.ceil(ms / 60_000)
+  if (ms < 60_000) return unit(Math.max(1, Math.ceil(ms / 1000)), 'second')
+  return minutes < 120 ? unit(minutes, 'minute') : unit(Math.ceil(minutes / 60), 'hour')
+}
+
+/**
+ * What the progress page says while it is driving transcription.
+ *
+ * @param retryAfterMs how long the page is waiting before it asks again, if it is
+ */
+export function transcriptionActivity(progress: TranscriptionStepResponse['progress'] | null, retryAfterMs: number | null): string {
+  if (progress?.lastError === PROVIDER_BLOCKED_ERROR) {
+    const when = retryAfterMs === null ? 'later' : `in ${roughly(retryAfterMs)}`
+    return `Transcription is waiting. ${PROVIDER_BLOCKED_ERROR} It carries on ${when}, while this page stays open.`
+  }
+  const retrying = progress?.lastError ? ' The last attempt did not finish; it will be retried.' : ''
+  if (!progress?.total) return retrying ? `Transcribing.${retrying}` : 'Transcribing. This can take a moment.'
+  return `Transcribing: ${progress.segments} segments stored so far.${retrying}`
 }

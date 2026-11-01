@@ -3,10 +3,12 @@ import {
   AUDIO_MIME,
   MAX_AUDIO_BYTES,
   MAX_TITLE_LENGTH,
+  PROVIDER_BLOCKED_ERROR,
   audioObjectKey,
   whisperReplyKey,
   titleFromFileName,
   transcribedButEmpty,
+  transcriptionActivity,
   uploadWasRejected,
 } from '../../shared/utils/meeting'
 
@@ -98,3 +100,34 @@ describe('whisperReplyKey', () => {
     expect(whisperReplyKey(id)).not.toBe(audioObjectKey(id))
   })
 })
+
+describe('transcriptionActivity', () => {
+  const step = (patch: Partial<Parameters<typeof transcriptionActivity>[0] & object> = {}) =>
+    ({ done: 0, total: null, segments: 0, lastError: null, ...patch })
+
+  it('is plain while the provider has not answered', () => {
+    expect(transcriptionActivity(null, null)).toBe('Transcribing. This can take a moment.')
+    expect(transcriptionActivity(step(), null)).toBe('Transcribing. This can take a moment.')
+  })
+
+  it('says a failed attempt will be retried, also before the provider has answered', () => {
+    expect(transcriptionActivity(step({ lastError: 'HTTP 503' }), 5000)).toMatch(/did not finish; it will be retried/)
+    expect(transcriptionActivity(step({ total: 900, segments: 7, lastError: 'db' }), 5000)).toMatch(/7 segments.*will be retried/)
+  })
+
+  it('counts the segments once it has them', () => {
+    expect(transcriptionActivity(step({ total: 900, segments: 7 }), null)).toBe('Transcribing: 7 segments stored so far.')
+  })
+
+  it.each([
+    [45_000, /about 45 seconds/],
+    [20 * 60_000, /about 20 minutes/],
+    [24 * 60 * 60_000, /about 24 hours/],
+  ])('says why a block is waiting and for how long, at %i ms', (ms, wait) => {
+    const label = transcriptionActivity(step({ lastError: PROVIDER_BLOCKED_ERROR }), ms)
+    expect(label).toMatch(/quota/)
+    expect(label).toMatch(wait)
+    expect(label).not.toMatch(/did not finish/)
+  })
+})
+

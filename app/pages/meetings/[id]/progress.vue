@@ -113,6 +113,8 @@ const summarizing = ref(false)
 const extraction = ref<ExtractionStepResponse['progress'] | null>(null)
 /** How far the transcription this page is driving has got, from the last step's answer. */
 const transcription = ref<TranscriptionStepResponse['progress'] | null>(null)
+/** How long this page is waiting before it asks for the next step of transcription, if it is. */
+const transcriptionWaitMs = ref<number | null>(null)
 /** Stops the driving loops when the page goes away; the run parks and resumes when reopened. */
 let unmounted = false
 
@@ -176,6 +178,7 @@ async function startTranscription() {
       const step = res._data
       if (finished || !step) continue
       transcription.value = step.progress
+      transcriptionWaitMs.value = step.next === 'wait' ? step.retryAfterMs : null
       if (step.next === 'wait' && step.retryAfterMs !== null) {
         await sleep(step.retryAfterMs + Math.random() * 2000)
       }
@@ -188,6 +191,7 @@ async function startTranscription() {
   finally {
     transcribing.value = false
     transcription.value = null
+    transcriptionWaitMs.value = null
     await reloadAll()
     await restoreActionFocus()
   }
@@ -359,12 +363,7 @@ const activityLabel = computed(() => {
     const retrying = step.lastError ? ' The last attempt did not finish; it will be retried.' : ''
     return `Extracting decisions and action items: ${step.done} of ${step.total} parts done.${retrying}`
   }
-  if (transcribing.value) {
-    const step = transcription.value
-    if (!step?.total) return 'Transcribing. This can take a moment.'
-    const retrying = step.lastError ? ' The last attempt did not finish; it will be retried.' : ''
-    return `Transcribing: ${step.segments} segments stored so far.${retrying}`
-  }
+  if (transcribing.value) return transcriptionActivity(transcription.value, transcriptionWaitMs.value)
   if (canResume.value) {
     return meeting.value.status === 'transcribing'
       ? 'Transcription is paused, or running in another tab. Resume it here to carry on.'

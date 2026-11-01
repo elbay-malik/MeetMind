@@ -1,5 +1,5 @@
 import type { Meeting, TranscriptSegment } from '#shared/types/meeting'
-import { AUDIO_MIME, MAX_AUDIO_BYTES, whisperReplyKey } from '#shared/utils/meeting'
+import { AUDIO_MIME, MAX_AUDIO_BYTES, PROVIDER_BLOCKED_ERROR, whisperReplyKey } from '#shared/utils/meeting'
 import type { MeetingRepository } from '../db/meetings'
 import { MAX_SEGMENT_MS, type ClaimOptions, type PipelineRepository, type PipelineRun, type ReleaseOutcome, type StepClaim } from '../db/pipeline'
 import type { SlotRepository } from '../db/slots'
@@ -333,8 +333,9 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
       // account's. Nothing is sent, so nothing is spent.
       const blocked = await deps.slots.blockedUntil('groq-whisper')
       if (blocked) {
-        if (!await release(claimed, { error: null, retryAt: blocked, refundAttempt: true })) return await snapshot()
-        return await progress(blocked, undefined)
+        // On the run, so a caller who asks during the wait is told why as well.
+        if (!await release(claimed, { error: PROVIDER_BLOCKED_ERROR, retryAt: blocked, refundAttempt: true })) return await snapshot()
+        return await progress(blocked, { cursor: claimed.cursor, lastError: PROVIDER_BLOCKED_ERROR })
       }
 
       const audio = await store.get(meeting.audioKey, MAX_AUDIO_BYTES)
