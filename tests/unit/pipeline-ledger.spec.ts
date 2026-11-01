@@ -9,6 +9,7 @@ import type { Meeting, MeetingStatus, MeetingSummary } from '../../shared/types/
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
 import { createLocalPipelineRepository } from '../../server/utils/db/pipeline-local'
 import { createLocalSummaryRepository } from '../../server/utils/db/summaries-local'
+import { createLocalTranscriptRepository } from '../../server/utils/db/transcripts-local'
 import type { ChunkPlan } from '../../server/utils/db/pipeline'
 import { deleteMeeting } from '../../server/utils/meeting-deletion'
 import type { AttestedChunk } from '../../server/utils/summary/reconcile'
@@ -541,5 +542,131 @@ describe('deleting a meeting with a run ledger (ADR-0012 amends ADR-0011)', () =
     }
     expect(await deleteMeeting(m.id, { ...d, meetings })).toMatchObject({ kind: 'blocked', reason: expect.stringMatching(/changed/) })
     expect(await repos().meetings.get(m.id)).not.toBeNull()
+  })
+})
+
+describe('appendSegments and finishTranscription (step 7)', () => {
+  const line = (idx: number, text = `line ${idx}`) => ({ idx, startMs: idx * 1000, endMs: idx * 1000 + 900, text })
+  const transcripts = () => createLocalTranscriptRepository({ dataDir })
+
+  async function transcribing() {
+    const m = await newMeeting('uploaded')
+    const { pipeline } = repos()
+    const claim = (await pipeline.claimStep(m.id, 'transcription', { status: 'uploaded', moveTo: 'transcribing', leaseMs: LEASE }))!
+    return { m, claim }
+  }
+  const next = async (id: string) => (await repos().pipeline.claimStep(id, 'transcription', { status: 'transcribing', leaseMs: LEASE }))!
+
+  it('stores a page and its cursor, and ends the step with its count started afresh', async () => {
+    const { m, claim } = await transcribing()
+    const { pipeline } = repos()
+    expect(await pipeline.appendSegments(m.id, claim.token, { fromIdx: 0, segments: [line(0), line(1)], cursor: { at: 1 } })).toBe(true)
+    expect(await transcripts().listForMeeting(m.id)).toEqual([line(0), line(1)])
+    const run = (await pipeline.listRuns(m.id)).find(r => r.stage === 'transcription')!
+    expect(run).toMatchObject({ cursor: { at: 1 }, stepLeaseUntil: null, attempts: 0, lastError: null, retryAt: null })
+    const again = await next(m.id)
+    expect(again.attempts).toBe(1)
+    expect(again.cursor).toEqual({ at: 1 })
+  })
+
+  it('replaces everything from the page\'s first index on, so a retried page replaces itself', async () => {
+    const { m, claim } = await transcribing()
+    const { pipeline } = repos()
+    await pipeline.appendSegments(m.id, claim.token, { fromIdx: 0, segments: [line(0), line(1), line(2)], cursor: {} })
+    const retry = await next(m.id)
+    await pipeline.appendSegments(m.id, retry.token, { fromIdx: 1, segments: [line(1, 'again')], cursor: {} })
+    expect((await transcripts().listForMeeting(m.id)).map(s => s.text)).toEqual(['line 0', 'again'])
+  })
+
+  it('clears from the index with an empty page', async () => {
+    const { m, claim } = await transcribing()
+    const { pipeline } = repos()
+    await pipeline.appendSegments(m.id, claim.token, { fromIdx: 0, segments: [line(0)], cursor: {} })
+    const empty = await next(m.id)
+    await pipeline.appendSegments(m.id, empty.token, { fromIdx: 0, segments: [], cursor: {} })
+    expect(await transcripts().listForMeeting(m.id)).toEqual([])
+  })
+
+  it('writes nothing under a token that is not the live one', async () => {
+    const { m, claim } = await transcribing()
+    const { pipeline } = repos()
+    await pipeline.appendSegments(m.id, claim.token, { fromIdx: 0, segments: [line(0)], cursor: { at: 0 } })
+    expect(await pipeline.appendSegments(m.id, claim.token, { fromIdx: 0, segments: [line(0, 'late')], cursor: { at: 9 } })).toBe(false)
+    expect((await transcripts().listForMeeting(m.id))[0]!.text).toBe('line 0')
+    expect((await pipeline.listRuns(m.id)).find(r => r.stage === 'transcription')!.cursor).toEqual({ at: 0 })
+  })
+
+  it('does not take another stage\'s token', async () => {
+    const m = await newMeeting('transcribing')
+    const { pipeline } = repos()
+    const other = (await pipeline.claimStep(m.id, 'summarization', { status: 'transcribing', leaseMs: LEASE }))!
+    expect(await pipeline.appendSegments(m.id, other.token, { fromIdx: 0, segments: [line(0)], cursor: {} })).toBe(false)
+    expect(await pipeline.finishTranscription(m.id, other.token, { chunks: [], refusal: null })).toBe(false)
+  })
+
+  it('refuses a live token once the meeting has left transcribing, and keeps the transcript', async () => {
+    const { m, claim } = await transcribing()
+    const { meetings, pipeline } = repos()
+    await transcripts().replaceForMeeting(m.id, [line(0, 'finished')])
+    await meetings.update(m.id, { status: 'ready', errorMessage: null, failedStage: null })
+    expect(await pipeline.appendSegments(m.id, claim.token, { fromIdx: 0, segments: [line(0, 'overwrite')], cursor: {} })).toBe(false)
+    expect(await pipeline.finishTranscription(m.id, claim.token, { chunks: [], refusal: null })).toBe(false)
+    expect((await transcripts().listForMeeting(m.id))[0]!.text).toBe('finished')
+    expect((await meetings.get(m.id))!.status).toBe('ready')
+  })
+
+  it.each([
+    ['a page not numbered from its start', { fromIdx: 1, segments: [line(0)], cursor: {} }, /numbered consecutively/],
+    ['a gap inside a page', { fromIdx: 0, segments: [line(0), line(2)], cursor: {} }, /numbered consecutively/],
+    ['a negative start', { fromIdx: -1, segments: [], cursor: {} }, /segment index/],
+    ['a cursor that is not an object', { fromIdx: 0, segments: [], cursor: [1] as unknown as Record<string, unknown> }, /must be a JSON object/],
+  ])('refuses %s, as the SQL does', async (_label, page, message) => {
+    const { m, claim } = await transcribing()
+    await expect(repos().pipeline.appendSegments(m.id, claim.token, page)).rejects.toThrow(message)
+  })
+
+  it('finishes in one move: a new extraction run with the plan, summarizing, the step ended', async () => {
+    const { m, claim } = await transcribing()
+    const { meetings, pipeline } = repos()
+    const stale = (await pipeline.claimStep(m.id, 'summarization', { status: 'transcribing', leaseMs: LEASE }))!
+    await pipeline.planChunks(m.id, stale.token, [{ chunkNo: 0, segFrom: 90, segTo: 99, estTokens: 1 }])
+
+    expect(await pipeline.finishTranscription(m.id, claim.token, { chunks: plan, refusal: null })).toBe(true)
+
+    expect(await meetings.get(m.id)).toMatchObject({ status: 'summarizing', errorMessage: null, failedStage: null })
+    expect((await pipeline.listChunks(m.id)).map(c => [c.chunkNo, c.segFrom, c.segTo, c.estTokens])).toEqual([[0, 0, 4, 900], [1, 5, 9, 800]])
+    const runs = await pipeline.listRuns(m.id)
+    expect(runs.find(r => r.stage === 'summarization')).toMatchObject({ stepLeaseUntil: null, attempts: 0, cursor: {} })
+    expect(runs.find(r => r.stage === 'summarization')!.runId).not.toBe(stale.runId)
+    expect(runs.find(r => r.stage === 'transcription')).toMatchObject({ stepLeaseUntil: null, cursor: {}, attempts: 0 })
+    // Extraction claims the first chunk of that plan, entering its stage.
+    const first = await pipeline.claimStep(m.id, 'summarization', { status: 'summarizing', moveTo: 'indexing', chunkNo: 0, leaseMs: LEASE })
+    expect(first).toMatchObject({ attempts: 1 })
+    expect((await meetings.get(m.id))!.status).toBe('indexing')
+  })
+
+  it('with a refusal, writes no plan and moves to failed for summarization', async () => {
+    const { m, claim } = await transcribing()
+    const { meetings, pipeline } = repos()
+    expect(await pipeline.finishTranscription(m.id, claim.token, { chunks: plan, refusal: 'too long' })).toBe(true)
+    expect(await meetings.get(m.id)).toMatchObject({ status: 'failed', failedStage: 'summarization', errorMessage: 'too long' })
+    expect(await pipeline.listChunks(m.id)).toEqual([])
+  })
+
+  it('finishes nothing under a token that is not the live one', async () => {
+    const { m, claim } = await transcribing()
+    const { meetings, pipeline } = repos()
+    await pipeline.releaseStep(m.id, 'transcription', claim.token, { error: null, retryAt: null })
+    expect(await pipeline.finishTranscription(m.id, claim.token, { chunks: plan, refusal: null })).toBe(false)
+    expect((await meetings.get(m.id))!.status).toBe('transcribing')
+    expect(await pipeline.listChunks(m.id)).toEqual([])
+  })
+
+  it('moves the meeting\'s updatedAt when it finishes', async () => {
+    const { m, claim } = await transcribing()
+    const { meetings, pipeline } = repos()
+    const before = (await meetings.get(m.id))!.updatedAt
+    await pipeline.finishTranscription(m.id, claim.token, { chunks: [], refusal: null })
+    expect(Date.parse((await meetings.get(m.id))!.updatedAt)).toBeGreaterThan(Date.parse(before))
   })
 })

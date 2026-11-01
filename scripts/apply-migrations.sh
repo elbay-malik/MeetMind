@@ -167,7 +167,8 @@ missing=$(psql_url -At -c "
     ('function','stored_audio_bytes'),
     ('function','reserve_slot'), ('function','note_rate_limit'),
     ('function','claim_step'), ('function','release_step'), ('function','locked_step_run'),
-    ('function','plan_chunks'), ('function','record_chunk'), ('function','finalize_summary')
+    ('function','plan_chunks'), ('function','record_chunk'), ('function','finalize_summary'),
+    ('function','append_segments'), ('function','finish_transcription')
   )
   select kind || ' ' || name from expected e
   where not exists (

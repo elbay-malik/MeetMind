@@ -6,6 +6,7 @@ import {
   assertStorableResult,
   assertValidLease,
   assertReleasable,
+  assertValidPage,
   assertValidPlan,
   parseStoredResult,
   rowToRun,
@@ -145,6 +146,31 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
       })
       if (error) fail('finalize summary', error)
       return granted('finalize summary', data)
+    },
+
+    async appendSegments(meetingId, token, page) {
+      assertValidPage(page)
+      const { data, error } = await db().rpc('append_segments', {
+        p_meeting: meetingId,
+        p_token: token,
+        p_from_idx: page.fromIdx,
+        p_segments: page.segments.map(s => ({ idx: s.idx, start_ms: s.startMs, end_ms: s.endMs, text: s.text })),
+        p_cursor: page.cursor,
+      })
+      if (error) fail('append segments', error)
+      return granted('append segments', data)
+    },
+
+    async finishTranscription(meetingId, token, { chunks, refusal }) {
+      assertValidPlan(chunks)
+      const { data, error } = await db().rpc('finish_transcription', {
+        p_meeting: meetingId,
+        p_token: token,
+        p_chunks: chunks.map(c => ({ chunk_no: c.chunkNo, seg_from: c.segFrom, seg_to: c.segTo, est_tokens: c.estTokens })),
+        p_refusal: refusal,
+      })
+      if (error) fail('finish transcription', error)
+      return granted('finish transcription', data)
     },
 
     async deleteForMeeting(meetingId) {

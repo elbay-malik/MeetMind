@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { createStorage, type Storage } from 'unstorage'
-import type { Meeting, MeetingSummary } from '#shared/types/meeting'
+import type { Meeting, MeetingSummary, TranscriptSegment } from '#shared/types/meeting'
 import { serialize } from './local'
 import {
   assertReleasable,
   assertStorableResult,
+  assertValidPage,
   assertValidLease,
   assertValidPlan,
   parseStoredResult,
@@ -58,6 +59,7 @@ const ledgerKey = (meetingId: string) => `pipeline/${meetingId}`
 // stand-in for the row lock and transaction the SQL functions take.
 const meetingKey = (meetingId: string) => `meetings/${meetingId}`
 const summaryKey = (meetingId: string) => `summaries/${meetingId}`
+const transcriptKey = (meetingId: string) => `transcripts/${meetingId}`
 
 /**
  * A timestamp strictly after `previous`. A delete is fenced on `updatedAt`
@@ -71,7 +73,7 @@ function laterThan(previous: string): string {
 /**
  * The run ledger as one JSON file per meeting under `<dataDir>/db/`, for
  * development and tests. A deliberate mirror of the SQL functions in
- * supabase/migrations/20261026120000_pipeline_runs.sql and the two migrations
+ * supabase/migrations/20261026120000_pipeline_runs.sql and the three migrations
  * after it; tests/unit/pipeline-ledger.spec.ts asserts this against the cases
  * scripts/verify-migrations.sh asserts the SQL against.
  */
@@ -264,6 +266,55 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
           updatedAt: laterThan(meeting.updatedAt),
         })
         await s.setItem<LedgerState>(ledgerKey(meetingId), state)
+        return true
+      })
+    },
+
+    async appendSegments(meetingId, token, page) {
+      assertValidPage(page)
+      return withLedger(meetingId, async (s, state) => {
+        const run = liveRun(state, 'transcription', token)
+        if (!run) return false
+        const meeting = await s.getItem<Meeting>(meetingKey(meetingId))
+        if (!meeting || meeting.status !== 'transcribing') return false
+
+        const stored = (await s.getItem<TranscriptSegment[]>(transcriptKey(meetingId))) ?? []
+        await s.setItem<TranscriptSegment[]>(transcriptKey(meetingId), [
+          ...stored.filter(segment => segment.idx < page.fromIdx),
+          ...page.segments,
+        ])
+        endStep(run)
+        run.attempts = 0
+        run.cursor = structuredClone(page.cursor)
+        await s.setItem<LedgerState>(ledgerKey(meetingId), state)
+        return true
+      })
+    },
+
+    async finishTranscription(meetingId, token, { chunks, refusal }) {
+      assertValidPlan(chunks)
+      return withLedger(meetingId, async (s, state) => {
+        const run = liveRun(state, 'transcription', token)
+        if (!run) return false
+        const meeting = await s.getItem<Meeting>(meetingKey(meetingId))
+        if (!meeting || meeting.status !== 'transcribing') return false
+
+        const runId = randomUUID()
+        state.runs.summarization = { runId, cursor: {}, stepToken: null, stepLeaseUntil: null, attempts: 0, lastError: null, retryAt: null }
+        state.chunks = refusal === null
+          ? chunks.map(c => ({ ...c, runId, attempts: 0, result: null }))
+          : []
+        endStep(run)
+        run.attempts = 0
+        run.cursor = {}
+        await s.setItem<LedgerState>(ledgerKey(meetingId), state)
+        await s.setItem<Meeting>(meetingKey(meetingId), {
+          ...meeting,
+          ...(refusal === null
+            ? { status: 'summarizing' as const, errorMessage: null, failedStage: null }
+            : { status: 'failed' as const, errorMessage: refusal, failedStage: 'summarization' as const }),
+          updatedAt: laterThan(meeting.updatedAt),
+        })
         return true
       })
     },
