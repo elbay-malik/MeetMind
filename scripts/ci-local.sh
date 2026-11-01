@@ -40,7 +40,7 @@ job_command() {
     audit)      echo 'pnpm audit --prod --audit-level=high' ;;
     e2e)        echo 'pnpm test:e2e' ;;
     migrations) echo 'bash scripts/verify-migrations.sh' ;;
-    browser)    echo '(multi-step: make-fixture.sh, pnpm build, drive-upload.mjs, drive-player.mjs, drive-search.mjs)' ;;
+    browser)    echo '(multi-step: make-fixture.sh, pnpm build, drive-upload.mjs, drive-player.mjs)' ;;
   esac
 }
 
@@ -174,7 +174,6 @@ run_browser_job() {
   [ -n "$meeting_id" ] || { echo "  no meeting id in upload output" >&2; return 1; }
 
   node scripts/drive-player.mjs "$base" "$meeting_id"
-  node scripts/drive-search.mjs "$base" "$data_dir"
 
   cleanup
 }

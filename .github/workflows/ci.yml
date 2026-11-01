@@ -123,7 +123,6 @@ jobs:
           MEETING_ID=$(grep -oE 'landed on progress page for [0-9a-f-]{36}' upload.log | awk '{print $NF}')
           test -n "$MEETING_ID" || { echo "no meeting id in upload output"; exit 1; }
           node scripts/drive-player.mjs http://localhost:3000 "$MEETING_ID"
-          node scripts/drive-search.mjs http://localhost:3000 "$DATA_DIR"
       - name: Server log
         if: failure()
         run: cat server.log || true

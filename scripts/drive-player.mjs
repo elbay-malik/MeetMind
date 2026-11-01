@@ -37,6 +37,20 @@ page.on('request', (r) => {
 page.on('pageerror', e => fail(`page error: ${e.message}`))
 
 try {
+  // A link to one moment (`?t=&seg=`) opens with the player already there. A fresh
+  // page load, so nothing else on this page can have moved the playhead, and it is
+  // why this comes first.
+  const { segments: deepLinkLines } = await (await fetch(`${baseURL}/api/meetings/${meetingId}/transcript`)).json()
+  const deepLinkLine = deepLinkLines.findLast(s => s.startMs > 0)
+  if (!deepLinkLine) throw new Error('need a transcript line past 0:00 to test a deep link')
+  await page.goto(`${baseURL}/meetings/${meetingId}?t=${deepLinkLine.startMs}&seg=${deepLinkLine.idx}`, { waitUntil: 'networkidle' })
+  await page.waitForFunction(() => {
+    const audio = document.querySelector('audio')
+    return audio && audio.readyState >= 1 && audio.currentTime > 0
+  }, null, { timeout: 5_000 }).catch(() => fail('a deep link did not move the player'))
+  const deepLinked = await page.evaluate(() => document.querySelector('audio').currentTime)
+  console.log(`deep link to ${deepLinkLine.startMs}ms put the player at ${deepLinked.toFixed(2)}s`)
+  if (Math.abs(deepLinked - deepLinkLine.startMs / 1000) > 1.5) fail('a deep link seeked to the wrong moment')
   await page.goto(`${baseURL}/meetings/${meetingId}`, { waitUntil: 'networkidle' })
 
   // The element must know how long the audio is; without working range support
