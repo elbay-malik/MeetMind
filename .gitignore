@@ -23,6 +23,10 @@ logs
 .env.*
 !.env.example
 
+# wrangler local secrets, the same keys as .env
+.dev.vars
+.dev.vars.*
+
 # Test coverage
 coverage
 
