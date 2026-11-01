@@ -399,6 +399,13 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
         await opened.body.cancel().catch(() => {})
         return await replyLost(claimed, 'The stored transcription reply changed.')
       }
+      // A store may answer a range with something else, the whole object at most.
+      // Scanned as if it were the page, that fails a good reply, and it is not
+      // this step's bound on memory. Retryable: nothing is wrong with the reply.
+      if (opened.window.start !== reply.byteOffset || opened.window.end > end) {
+        await opened.body.cancel().catch(() => {})
+        throw new Error(`The store served bytes ${opened.window.start}-${opened.window.end} for the window ${reply.byteOffset}-${end}`)
+      }
       const bytes = new Uint8Array(await new Response(opened.body).arrayBuffer())
 
       const scanned = scanWindow(bytes, reply.scan, {

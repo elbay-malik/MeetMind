@@ -1013,3 +1013,36 @@ describe('a reply holding what the transcript table cannot store', () => {
   })
 })
 
+// openRange reports the window it served, which need not be the one asked for.
+describe('a store that serves the whole reply for a range', () => {
+  const ignoringRanges = (deps: ReturnType<typeof depsWith>) => ({
+    ...deps,
+    store: { ...deps.store, openRange: (key: string) => deps.store.openRange(key, null) },
+  })
+
+  it('parks a later page rather than scan the wrong bytes and throw a good reply away', async () => {
+    const script = scripted(replyOf(whisperSegments(250)))
+    const deps = depsWith(script.transcriber)
+    const m = await newMeeting()
+    await advanceTranscription(m.id, deps)
+    await advanceTranscription(m.id, deps)
+    const before = (await run(m.id))!.cursor
+
+    expect(await advanceTranscription(m.id, ignoringRanges(deps))).toMatchObject({ kind: 'progress', next: 'wait', progress: { lastError: expect.stringMatching(/window/) } })
+    expect((await run(m.id))!.cursor).toEqual(before)
+    expect(await replyStored(m.id)).toBe(true)
+
+    deps.time.advance(RETRYABLE_PARK_MS + 1)
+    expect((await drive(m.id, deps)).at(-1)).toMatchObject({ kind: 'done' })
+    expect(script.calls()).toBe(1)
+    expect((await transcript(m.id)).length).toBe(250)
+  })
+
+  it('parks the first page too, when the reply is larger than the page was to hold', async () => {
+    const deps = depsWith(scripted(replyOf(whisperSegments(2000))).transcriber)
+    const m = await newMeeting()
+    await advanceTranscription(m.id, deps)
+    expect(await advanceTranscription(m.id, ignoringRanges(deps))).toMatchObject({ kind: 'progress', next: 'wait', progress: { segments: 0, lastError: expect.stringMatching(/window/) } })
+  })
+})
+
