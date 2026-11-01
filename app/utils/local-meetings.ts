@@ -13,6 +13,8 @@ export interface LocalMeeting {
   id: string
   title: string
   createdAt: string
+  /** Registered, and the upload has not been confirmed. Absent once it has. */
+  unfinished?: true
 }
 
 export type LocalMeetingStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
@@ -66,7 +68,12 @@ export function readLocalMeetings(storage: LocalMeetingStorage | null): { availa
     return {
       available: true,
       meetings: meetings
-        .map(({ id, title, createdAt }) => ({ id, title, createdAt }))
+        .map(({ id, title, createdAt, unfinished }) => ({
+          id,
+          title,
+          createdAt,
+          ...(unfinished === true ? { unfinished } : {}),
+        }))
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)),
     }
   }
@@ -93,12 +100,30 @@ export function canStoreLocalMeetings(storage: LocalMeetingStorage | null): bool
 }
 
 /** Add a meeting to the list, or refresh its entry. Returns whether that was stored. */
-export function rememberLocalMeeting(storage: LocalMeetingStorage | null, meeting: LocalMeeting): boolean {
+export function rememberLocalMeeting(
+  storage: LocalMeetingStorage | null,
+  meeting: Pick<LocalMeeting, 'id' | 'title' | 'createdAt'>,
+  { unfinished = false }: { unfinished?: boolean } = {},
+): boolean {
   if (!storage) return false
   const { id, title, createdAt } = meeting
   const others = readLocalMeetings(storage).meetings.filter(m => m.id !== id)
+  const entry: LocalMeeting = { id, title, createdAt, ...(unfinished ? { unfinished: true } : {}) }
+  return write(storage, [entry, ...others])
+}
+
+/**
+ * Take a meeting off the list. The meeting itself stays, reachable by anyone who kept
+ * its link. Returns whether that was stored.
+ */
+export function forgetLocalMeeting(storage: LocalMeetingStorage | null, id: string): boolean {
+  if (!storage) return false
+  return write(storage, readLocalMeetings(storage).meetings.filter(m => m.id !== id))
+}
+
+function write(storage: LocalMeetingStorage, meetings: LocalMeeting[]): boolean {
   try {
-    storage.setItem(LOCAL_MEETINGS_KEY, JSON.stringify([{ id, title, createdAt }, ...others]))
+    storage.setItem(LOCAL_MEETINGS_KEY, JSON.stringify(meetings))
     return true
   }
   catch {

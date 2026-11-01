@@ -3,6 +3,7 @@ import {
   LOCAL_MEETINGS_KEY,
   browserStorage,
   canStoreLocalMeetings,
+  forgetLocalMeeting,
   readLocalMeetings,
   rememberLocalMeeting,
   type LocalMeeting,
@@ -127,6 +128,44 @@ describe('rememberLocalMeeting', () => {
   it('answers false, without throwing, when it cannot store', () => {
     expect(rememberLocalMeeting(null, entry(1))).toBe(false)
     expect(rememberLocalMeeting(refusing, entry(1))).toBe(false)
+  })
+})
+
+describe('an unfinished upload', () => {
+  it('is marked as such, and the mark survives other entries being written', () => {
+    const storage = memory()
+    rememberLocalMeeting(storage, entry(1), { unfinished: true })
+    rememberLocalMeeting(storage, entry(2))
+    expect(readLocalMeetings(storage).meetings).toEqual([entry(2), { ...entry(1), unfinished: true }])
+  })
+
+  it('loses the mark when remembered again as finished', () => {
+    const storage = memory()
+    rememberLocalMeeting(storage, entry(1), { unfinished: true })
+    rememberLocalMeeting(storage, entry(1))
+    expect(readLocalMeetings(storage).meetings).toEqual([entry(1)])
+    expect(JSON.parse(storage.value!)).toEqual([entry(1)])
+  })
+
+  it('ignores a tampered mark rather than dropping the entry', () => {
+    const raw = JSON.stringify([{ ...entry(1), unfinished: 'yes' }])
+    expect(readLocalMeetings(memory(raw)).meetings).toEqual([entry(1)])
+  })
+})
+
+describe('forgetLocalMeeting', () => {
+  it('removes only that meeting', () => {
+    const storage = memory()
+    rememberLocalMeeting(storage, entry(1))
+    rememberLocalMeeting(storage, entry(2), { unfinished: true })
+    expect(forgetLocalMeeting(storage, entry(1).id)).toBe(true)
+    expect(readLocalMeetings(storage).meetings).toEqual([{ ...entry(2), unfinished: true }])
+  })
+
+  it('answers false, without throwing, when it cannot store', () => {
+    expect(forgetLocalMeeting(null, entry(1).id)).toBe(false)
+    expect(forgetLocalMeeting(refusing, entry(1).id)).toBe(false)
+    expect(forgetLocalMeeting(full(JSON.stringify([entry(1)])), entry(1).id)).toBe(false)
   })
 })
 

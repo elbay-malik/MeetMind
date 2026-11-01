@@ -50,7 +50,15 @@ route, whose id check answers 404.
 `/meetings` renders from `localStorage` and nothing else: `{ id, title, createdAt }` per
 meeting, written the moment an upload registers. That is before the PUT, because the row
 exists from then on, and a failed or abandoned upload still has a link that shows what
-happened to it.
+happened to it. Such an entry also carries `unfinished: true`, shown on its row, until the
+upload is confirmed.
+
+Each attempt registers a new meeting, so retrying the same recording from the upload page
+replaces the earlier attempt's entry rather than adding a look-alike. The server's row for
+that attempt stays, as abandoned `pending_upload` rows already do (ADR-0003), with its link
+forgotten. Every row has a remove control. It takes the link off this list and deletes
+nothing, which is also how a meeting an operator deleted, whose link opens a 404, leaves
+the list. Nothing removes one of those on its own, because the list never asks the server.
 
 The server renders the page's explanation and never a list, and the list is read after
 mounting, so the server and the first client render always agree. Storage that is
