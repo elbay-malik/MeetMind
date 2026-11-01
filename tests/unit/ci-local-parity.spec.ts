@@ -74,6 +74,18 @@ function ciCommands(yaml: string): string[] {
   return out.filter(c => c !== '' && !c.startsWith('#') && c !== '\\' && !/^[})]/.test(c))
 }
 
+/** The commands in a shell function's body, each with its `\\` continuations joined on. */
+function shellSteps(body: string): string[] {
+  return body.replace(/\\\n\s*/g, ' ').split('\n').map(line => line.trim())
+}
+
+/** Every script or pnpm step in a job's body, whatever it is called, so a new driver cannot slip past. */
+function failableSteps(body: string): string[] {
+  return shellSteps(body).filter(step => /^(\w+=\S*\s+)*(node scripts\/|bash scripts\/|pnpm )/.test(step))
+}
+
+const unguarded = (steps: string[]) => steps.filter(step => !step.endsWith('|| return 1'))
+
 describe('ci:local parity with ci.yml', () => {
   it('fails the browser job when a step in it fails', async () => {
     // The job runs as an `if` condition, where bash ignores `set -e`, so a step
@@ -82,10 +94,26 @@ describe('ci:local parity with ci.yml', () => {
     const script = await readFile(scriptPath, 'utf8')
     const body = /^run_browser_job\(\) \{\n([\s\S]*?)^\}$/m.exec(script)?.[1]
     expect(body, 'could not find run_browser_job in ci-local.sh').toBeTruthy()
-    const steps = body!.split('\n').filter(line =>
-      /^\s*(\| tee |node scripts\/drive-player|pnpm build|bash scripts\/|pnpm exec playwright-core install chromium)/.test(line))
-    expect(steps, 'matched too few steps: the pattern has drifted from the script').toHaveLength(5)
-    expect(steps.filter(line => !line.trimEnd().endsWith('|| return 1'))).toEqual([])
+    const steps = failableSteps(body!)
+    // At least today's five, so a pattern that stops matching cannot pass on nothing.
+    expect(steps.length, 'matched too few steps: the pattern has drifted from the script').toBeGreaterThanOrEqual(5)
+    expect(unguarded(steps)).toEqual([])
+  })
+
+  it.each([
+    ['a new driver', 'node scripts/drive-foo.mjs "$base"'],
+    ['a piped driver', 'node scripts/drive-foo.mjs "$base" | tee foo.log'],
+    ['a continued driver', 'node scripts/drive-foo.mjs "$base" \\\n    | tee foo.log'],
+    ['a driver with an env prefix', 'BASE="$base" node scripts/drive-foo.mjs'],
+    ['another pnpm step', 'pnpm exec something'],
+  ])('notices %s with no guard', (_name, step) => {
+    expect(unguarded(failableSteps(`  ${step}\n`))).toHaveLength(1)
+  })
+
+  it('does not count a guarded continuation as unguarded', () => {
+    const step = 'node scripts/drive-foo.mjs "$base" \\\n    | tee foo.log || return 1'
+    expect(failableSteps(`  ${step}\n`)).toHaveLength(1)
+    expect(unguarded(failableSteps(`  ${step}\n`))).toEqual([])
   })
 
   it('runs every verifying command CI runs, or explains why not', async () => {
