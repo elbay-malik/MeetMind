@@ -3,6 +3,8 @@ import type { ExtractOptions } from '../workers/ffmpeg.protocol'
 
 useSeoMeta({ title: 'MeetMind — Upload' })
 
+const { demoMeetingId } = useRuntimeConfig().public
+
 const { state, extract, cancel, reset: resetExtraction } = useAudioExtract()
 const uploader = useMeetingUpload()
 
@@ -104,10 +106,40 @@ async function uploadAndContinue() {
         Upload a meeting recording
       </h1>
       <p class="mt-1 text-muted">
-        Your video is compressed to audio entirely in this browser — the recording itself
-        never leaves your machine. Only a small audio file is sent for transcription.
+        Your video is compressed to audio entirely in this browser, and the video stays on
+        your machine. The compressed audio is what gets uploaded.
+      </p>
+      <p
+        v-if="demoMeetingId"
+        class="mt-3"
+      >
+        <UButton
+          :to="`/meetings/${demoMeetingId}`"
+          variant="soft"
+          icon="i-lucide-play"
+        >
+          Open the demo meeting
+        </UButton>
       </p>
     </div>
+
+    <UAlert
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      title="This is a demo. Do not upload anything sensitive."
+    >
+      <template #description>
+        <p class="text-default">
+          The audio is stored and sent to Groq to transcribe. The transcript is sent to Groq
+          to summarize and answer questions, and to Google to index it for questions.
+        </p>
+        <p class="mt-1 text-default">
+          There are no accounts. Anyone with the link to your meeting can view it, and you
+          cannot delete it yourself.
+        </p>
+      </template>
+    </UAlert>
 
     <UCard>
       <div class="space-y-5">
