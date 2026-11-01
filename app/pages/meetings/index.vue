@@ -8,13 +8,23 @@ useSeoMeta({ title: 'MeetMind — Your meetings' })
  * know what is in this browser. `null` until then.
  */
 const stored = ref<{ available: boolean, writable: boolean, meetings: LocalMeeting[] } | null>(null)
-onMounted(() => {
+function load() {
   const storage = browserStorage()
   stored.value = { ...readLocalMeetings(storage), writable: canStoreLocalMeetings(storage) }
-})
+}
+onMounted(load)
 
 /** Not `available` alone: storage that reads fine and refuses writes loses uploads too. */
 const refused = computed(() => stored.value !== null && (!stored.value.available || !stored.value.writable))
+
+const removeFailed = ref(false)
+
+function remove(meeting: LocalMeeting) {
+  const message = `Remove "${meeting.title}" from this list? The meeting itself is not deleted, but this browser stops holding its link, so unless you kept the link you lose access.`
+  if (!window.confirm(message)) return
+  removeFailed.value = !forgetLocalMeeting(browserStorage(), meeting.id)
+  load()
+}
 </script>
 
 <template>
@@ -47,6 +57,15 @@ const refused = computed(() => stored.value !== null && (!stored.value.available
       description="Meetings you upload will not appear here, so keep each meeting's link yourself."
     />
 
+    <UAlert
+      v-if="removeFailed"
+      role="alert"
+      color="error"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      title="Could not remove that meeting from this list"
+    />
+
     <UCard v-if="stored && !refused && stored.meetings.length === 0">
       <div class="py-8 text-center text-muted">
         <UIcon
@@ -65,18 +84,31 @@ const refused = computed(() => stored.value !== null && (!stored.value.available
         <li
           v-for="m in stored.meetings"
           :key="m.id"
+          class="flex items-center gap-2 pr-3 hover:bg-elevated/50"
         >
           <NuxtLink
             :to="`/meetings/${m.id}/progress`"
-            class="block px-4 py-3 hover:bg-elevated/50"
+            class="block min-w-0 flex-1 py-3 pl-4"
           >
             <p class="truncate font-medium">
               {{ m.title }}
             </p>
             <p class="truncate text-sm text-muted">
               {{ new Date(m.createdAt).toLocaleString() }}
+              <span
+                v-if="m.unfinished"
+                class="text-warning"
+              >· Upload not finished</span>
             </p>
           </NuxtLink>
+          <UButton
+            icon="i-lucide-x"
+            variant="ghost"
+            color="neutral"
+            size="sm"
+            :aria-label="`Remove ${m.title} from this list`"
+            @click="remove(m)"
+          />
         </li>
       </ul>
     </UCard>

@@ -44,6 +44,8 @@ export function useMeetingUpload() {
   const notRemembered = useNotRememberedMeetings()
 
   let xhr: XMLHttpRequest | null = null
+  /** The row of an earlier attempt at this same recording, which a retry replaces. */
+  let abandonedId: string | null = null
 
   const busy = computed(() => ['registering', 'uploading', 'confirming'].includes(state.status))
 
@@ -78,6 +80,7 @@ export function useMeetingUpload() {
 
   async function upload(job: UploadJob): Promise<Meeting | null> {
     if (busy.value) return null
+    if (state.meeting && ['cancelled', 'error'].includes(state.status)) abandonedId = state.meeting.id
     Object.assign(state, {
       status: 'registering',
       ratio: 0,
@@ -95,9 +98,13 @@ export function useMeetingUpload() {
       state.meeting = created.meeting
       // Now, not on success: the row exists from here on, and this browser's list
       // is the only place that will ever remember its link (ADR-0013).
-      if (!rememberLocalMeeting(browserStorage(), created.meeting)) {
+      if (!rememberLocalMeeting(browserStorage(), created.meeting, { unfinished: true })) {
         notRemembered.value = [...notRemembered.value, created.meeting.id]
       }
+      // Each attempt mints a new meeting, so without this a retry would add a second
+      // row. Only now: until this attempt has a row, the earlier one is all there is.
+      if (abandonedId) forgetLocalMeeting(browserStorage(), abandonedId)
+      abandonedId = null
 
       state.status = 'uploading'
       await putWithProgress(created.upload.url, created.upload.headers, job.audio)
@@ -109,6 +116,7 @@ export function useMeetingUpload() {
       )
       state.meeting = confirmed.meeting
       state.status = 'done'
+      rememberLocalMeeting(browserStorage(), confirmed.meeting)
       return confirmed.meeting
     }
     catch (err) {
@@ -135,6 +143,8 @@ export function useMeetingUpload() {
   /** Clear the outcome of a previous attempt. Refuses to discard a live one. */
   function reset() {
     if (busy.value) return
+    // A new recording, so the last attempt's row is not this one's to replace.
+    abandonedId = null
     Object.assign(state, {
       status: 'idle',
       ratio: 0,

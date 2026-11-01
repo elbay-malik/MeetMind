@@ -68,6 +68,59 @@ describe('the Your meetings page', () => {
   })
 })
 
+describe('removing a row from Your meetings', () => {
+  const removeButton = (page: Awaited<ReturnType<typeof mountSuspended>>) =>
+    page.find('button[aria-label="Remove Weekly sync from this list"]')
+
+  /** happy-dom has no window.confirm to spy on. */
+  function answerConfirm(answer: boolean) {
+    const confirm = vi.fn((_message: string) => answer)
+    Object.defineProperty(window, 'confirm', { value: confirm, configurable: true })
+    return confirm
+  }
+
+  beforeEach(() => localStorage.setItem(LOCAL_MEETINGS_KEY, JSON.stringify([ENTRY])))
+
+  it('forgets the link once confirmed, saying the meeting itself stays', async () => {
+    const confirm = answerConfirm(true)
+    const page = await mountSuspended(MeetingsPage)
+    await flushPromises()
+    await removeButton(page).trigger('click')
+    expect(confirm.mock.calls[0]![0]).toContain('not deleted')
+    expect(page.text()).not.toContain('Weekly sync')
+    expect(page.text()).toContain('No meetings uploaded from this browser')
+    expect(JSON.parse(localStorage.getItem(LOCAL_MEETINGS_KEY)!)).toEqual([])
+  })
+
+  it('keeps the row when the confirmation is declined', async () => {
+    answerConfirm(false)
+    const page = await mountSuspended(MeetingsPage)
+    await flushPromises()
+    await removeButton(page).trigger('click')
+    expect(page.text()).toContain('Weekly sync')
+  })
+
+  it('says so when the removal could not be stored', async () => {
+    answerConfirm(true)
+    const page = await mountSuspended(MeetingsPage)
+    await flushPromises()
+    refuseWrites()
+    await removeButton(page).trigger('click')
+    expect(page.text()).toContain('Weekly sync')
+    expect(page.text()).toContain('Could not remove')
+  })
+
+  it('labels a row whose upload never finished, and no other', async () => {
+    const OTHER = { ...ENTRY, id: ID.replace('9b1', 'ab1'), title: 'Finished one' }
+    localStorage.setItem(LOCAL_MEETINGS_KEY, JSON.stringify([{ ...ENTRY, unfinished: true }, OTHER]))
+    const page = await mountSuspended(MeetingsPage)
+    await flushPromises()
+    const rows = page.findAll('li')
+    expect(rows.find(r => r.text().includes('Weekly sync'))!.text()).toContain('Upload not finished')
+    expect(rows.find(r => r.text().includes('Finished one'))!.text()).not.toContain('Upload not finished')
+  })
+})
+
 describe('the Your meetings page, when writes are refused and reads are not', () => {
   it('warns, rather than claiming nothing was uploaded', async () => {
     refuseWrites()
@@ -138,13 +191,49 @@ describe('useMeetingUpload', () => {
     abort() {}
   }
 
+  /** An XHR whose PUT the user cancels. */
+  class CancelledXhr extends FailingXhr {
+    onabort: (() => void) | null = null
+    override send() {
+      this.onabort?.()
+    }
+  }
+
+  /** An XHR whose PUT lands. */
+  class SucceedingXhr extends FailingXhr {
+    status = 200
+    onload: (() => void) | null = null
+    override send() {
+      this.onload?.()
+    }
+  }
+
+  /** What the next registrations answer; ENTRY once this runs out. */
+  let registrations: (typeof ENTRY | 'refused')[] = []
+  const ATTEMPT = (n: number) => ({ ...ENTRY, id: ID.replace(/.$/, String(n)) })
+
+  beforeEach(() => {
+    registrations = []
+  })
+
   registerEndpoint('/api/meetings', {
     method: 'POST',
-    handler: () => ({
-      meeting: { ...ENTRY, audioKey: 'meetings/x/audio.ogg' },
-      upload: { url: '/put', headers: {} },
-    }),
+    handler: () => {
+      const next = registrations.shift() ?? ENTRY
+      if (next === 'refused') throw new Error('registration refused')
+      return {
+        meeting: { ...next, audioKey: 'meetings/x/audio.ogg' },
+        upload: { url: '/put', headers: {} },
+      }
+    },
   })
+
+  registerEndpoint(`/api/meetings/${ID}/complete`, {
+    method: 'POST',
+    handler: () => ({ meeting: { ...ENTRY, audioKey: 'meetings/x/audio.ogg' } }),
+  })
+
+  const listedIds = () => JSON.parse(localStorage.getItem(LOCAL_MEETINGS_KEY)!).map((m: { id: string }) => m.id)
 
   const job = {
     audio: new Blob(['x']),
@@ -157,7 +246,51 @@ describe('useMeetingUpload', () => {
     const uploader = useMeetingUpload()
     expect(await uploader.upload(job)).toBeNull()
     expect(uploader.state.status).toBe('error')
+    expect(JSON.parse(localStorage.getItem(LOCAL_MEETINGS_KEY)!)).toEqual([{ ...ENTRY, unfinished: true }])
+  })
+
+  it('clears the unfinished mark when the upload completes', async () => {
+    vi.stubGlobal('XMLHttpRequest', SucceedingXhr)
+    const { useMeetingUpload } = await import('~/composables/useMeetingUpload')
+    expect(await useMeetingUpload().upload(job)).not.toBeNull()
     expect(JSON.parse(localStorage.getItem(LOCAL_MEETINGS_KEY)!)).toEqual([ENTRY])
+  })
+
+  it.each([
+    ['failed', FailingXhr],
+    ['cancelled', CancelledXhr],
+  ])('lists one row, not two, when a %s upload is retried', async (_name, Xhr) => {
+    vi.stubGlobal('XMLHttpRequest', Xhr)
+    registrations = [ATTEMPT(1), ATTEMPT(2)]
+    const { useMeetingUpload } = await import('~/composables/useMeetingUpload')
+    const uploader = useMeetingUpload()
+    await uploader.upload(job)
+    await uploader.upload(job)
+    expect(listedIds()).toEqual([ATTEMPT(2).id])
+  })
+
+  it('keeps the earlier row when the retry cannot even register', async () => {
+    vi.stubGlobal('XMLHttpRequest', FailingXhr)
+    registrations = [ATTEMPT(1), 'refused', ATTEMPT(3)]
+    const { useMeetingUpload } = await import('~/composables/useMeetingUpload')
+    const uploader = useMeetingUpload()
+    await uploader.upload(job)
+    await uploader.upload(job)
+    expect(listedIds()).toEqual([ATTEMPT(1).id])
+    // The attempt that got no row must not make the next retry lose track of it.
+    await uploader.upload(job)
+    expect(listedIds()).toEqual([ATTEMPT(3).id])
+  })
+
+  it('keeps both rows when the user moved on to another recording', async () => {
+    vi.stubGlobal('XMLHttpRequest', FailingXhr)
+    registrations = [ATTEMPT(1), ATTEMPT(2)]
+    const { useMeetingUpload } = await import('~/composables/useMeetingUpload')
+    const uploader = useMeetingUpload()
+    await uploader.upload(job)
+    uploader.reset()
+    await uploader.upload(job)
+    expect(listedIds().sort()).toEqual([ATTEMPT(1).id, ATTEMPT(2).id].sort())
   })
 
   it('tells the meeting\'s notice when the browser refused to remember it', async () => {
