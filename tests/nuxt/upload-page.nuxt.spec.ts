@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reactive } from 'vue'
 import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
 import UploadPage from '~/pages/index.vue'
@@ -45,5 +45,48 @@ describe('what the upload copy says leaves the browser', () => {
     const notice = await mountSuspended(MeetingLinkNotice, { props: { meetingId: ID } })
     useRuntimeConfig().public.demoMeetingId = ''
     expect(notice.text().replace(/\s+/g, ' ')).toContain('file\'s name, size and type')
+  })
+})
+
+describe('the demo link', () => {
+  const setDemo = (id: string) => {
+    useRuntimeConfig().public.demoMeetingId = id
+  }
+  const demoButton = async () =>
+    (await mountSuspended(UploadPage)).findAll('a').find(a => a.text().includes('Open the demo meeting'))
+
+  beforeEach(() => setDemo(''))
+  afterEach(() => setDemo(''))
+
+  it('is shown for a well-formed id', async () => {
+    setDemo(ID)
+    expect((await demoButton())?.attributes('href')).toBe(`/meetings/${ID}`)
+  })
+
+  it.each(['9b1deb4d-3b7d', 'not-a-uuid', '../../api/health'])('is not shown for %s, which could only open a 404', async (id) => {
+    setDemo(id)
+    expect(await demoButton()).toBeUndefined()
+  })
+
+  it('tells the operator why a configured link is missing', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    setDemo('not-a-uuid')
+    await demoButton()
+    expect(warn.mock.calls.flat().join(' ')).toContain('NUXT_PUBLIC_DEMO_MEETING_ID')
+    warn.mockRestore()
+  })
+
+  it('does not warn over a well-formed id or an empty one', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    setDemo(ID)
+    await demoButton()
+    setDemo('')
+    await demoButton()
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('NUXT_PUBLIC_DEMO_MEETING_ID')
+    warn.mockRestore()
+  })
+
+  it('is not shown when no demo is configured', async () => {
+    expect(await demoButton()).toBeUndefined()
   })
 })
