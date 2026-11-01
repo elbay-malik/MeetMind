@@ -1,6 +1,6 @@
 # ADR-0008: Cross-meeting search — passages, not a synthesized answer
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0013](0013-private-meeting-links.md), except for the SQL function, which stays unused until a cleanup migration
 - **Date:** 2026-09-21
 
 ## Context
