@@ -13,7 +13,7 @@
           <NuxtLink
             to="/meetings"
             class="hover:text-primary"
-          >Meetings</NuxtLink>
+          >Your meetings</NuxtLink>
         </nav>
       </UContainer>
     </header>
