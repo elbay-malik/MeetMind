@@ -126,3 +126,68 @@ function toChunk(segments: TranscriptSegment[], estimatedTokens: number): Chunk 
     estimatedTokens,
   }
 }
+
+/** One chunk of a plan by segment index, inclusive. */
+export interface ChunkRange {
+  segFrom: number
+  segTo: number
+  estTokens: number
+}
+
+/**
+ * {@link planChunks} carried forward a page of segments at a time, so that
+ * planning a transcript as it is written reads no transcript afterwards
+ * (ADR-0012 §2). A type, so it fits in the run's cursor.
+ *
+ * `count` keeps counting past what `chunks` retains: a plan over the limit is
+ * refused, so its ranges are never needed, and the cursor must not grow with
+ * the meeting.
+ */
+export type IncrementalPlan = {
+  /** Chunks closed so far, this one's successors not yet known. */
+  count: number
+  chunks: ChunkRange[]
+  /** The chunk still being filled, if any. */
+  open: ChunkRange | null
+}
+
+export const EMPTY_PLAN: IncrementalPlan = { count: 0, chunks: [], open: null }
+
+/**
+ * The same greedy pack as {@link planChunks}, over the next segments in order.
+ * Keeps at most `retain` closed chunks' ranges. Their order and boundaries do
+ * not depend on how the transcript was split into pages.
+ */
+export function extendPlan(
+  plan: IncrementalPlan,
+  segments: readonly TranscriptSegment[],
+  budgetTokens: number,
+  retain: number,
+): IncrementalPlan {
+  let { count, open } = plan
+  const chunks = [...plan.chunks]
+  const close = (chunk: ChunkRange) => {
+    if (chunks.length < retain) chunks.push(chunk)
+    count++
+  }
+  for (const segment of segments) {
+    const cost = estimateTokens(segment.text)
+    if (open && open.estTokens + cost > budgetTokens) {
+      close(open)
+      open = null
+    }
+    open = open
+      ? { ...open, segTo: segment.idx, estTokens: open.estTokens + cost }
+      : { segFrom: segment.idx, segTo: segment.idx, estTokens: cost }
+  }
+  return { count, chunks, open }
+}
+
+/** The finished plan: how many chunks it takes, and their ranges unless it ran past `retain`. */
+export function closePlan(plan: IncrementalPlan, retain: number): { count: number, chunks: ChunkRange[] } {
+  if (!plan.open) return { count: plan.count, chunks: plan.chunks }
+  return {
+    count: plan.count + 1,
+    chunks: plan.chunks.length < retain ? [...plan.chunks, plan.open] : plan.chunks,
+  }
+}
