@@ -61,12 +61,19 @@ export default defineNuxtConfig({
     // so tests can prove a question refused for a held slot gets a 429 with
     // Retry-After over the real HTTP route. Never set outside tests.
     answerStubPaced: false, // NUXT_ANSWER_STUB_PACED
-    public: {},
+    public: {
+      // The one meeting linked publicly, from the home page (ADR-0013). Its id
+      // ends up in every page's payload, so only ever a meeting meant to be seen.
+      demoMeetingId: '', // NUXT_PUBLIC_DEMO_MEETING_ID
+    },
   },
   routeRules: {
     // A portfolio demo, not a site to be found by search. robots.txt asks crawlers
     // to stay out; this covers a page reached through a link from elsewhere.
-    '/**': { headers: { 'X-Robots-Tag': 'noindex, nofollow' } },
+    //
+    // Referrer-Policy: a meeting's URL is the capability to read it (ADR-0013),
+    // so it must not reach a third party in a Referer header.
+    '/**': { headers: { 'X-Robots-Tag': 'noindex, nofollow', 'Referrer-Policy': 'same-origin' } },
     '/spike/**': { ssr: false },
   },
   compatibilityDate: '2025-07-15',
