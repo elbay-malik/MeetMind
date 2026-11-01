@@ -6,6 +6,7 @@ import type {
   ByteWindow,
   OpenedAudio,
   PresignPutInput,
+  PutObject,
   StoredAudio,
   StoredObject,
 } from './audio-store'
@@ -48,8 +49,17 @@ export interface LocalAudioStore extends AudioStore {
   readonly kind: 'local'
   /** Validate an upload URL token; `null` when forged, malformed or expired. */
   verifyGrant(token: string, nowMs?: number): Promise<LocalUploadGrant | null>
-  /** Write the uploaded bytes (called by the local upload route). */
-  put(key: string, body: Uint8Array, contentType: string): Promise<void>
+}
+
+async function headOf(s: Storage, key: string): Promise<StoredObject | null> {
+  if (!(await s.hasItem(key))) return null
+  const meta = await s.getItem<ObjectMeta>(metaKey(key))
+  const stat = await s.getMeta(key)
+  const size = typeof stat.size === 'number' ? stat.size : meta?.size ?? 0
+  // Modification time plus size changes whenever the bytes do, which a
+  // size-only validator would not.
+  const mtime = stat.mtime instanceof Date ? stat.mtime.getTime() : 0
+  return { size, contentType: meta?.contentType ?? null, etag: `"${mtime.toString(36)}-${size}"` }
 }
 
 export function createLocalAudioStore(options: { dataDir: string, secret: string }): LocalAudioStore {
@@ -93,22 +103,17 @@ export function createLocalAudioStore(options: { dataDir: string, secret: string
       return grant
     },
 
-    async put(key, body, contentType) {
+    // Also what the local upload route writes the uploaded bytes with.
+    async put(key, body, contentType): Promise<PutObject> {
       const s = await storage()
       await s.setItemRaw(key, body)
       await s.setItem<ObjectMeta>(metaKey(key), { contentType, size: body.byteLength })
+      const stored = await headOf(s, key)
+      return { etag: stored?.etag ?? null }
     },
 
     async head(key): Promise<StoredObject | null> {
-      const s = await storage()
-      if (!(await s.hasItem(key))) return null
-      const meta = await s.getItem<ObjectMeta>(metaKey(key))
-      const stat = await s.getMeta(key)
-      const size = typeof stat.size === 'number' ? stat.size : meta?.size ?? 0
-      // Modification time plus size changes whenever the bytes do, which a
-      // size-only validator would not.
-      const mtime = stat.mtime instanceof Date ? stat.mtime.getTime() : 0
-      return { size, contentType: meta?.contentType ?? null, etag: `"${mtime.toString(36)}-${size}"` }
+      return headOf(await storage(), key)
     },
 
     async get(key, maxBytes): Promise<StoredAudio | null> {

@@ -234,3 +234,21 @@ describe('delete', () => {
     await expect(store.delete(KEY)).rejects.toThrow(/403/)
   })
 })
+
+describe('put', () => {
+  it('writes the bytes to the object\'s key, signed, and reports the stored validator', async () => {
+    const calls = stubFetch([new Response(null, { status: 200, headers: { etag: '"abc123"' } })])
+    const bytes = new TextEncoder().encode('{"segments":[]}')
+    await expect(store.put('meetings/x/whisper-reply.json', bytes, 'application/json')).resolves.toEqual({ etag: '"abc123"' })
+    expect(calls[0]!.method).toBe('PUT')
+    expect(new URL(calls[0]!.url).pathname).toBe('/meetmind-audio/meetings/x/whisper-reply.json')
+    expect(calls[0]!.headers.get('content-type')).toBe('application/json')
+    expect(calls[0]!.headers.get('authorization')).toMatch(/^AWS4-HMAC-SHA256/)
+    expect(await calls[0]!.text()).toBe('{"segments":[]}')
+  })
+
+  it('fails loudly, rather than let a page read a reply that was never stored', async () => {
+    stubFetch([new Response(null, { status: 403 })])
+    await expect(store.put('meetings/x/whisper-reply.json', new Uint8Array(1), 'application/json')).rejects.toThrow(/PUT .* HTTP 403/)
+  })
+})

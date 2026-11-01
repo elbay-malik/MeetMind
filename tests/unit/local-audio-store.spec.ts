@@ -161,4 +161,25 @@ describe('openRange', () => {
     const opened = await store.openRange(key, { start: 0, end: 9 })
     expect(opened!.etag).toMatch(/^"[a-z0-9]+-1000"$/)
   })
+
+  it('writes an object and reports the validator head and a range read will report', async () => {
+    const store = createLocalAudioStore({ dataDir, secret: 's3cret' })
+    const key = 'meetings/put/whisper-reply.json'
+    const { etag } = await store.put(key, new TextEncoder().encode('{"segments":[]}'), 'application/json')
+    expect(etag).toMatch(/^".+"$/)
+    expect((await store.head(key))!.etag).toBe(etag)
+    const opened = (await store.openRange(key, { start: 0, end: 3 }))!
+    expect(opened.etag).toBe(etag)
+    expect(opened.size).toBe(15)
+    await opened.body.cancel()
+  })
+
+  it('reports a different validator once the object is replaced', async () => {
+    const store = createLocalAudioStore({ dataDir, secret: 's3cret' })
+    const key = 'meetings/put2/whisper-reply.json'
+    const first = await store.put(key, new Uint8Array(4), 'application/json')
+    await new Promise(resolve => setTimeout(resolve, 5))
+    const second = await store.put(key, new Uint8Array(4).fill(1), 'application/json')
+    expect(second.etag).not.toBe(first.etag)
+  })
 })
