@@ -62,7 +62,12 @@ async function indexedMeeting(title, segments) {
   // base URL to resolve it against.
   await fetch(new URL(upload.url, baseURL), { method: 'PUT', headers: { 'content-type': 'audio/ogg' }, body: audio })
   await fetch(`${baseURL}/api/meetings/${meeting.id}/complete`, { method: 'POST' })
-  await fetch(`${baseURL}/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+  // One step per request (ADR-0012): ask until the transcript is stored.
+  for (let step = 0; ; step++) {
+    const res = await fetch(`${baseURL}/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    if (res.status === 200) break
+    if (res.status !== 202 || step === 50) fail(`transcribing ${meeting.id} stopped at HTTP ${res.status}`)
+  }
 
   const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
   await storage.setItem(`transcripts/${meeting.id}`, segments)

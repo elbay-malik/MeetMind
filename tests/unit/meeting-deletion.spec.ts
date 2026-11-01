@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Meeting } from '#shared/types/meeting'
-import { audioObjectKey, TRANSCRIBE_CLAIM_LEASE_MS } from '#shared/utils/meeting'
+import { audioObjectKey } from '#shared/utils/meeting'
 import type { MeetingRepository } from '../../server/utils/db/meetings'
 import type { PipelineRun } from '../../server/utils/db/pipeline'
 import {
@@ -78,24 +78,15 @@ describe('deletionBlocker', () => {
     // Past the upload window, so only the claim can be what blocks.
     const now = uploadWindowEnds + 60 * MIN
 
-    // A transcription still inside its lease writes the transcript rows
-    // before its fenced status write fails, so deleting under it would leave
-    // orphans behind.
-    it('blocks a transcribing meeting inside its lease, until the lease runs out', () => {
-      const blocker = deletionBlocker(meeting('transcribing', now - 5 * MIN), now)
-      expect(blocker).not.toBeNull()
-      expect(blocker!.retryAfterSec).toBe((TRANSCRIBE_CLAIM_LEASE_MS - 5 * MIN) / 1000)
+    // Transcription runs in short steps under their own leases too (ADR-0012,
+    // step 7). Its old 15-minute status lease kept a paused run undeletable.
+    it('allows a transcribing meeting with no live step, however recently it moved', () => {
+      expect(deletionBlocker(meeting('transcribing', now - 1000), now)).toBeNull()
     })
 
-    it('still blocks a transcribing meeting one millisecond before its lease ends', () => {
-      expect(deletionBlocker(meeting('transcribing', now - TRANSCRIBE_CLAIM_LEASE_MS + 1), now)).not.toBeNull()
-    })
-
-    // A claim past its lease is abandoned (the routes themselves treat it so
-    // and let it be retried); refusing forever would make a crashed run
-    // undeletable.
-    it('allows a transcribing meeting whose lease has run out', () => {
-      expect(deletionBlocker(meeting('transcribing', now - TRANSCRIBE_CLAIM_LEASE_MS), now)).toBeNull()
+    it('blocks a transcribing meeting while a step of it is live', () => {
+      const blocker = deletionBlocker(meeting('transcribing', now - 1000), now, [{ stepLeaseUntil: new Date(now + 90_000) }])
+      expect(blocker).toMatchObject({ retryAfterSec: 90 })
     })
 
     // Extraction runs in short steps under their own leases (ADR-0012), read

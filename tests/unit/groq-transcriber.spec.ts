@@ -58,37 +58,17 @@ describe('request', () => {
 })
 
 describe('response', () => {
-  it('converts the provider seconds into stored milliseconds', async () => {
-    stubFetch(json(verboseJson))
-    const result = await transcriber.transcribe(audio)
-    expect(result.segments).toEqual([
-      { idx: 0, startMs: 0, endMs: 2500, text: 'hello' },
-      { idx: 1, startMs: 2500, endMs: 5000, text: 'world' },
-    ])
-    expect(result.durationSec).toBe(50.16)
-    expect(result.language).toBe('english')
+  // ADR-0012 §2: the reply is stored as it came and read a page at a time, so
+  // nothing here may parse a body whose size grows with the meeting.
+  it('hands back the reply\'s bytes as they came, unparsed', async () => {
+    const text = JSON.stringify(verboseJson)
+    stubFetch(new Response(text, { status: 200 }))
+    expect(new TextDecoder().decode(await transcriber.transcribe(audio))).toBe(text)
   })
 
-  it('tolerates unknown fields, since the envelope is not fully documented', async () => {
-    stubFetch(json({ ...verboseJson, x_groq: { id: 'req_1' }, some_new_field: true }))
-    await expect(transcriber.transcribe(audio)).resolves.toMatchObject({ durationSec: 50.16 })
-  })
-
-  it('copes with a response carrying no duration or language', async () => {
-    stubFetch(json({ segments: [{ start: 0, end: 1, text: 'x' }] }))
-    const result = await transcriber.transcribe(audio)
-    expect(result).toMatchObject({ durationSec: null, language: null })
-  })
-
-  it('fails loudly when segments are missing rather than storing an empty transcript', async () => {
-    // A silent empty transcript would look like a meeting with no speech.
-    stubFetch(json({ text: 'hello world' }))
-    await expect(transcriber.transcribe(audio)).rejects.toThrow(/unexpected response/)
-  })
-
-  it('accepts a genuinely empty transcript', async () => {
-    stubFetch(json({ ...verboseJson, segments: [] }))
-    await expect(transcriber.transcribe(audio)).resolves.toMatchObject({ segments: [] })
+  it('does not reject a body that is not JSON: the pages decide what it means', async () => {
+    stubFetch(new Response('<html>gateway timeout</html>', { status: 200 }))
+    expect(new TextDecoder().decode(await transcriber.transcribe(audio))).toBe('<html>gateway timeout</html>')
   })
 })
 
@@ -100,6 +80,25 @@ describe('failures', () => {
     expect(err.message).toMatch(/quota is exhausted.*120s/s)
     expect(err.retryable).toBe(true)
     expect(err.statusCode).toBe(429)
+    expect(err.retryAfterMs).toBe(120_000)
+  })
+
+  it('reads a Retry-After given as a date, and assumes a minute when there is none', async () => {
+    stubFetch(new Response('rate limited', { status: 429, headers: { 'retry-after': new Date(Date.now() + 300_000).toUTCString() } }))
+    const dated = await transcriber.transcribe(audio).catch((e: TranscriptionError) => e)
+    expect(dated.retryAfterMs).toBeGreaterThan(290_000)
+    expect(dated.retryAfterMs).toBeLessThanOrEqual(300_000)
+
+    vi.unstubAllGlobals()
+    stubFetch(new Response('rate limited', { status: 429 }))
+    const bare = await transcriber.transcribe(audio).catch((e: TranscriptionError) => e)
+    expect(bare.retryAfterMs).toBe(60_000)
+  })
+
+  it('carries no Retry-After on any other failure', async () => {
+    stubFetch(new Response('boom', { status: 503, headers: { 'retry-after': '120' } }))
+    const err = await transcriber.transcribe(audio).catch((e: TranscriptionError) => e)
+    expect(err.retryAfterMs).toBeNull()
   })
 
   it('does not leak our credentials problem to the user as their fault', async () => {
@@ -123,12 +122,10 @@ describe('failures', () => {
     expect(err.statusCode).toBe(413)
   })
 
-  it('treats an unreadable body as a retryable provider fault, not a 500', async () => {
-    // Letting response.json() throw would escape TranscriptionError, surface as
-    // a 500, and mark the meeting permanently failed for a transient fault.
-    stubFetch(new Response('<html>gateway timeout</html>', {
-      status: 200, headers: { 'content-type': 'application/json' },
-    }))
+  it('treats a body it cannot finish reading as a retryable provider fault, not a 500', async () => {
+    const reply = new Response('x', { status: 200 })
+    vi.spyOn(reply, 'arrayBuffer').mockRejectedValue(new TypeError('connection lost'))
+    stubFetch(reply)
     const err = await transcriber.transcribe(audio).catch((e: TranscriptionError) => e)
     expect(err).toBeInstanceOf(TranscriptionError)
     expect(err.retryable).toBe(true)

@@ -1,6 +1,5 @@
-import type { TranscribeInput, TranscribeResult, Transcriber } from './transcriber'
+import type { TranscribeInput, Transcriber } from './transcriber'
 import { TranscriptionError } from './transcriber'
-import { normalizeSegments } from './normalize'
 
 let quotaFailureUsed = false
 
@@ -26,7 +25,7 @@ export function createStubTranscriber(options: StubTranscriberOptions = {}): Tra
   return {
     kind: 'stub',
 
-    async transcribe(input: TranscribeInput): Promise<TranscribeResult> {
+    async transcribe(input: TranscribeInput): Promise<Uint8Array> {
       if (options.failWithQuotaOnce && !quotaFailureUsed) {
         quotaFailureUsed = true
         throw new TranscriptionError('Transcription quota is exhausted for now (stub-injected for testing).', 429, true)
@@ -44,11 +43,14 @@ export function createStubTranscriber(options: StubTranscriberOptions = {}): Tra
           + `so this placeholder stands in for ${spanSec.toFixed(1)} seconds of speech.`,
       }))
 
-      return {
-        segments: normalizeSegments(segments),
-        durationSec,
+      // The shape of Groq's verbose_json, so the same page reader handles both.
+      return new TextEncoder().encode(JSON.stringify({
+        task: 'transcribe',
         language: input.language ?? 'en',
-      }
+        duration: durationSec,
+        text: segments.map(s => s.text).join(' '),
+        segments,
+      }))
     },
   }
 }

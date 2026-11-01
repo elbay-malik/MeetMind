@@ -1,6 +1,6 @@
 import type { H3Event } from 'h3'
 import type { Meeting } from '#shared/types/meeting'
-import { audioObjectKey, claimLooksStale, TRANSCRIBE_CLAIM_LEASE_MS } from '#shared/utils/meeting'
+import { audioObjectKey, whisperReplyKey } from '#shared/utils/meeting'
 import { usePipelineRepository, useSummaryRepository, useTranscriptIndexRepository, useTranscriptRepository } from './db'
 import type { MeetingRepository } from './db/meetings'
 import { liveStepLease, type PipelineRepository, type PipelineRun } from './db/pipeline'
@@ -41,20 +41,15 @@ export interface DeletionBlocker {
  *   see and only the bucket's lifecycle rule would ever remove. Measured from
  *   `createdAt`, which is written just AFTER the URL is minted, so it can only
  *   overestimate the URL's life.
- * - **A live transcription claim.** Transcription writes its result after
- *   holding the claim for minutes. The fenced delete would stop the route's own
- *   status write, but not the segments it writes first -- and on the local
- *   driver nothing would refuse those. A claim past its lease is treated the
- *   way the route itself treats it: as abandoned.
  * - **A live pipeline step** (ADR-0012). A step writes its result back when it
  *   finishes, fenced on its token; the cascade would make that write match
  *   nothing on Supabase, but a step part-way through a provider call has
  *   already spent the quota for a result that would be thrown away. A run
- *   parked between steps holds no lease and does not block: an `indexing`
- *   meeting whose extraction is paused is deletable.
+ *   parked between steps holds no lease and does not block: a `transcribing` or
+ *   `indexing` meeting that is paused is deletable.
  */
 export function deletionBlocker(
-  meeting: Pick<Meeting, 'status' | 'createdAt' | 'updatedAt'>,
+  meeting: Pick<Meeting, 'createdAt'>,
   now: number = Date.now(),
   runs: readonly Pick<PipelineRun, 'stepLeaseUntil'>[] = [],
 ): DeletionBlocker | null {
@@ -63,13 +58,6 @@ export function deletionBlocker(
     return {
       reason: 'Its upload URL may still be in use, and audio uploaded after the delete would be stored untracked',
       retryAfterSec: Math.ceil((uploadWindowEnds - now) / 1000),
-    }
-  }
-
-  if (meeting.status === 'transcribing' && !claimLooksStale(meeting, now)) {
-    return {
-      reason: `It is ${meeting.status}, and that work would write its results back after the delete`,
-      retryAfterSec: Math.ceil((Date.parse(meeting.updatedAt) + TRANSCRIBE_CLAIM_LEASE_MS - now) / 1000),
     }
   }
 
@@ -86,7 +74,8 @@ export function deletionBlocker(
 
 /**
  * Remove everything stored for a meeting other than its row: the audio object,
- * and the transcript, summary and search windows.
+ * the raw Whisper reply if one is still there, and the transcript, summary and
+ * search windows.
  *
  * Every step is idempotent, so this is also how a delete that failed partway is
  * finished: the route runs it again even when the row is already gone, using
@@ -96,7 +85,9 @@ export function deletionBlocker(
  * and once the row is gone the storage budget no longer counts it.
  */
 export async function removeMeetingData(event: H3Event, meetingId: string, audioKey: string): Promise<void> {
-  await useAudioStore(event).delete(audioKey)
+  const store = useAudioStore(event)
+  await store.delete(audioKey)
+  await store.delete(whisperReplyKey(meetingId))
   await usePipelineRepository(event).deleteForMeeting(meetingId)
   await useTranscriptIndexRepository(event).deleteForMeeting(meetingId)
   await useSummaryRepository(event).deleteForMeeting(meetingId)

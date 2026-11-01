@@ -113,8 +113,22 @@ export async function advanceExtraction(meetingId: string, deps: ExtractionDeps)
 
   const steps = stepsFor(meetingId, deps, now)
 
-  // A new run: from `summarizing`, the first extraction; from `ready` with no
-  // summary row, a repair. Either way an older run's chunks are not reused.
+  // Transcription leaves the plan ready (ADR-0012 §2), under a run of its own,
+  // so the first extraction need not read the transcript back to make one. Such
+  // a plan has no results yet, since the first chunk's claim leaves `summarizing`;
+  // a plan that has them belongs to an earlier extraction and is not reused.
+  if (meeting.status === 'summarizing') {
+    const planned = await deps.pipeline.listChunks(meetingId)
+    if (planned.length > 0 && planned.every(c => !c.result && !c.unusable)) {
+      const run = (await deps.pipeline.listRuns(meetingId)).find(r => r.stage === 'summarization')
+      return steps.next({ status: 'summarizing', moveTo: 'indexing' }, run)
+    }
+  }
+
+  // A new run, planned from the transcript: from `summarizing` with no usable
+  // stored plan, a transcript with no lines or one written before plans were
+  // stored; from `ready` with no summary row, a repair. Either way an older run's chunks
+  // are not reused.
   if (meeting.status === 'summarizing' || meeting.status === 'ready') {
     return steps.plan({ status: meeting.status, moveTo: 'indexing', newRun: true, leaseMs: SHORT_STEP_LEASE_MS })
   }
@@ -136,7 +150,7 @@ export async function advanceExtraction(meetingId: string, deps: ExtractionDeps)
 }
 
 /** The moment a failed run may be retried: the cooldown, or the provider's own block if longer. */
-function cooldownEnds(meeting: Meeting, run: PipelineRun | undefined): number {
+export function cooldownEnds(meeting: Meeting, run: PipelineRun | undefined): number {
   return Math.max(Date.parse(meeting.updatedAt) + RETRY_COOLDOWN_MS, run?.retryAt?.getTime() ?? 0)
 }
 
@@ -145,7 +159,7 @@ function cooldownMessage(waitMs: number): string {
 }
 
 /** When a caller should ask again, if the run cannot take a step now. */
-function waitingOn(run: PipelineRun | undefined, now: number): Date | null {
+export function waitingOn(run: PipelineRun | undefined, now: number): Date | null {
   if (run?.stepLeaseUntil && run.stepLeaseUntil.getTime() > now) {
     return new Date(Math.min(run.stepLeaseUntil.getTime(), now + LIVE_STEP_POLL_MS))
   }

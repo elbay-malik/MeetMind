@@ -8,6 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { SlotState } from '../../server/utils/db/slots'
 import type { CreateMeetingResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
+import { driveTranscription } from './helpers/transcribe'
 
 // Isolated from ask-api.spec.ts: NUXT_ANSWER_STUB_PACED puts every question on
 // the slot ledger, which the other file's tests have no reason to wait on.
@@ -52,7 +53,7 @@ async function indexedMeeting(): Promise<Meeting> {
   })
   await fetch(upload.url, { method: 'PUT', headers: { 'content-type': 'audio/ogg' }, body: audio })
   await $fetch(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
-  await $fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+  await driveTranscription(meeting.id)
   await db.setItem(`transcripts/${meeting.id}`, DISCUSSION)
   await $fetch(`/api/meetings/${meeting.id}/search-index`, { method: 'POST' })
   return meeting

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -6,8 +6,9 @@ import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting, TranscriptSegment } from '../../shared/types/meeting'
-import { TRANSCRIBE_CLAIM_LEASE_MS } from '../../shared/utils/meeting'
+import type { CreateMeetingResponse, Meeting, TranscriptionStepResponse, TranscriptSegment } from '../../shared/types/meeting'
+import { whisperReplyKey } from '../../shared/utils/meeting'
+import { driveTranscription } from './helpers/transcribe'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-transcribe-'))
@@ -42,8 +43,17 @@ async function uploadedMeeting(): Promise<Meeting> {
   return done.meeting
 }
 
-const transcribe = (id: string) =>
-  $fetch<{ meeting: Meeting, segments: TranscriptSegment[] }>(`/api/meetings/${id}/transcribe`, { method: 'POST' })
+const storedSegments = async (id: string) =>
+  (await $fetch<{ segments: TranscriptSegment[] }>(`/api/meetings/${id}/transcript`)).segments
+
+/** Drive transcription to the end, and read back the transcript it stored. */
+const transcribe = async (id: string) => {
+  const { meeting } = await driveTranscription(id)
+  return { meeting, segments: await storedSegments(id) }
+}
+
+const replyPath = (id: string) => join(dataDir, 'audio', ...whisperReplyKey(id).split('/'))
+const exists = (path: string) => access(path).then(() => true, () => false)
 
 /**
  * Simulate the retry cooldown having elapsed, without a real 60s wait in the
@@ -76,6 +86,20 @@ async function setStatus(id: string, status: Meeting['status']): Promise<void> {
   await storage.setItem(`meetings/${id}`, { ...meeting, status, updatedAt: new Date().toISOString() })
 }
 
+/** A run ledger as the local pipeline driver stores it, with one transcription step in flight. */
+async function writeLedger(id: string, stepLeaseUntil: number): Promise<void> {
+  const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+  await storage.setItem(`pipeline/${id}`, {
+    runs: {
+      transcription: {
+        runId: crypto.randomUUID(), cursor: {}, stepToken: crypto.randomUUID(), stepLeaseUntil,
+        attempts: 1, lastError: null, retryAt: null,
+      },
+    },
+    chunks: [],
+  })
+}
+
 describe('POST /api/meetings/:id/transcribe', () => {
   it('transcribes uploaded audio and advances the meeting', async () => {
     const meeting = await uploadedMeeting()
@@ -95,9 +119,53 @@ describe('POST /api/meetings/:id/transcribe', () => {
     }
   })
 
+  it('does one step per request: 202 with progress, then 200 once the transcript is stored', async () => {
+    const meeting = await uploadedMeeting()
+
+    const whisper = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    expect(whisper.status).toBe(202)
+    const first = (await whisper.json()) as TranscriptionStepResponse
+    expect(first.meeting.status).toBe('transcribing')
+    expect(first.next).toBe('continue')
+    expect(first.retryAt).toBeNull()
+    expect(first.retryAfterMs).toBeNull()
+    expect(first.progress).toMatchObject({ done: 0, segments: 0, lastError: null })
+    expect(first.progress.total).toBeGreaterThan(0)
+    // The reply is stored unparsed, under the prefix the lifecycle rule covers.
+    const raw = await readFile(replyPath(meeting.id), 'utf8')
+    expect(raw).toContain('"segments"')
+    expect(raw.length).toBe(first.progress.total)
+
+    const page = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    expect(page.status).toBe(202)
+    const second = (await page.json()) as TranscriptionStepResponse
+    expect(second.progress.segments).toBeGreaterThan(0)
+    expect(second.progress.done).toBeGreaterThan(0)
+
+    const last = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    expect(last.status).toBe(200)
+    expect(((await last.json()) as { meeting: Meeting }).meeting.status).toBe('summarizing')
+    expect(await exists(replyPath(meeting.id))).toBe(false)
+    expect((await storedSegments(meeting.id)).length).toBe(second.progress.segments)
+  })
+
+  it('tells a caller who finds a step live when to look again, and spends nothing', async () => {
+    const meeting = await uploadedMeeting()
+    await setStatus(meeting.id, 'transcribing')
+    await writeLedger(meeting.id, Date.now() + 60_000)
+    const res = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    expect(res.status).toBe(202)
+    const step = (await res.json()) as TranscriptionStepResponse
+    expect(step.next).toBe('wait')
+    expect(step.retryAfterMs).toBeGreaterThan(0)
+    expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0)
+    expect(await exists(replyPath(meeting.id))).toBe(false)
+  })
+
   it('persists the transcript for later reads', async () => {
     const meeting = await uploadedMeeting()
     const { segments } = await transcribe(meeting.id)
+    expect(segments.length).toBeGreaterThan(0)
     const stored = await $fetch<{ segments: TranscriptSegment[] }>(`/api/meetings/${meeting.id}/transcript`)
     expect(stored.segments).toEqual(segments)
   })
@@ -137,28 +205,19 @@ describe('POST /api/meetings/:id/transcribe', () => {
     expect((await fetch('/api/meetings/not-a-uuid/transcribe', { method: 'POST' })).status).toBe(404)
   })
 
-  it('lets exactly one of several concurrent callers do the work', async () => {
+  it('lets several concurrent drivers converge on one transcript', async () => {
     const meeting = await uploadedMeeting()
 
-    // Only one caller may move the row out of `uploaded`; the rest must be
-    // turned away rather than each spending the provider's quota.
-    const attempts = await Promise.allSettled([
+    // Each step is claimed under a token, so they take turns rather than each
+    // spend the provider's quota; the unit tier counts the provider calls.
+    const results = await Promise.all([
       transcribe(meeting.id), transcribe(meeting.id), transcribe(meeting.id),
     ])
-    const winners = attempts.filter(a => a.status === 'fulfilled')
-    const losers = attempts.filter(a => a.status === 'rejected')
-
-    expect(winners.length + losers.length).toBe(3)
-    expect(winners.length).toBeGreaterThanOrEqual(1)
-    // A loser either raced and was refused, or arrived late enough to be handed
-    // the finished transcript. Both are correct; silently transcribing again is not.
-    for (const loser of losers) {
-      expect((loser as PromiseRejectedResult).reason?.statusCode).toBe(409)
-    }
+    for (const { meeting: after } of results) expect(after.status).toBe('summarizing')
 
     const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('summarizing')
-    const { segments } = await $fetch<{ segments: TranscriptSegment[] }>(`/api/meetings/${meeting.id}/transcript`)
+    const segments = await storedSegments(meeting.id)
     expect(segments.length).toBeGreaterThan(0)
     expect(segments.map(s => s.idx)).toEqual(segments.map((_, i) => i))
   })
@@ -171,6 +230,21 @@ describe('POST /api/meetings/:id/transcribe', () => {
     const again = await transcribe(meeting.id)
     expect(again.meeting.status).toBe('summarizing')
     expect(again.segments).toEqual(first.segments)
+  })
+
+  // The first test of what PAST_TRANSCRIPTION has always promised (ADR-0012 §3).
+  it.each(['summarizing', 'indexing', 'ready'] as const)('never replaces the transcript of a %s meeting', async (status) => {
+    const meeting = await uploadedMeeting()
+    const finished: TranscriptSegment[] = [{ idx: 0, startMs: 0, endMs: 900, text: 'The real, finished transcript.' }]
+    const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+    await storage.setItem(`transcripts/${meeting.id}`, finished)
+    await setStatus(meeting.id, status)
+
+    const res = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { meeting: Meeting }).meeting.status).toBe(status)
+    expect(await storedSegments(meeting.id)).toEqual(finished)
+    expect(await exists(replyPath(meeting.id))).toBe(false)
   })
 })
 
@@ -224,23 +298,29 @@ describe('recovery', () => {
     expect(recovered.status).toBe('summarizing')
   })
 
-  it('reclaims a transcribing meeting whose holder is gone, once the lease has expired', async () => {
-    // The whole point of CLAIM_LEASE_MS, and until now exercised by nothing:
-    // every backdateUpdatedAt in the suite used 61s (the retry cooldown), so
-    // no test ever pushed a meeting past the lease and the route's stale-lease
-    // branch — including the fencing token it passes — was never executed.
+  it('reclaims a transcribing meeting whose step is gone, once its lease has expired', async () => {
     const meeting = await uploadedMeeting()
     await setStatus(meeting.id, 'transcribing')
 
-    // Still inside the lease: a live worker must not be trampled.
+    // Inside the step's lease: a live worker must not be trampled. Told to look
+    // again rather than refused: it may well be alive and about to finish.
+    await writeLedger(meeting.id, Date.now() + 60_000)
     const tooSoon = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
-    expect(tooSoon.status).toBe(409)
-    expect((await tooSoon.json()).message).toMatch(/already running/i)
+    expect(tooSoon.status).toBe(202)
+    expect(((await tooSoon.json()) as TranscriptionStepResponse).next).toBe('wait')
 
-    await backdateUpdatedAt(meeting.id, TRANSCRIBE_CLAIM_LEASE_MS + 60_000)
+    await writeLedger(meeting.id, Date.now() - 1000)
     const { meeting: recovered, segments } = await transcribe(meeting.id)
     expect(recovered.status).toBe('summarizing')
     expect(segments.length).toBeGreaterThan(0)
+  })
+
+  it('takes over a transcribing meeting that holds no step at all, at once', async () => {
+    // What a meeting left by the old blocking route looks like after a deploy.
+    const meeting = await uploadedMeeting()
+    await setStatus(meeting.id, 'transcribing')
+    const { meeting: recovered } = await transcribe(meeting.id)
+    expect(recovered.status).toBe('summarizing')
   })
 
   it('explains that a SUMMARISATION failure needs the other route, not "no audio"', async () => {

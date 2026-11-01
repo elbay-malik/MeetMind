@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ExtractionStepResponse, Meeting, MeetingStatus, SearchIndexStatus, TranscriptSegment } from '#shared/types/meeting'
+import type { ExtractionStepResponse, Meeting, MeetingStatus, SearchIndexStatus, TranscriptionStepResponse, TranscriptSegment } from '#shared/types/meeting'
 
 const route = useRoute()
 const meetingId = computed(() => String(route.params.id))
@@ -25,13 +25,6 @@ const stepError = ref<{ step: string, message: string } | null>(null)
 const justFinished = ref(false)
 const justSummarized = ref(false)
 
-/**
- * Re-read on every poll so `claimLooksStale` below actually changes answer as
- * time passes: it depends on the wall clock, which is not reactive, so without
- * this a page left open would never notice a claim going stale.
- */
-const now = ref(Date.now())
-
 /** The footer, so focus can be put back on the action after a step finishes
  * (see restoreActionFocus). Queried rather than a component ref: what needs
  * focusing is the real <button>, whatever the UI library wraps it in. */
@@ -45,7 +38,6 @@ async function reloadAll() {
   // The index status is derived from the transcript, so it changes whenever a
   // step changes the transcript — transcription finishing makes it `none`.
   await Promise.all([refresh(), refreshTranscript(), refreshIndex()])
-  now.value = Date.now()
 }
 
 /**
@@ -119,7 +111,9 @@ async function restoreActionFocus() {
 const summarizing = ref(false)
 /** How far the extraction this page is driving has got, from the last step's answer. */
 const extraction = ref<ExtractionStepResponse['progress'] | null>(null)
-/** Stops the extraction loop when the page goes away; the run parks and resumes when reopened. */
+/** How far the transcription this page is driving has got, from the last step's answer. */
+const transcription = ref<TranscriptionStepResponse['progress'] | null>(null)
+/** Stops the driving loops when the page goes away; the run parks and resumes when reopened. */
 let unmounted = false
 
 async function startSummary() {
@@ -172,30 +166,38 @@ async function startTranscription() {
   stepError.value = null
   justFinished.value = false
   justSummarized.value = false
+  transcription.value = null
   try {
-    await $fetch(`/api/meetings/${meetingId.value}/transcribe`, { method: 'POST' })
-    justFinished.value = true
+    // One step per request (ADR-0012), driven the same way as extraction above.
+    let finished = false
+    while (!finished && !unmounted) {
+      const res = await $fetch.raw<TranscriptionStepResponse>(`/api/meetings/${meetingId.value}/transcribe`, { method: 'POST' })
+      finished = res.status !== 202
+      const step = res._data
+      if (finished || !step) continue
+      transcription.value = step.progress
+      if (step.next === 'wait' && step.retryAfterMs !== null) {
+        await sleep(step.retryAfterMs + Math.random() * 2000)
+      }
+    }
+    if (finished) justFinished.value = true
   }
   catch (err) {
     stepError.value = { step: 'Transcription failed', message: describeError(err) }
   }
   finally {
     transcribing.value = false
+    transcription.value = null
     await reloadAll()
     await restoreActionFocus()
   }
 }
 
 /**
- * Ask the route that owns this meeting to take it over again.
- *
- * A meeting left in `transcribing`/`indexing` by a crashed, redeployed or
- * evicted worker is exactly what each route's stale-lease reclaim exists to
- * recover — but that reclaim only runs inside the POST, and this page was the
- * only thing that ever sent one, for statuses it offered no button for. The
- * result was a spinner that polled forever with nothing able to move it. The
- * server still decides: if a worker is genuinely alive, it refuses with a 409
- * saying so, which lands in stepError like any other failure.
+ * Ask the route that owns this meeting to carry on. Both stages move only while
+ * a page asks them to (ADR-0012), so one left in progress by a closed tab or a
+ * killed step is paused until someone does. The server still decides: if a step
+ * is live, it answers when to look again, and the loop waits.
  */
 async function resumeStalled() {
   if (meeting.value.status === 'transcribing') return startTranscription()
@@ -209,10 +211,6 @@ const POLL_MS = 5000
 let poller: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   poller = setInterval(() => {
-    // Always advance the clock, even when nothing is reloaded: canResume below
-    // is a function of elapsed time, and a page left open on a dead claim has
-    // nothing else that would ever re-evaluate it.
-    now.value = Date.now()
     if (meeting.value.status === 'transcribing' && !transcribing.value) void reloadAll()
     if (meeting.value.status === 'indexing' && !summarizing.value) void reloadAll()
   }, POLL_MS)
@@ -304,15 +302,14 @@ const canSummarize = computed(() =>
   || (meeting.value.status === 'failed' && meeting.value.failedStage === 'summarization'))
 
 /**
- * An in-flight claim nothing can still be holding — see claimLooksStale — or
- * an extraction this page is not driving. Extraction moves only while a page
- * asks it to (ADR-0012), so one left `indexing` is paused until someone
- * resumes it; if another tab is driving it, resuming here just takes turns.
- * Offered while this page drives it too, shown busy: the button the user
- * activated stays put rather than vanish and drop focus to <body>.
+ * A stage this page is not driving. Both move only while a page asks them to
+ * (ADR-0012), so one left in progress is paused until someone resumes it; if
+ * another tab is driving it, resuming here just takes turns. Offered while this
+ * page drives it too, shown busy: the button the user activated stays put
+ * rather than vanish and drop focus to <body>.
  */
 const canResume = computed(() =>
-  claimLooksStale(meeting.value, now.value) || meeting.value.status === 'indexing')
+  meeting.value.status === 'transcribing' || meeting.value.status === 'indexing')
 
 /** The failure with no retry at all: the audio was rejected and removed. */
 
@@ -362,16 +359,17 @@ const activityLabel = computed(() => {
     const retrying = step.lastError ? ' The last attempt did not finish; it will be retried.' : ''
     return `Extracting decisions and action items: ${step.done} of ${step.total} parts done.${retrying}`
   }
-  if (transcribing.value) return 'Transcribing. This can take a moment.'
-  // A claim nothing can still be holding is not "running", and saying so left
-  // the only message on the card actively misleading for as long as the page
-  // stayed open.
+  if (transcribing.value) {
+    const step = transcription.value
+    if (!step?.total) return 'Transcribing. This can take a moment.'
+    const retrying = step.lastError ? ' The last attempt did not finish; it will be retried.' : ''
+    return `Transcribing: ${step.segments} segments stored so far.${retrying}`
+  }
   if (canResume.value) {
     return meeting.value.status === 'transcribing'
-      ? 'Transcription stopped before it finished. Resume it to try again.'
+      ? 'Transcription is paused, or running in another tab. Resume it here to carry on.'
       : 'Extraction is paused, or running in another tab. Resume it here to carry on.'
   }
-  if (meeting.value.status === 'transcribing') return 'Transcription is running.'
   // Both completions are announced, not just transcription's: this region is
   // the only thing a screen reader hears, and it used to go from "Extracting
   // decisions and action items." straight to empty, which announces nothing
@@ -467,11 +465,6 @@ const activityLabel = computed(() => {
           >
             {{ primaryAction.label }}
           </UButton>
-          <UIcon
-            v-else-if="meeting.status === 'transcribing' || meeting.status === 'indexing'"
-            name="i-lucide-loader-circle"
-            class="size-5 shrink-0 animate-spin text-primary"
-          />
           <!-- One region for the whole card, so it is never unmounted at the
                moment it has something to announce. -->
           <span

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, ExtractionStepResponse, Meeting } from '../../shared/types/meeting'
+import { driveTranscription } from './helpers/transcribe'
 
 // Isolated from summary-api.spec.ts: NUXT_SUMMARY_STUB_FAIL_ONCE_RETRYABLE
 // makes the stub throw a retryable error exactly ONCE for the whole server
@@ -36,7 +37,7 @@ async function transcribedMeeting(): Promise<Meeting> {
   })
   await fetch(upload.url, { method: 'PUT', headers: { 'content-type': 'audio/ogg' }, body: audio })
   await $fetch(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
-  const done = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+  const done = await driveTranscription(meeting.id)
   return done.meeting
 }
 

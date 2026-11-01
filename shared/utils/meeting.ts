@@ -32,54 +32,22 @@ export function audioObjectKey(meetingId: string): string {
   return `meetings/${meetingId}/audio.ogg`
 }
 
+/**
+ * Storage key for a meeting's raw Whisper reply, while it is being parsed
+ * (ADR-0012 §2). Under `meetings/`, so the bucket's lifecycle rule expires one
+ * that nothing got to remove. One per meeting and derived from the id, like the
+ * audio's key, so a delete can always name it, and a later attempt replaces
+ * the earlier one instead of leaving it behind.
+ */
+export function whisperReplyKey(meetingId: string): string {
+  return `meetings/${meetingId}/whisper-reply.json`
+}
+
 /** Derive a default meeting title from the recording's file name. */
 export function titleFromFileName(fileName: string): string {
   const base = fileName.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim()
   const title = base || 'Untitled meeting'
   return title.length > MAX_TITLE_LENGTH ? title.slice(0, MAX_TITLE_LENGTH).trimEnd() : title
-}
-
-/**
- * How long each route honours a claim before another caller may take it over.
- *
- * Shared rather than route-private because the CLIENT needs the same numbers:
- * a meeting left in `transcribing`/`indexing` by a crashed, redeployed or
- * evicted worker is recoverable only by calling the route again, and the retry
- * routes are the only thing that ever calls them. Without a way to tell "a
- * worker is running" from "a worker died holding this", the progress page
- * showed a spinner and no action at all — forever, for up to four hours of
- * lease and then indefinitely, because nothing was left to issue the request
- * that would reclaim it.
- *
- * The server stays the authority: it re-checks staleness under a
- * compare-and-swap and refuses with an accurate 409 if a worker really is
- * still alive. These only decide whether the button is worth offering.
- */
-export const TRANSCRIBE_CLAIM_LEASE_MS = 15 * 60_000
-
-/**
- * Statuses that mean a route is holding a claim on this meeting right now.
- *
- * Not `indexing`: extraction runs in short steps, each under its own lease in
- * the run ledger (ADR-0012), and between steps nothing holds it at all. An
- * `indexing` meeting is always safe to ask to carry on -- the server answers
- * "wait" while a step is live -- and safe to delete between steps.
- */
-const IN_FLIGHT_LEASE: Partial<Record<Meeting['status'], number>> = {
-  transcribing: TRANSCRIBE_CLAIM_LEASE_MS,
-}
-
-/**
- * Whether an in-flight claim is old enough that nothing can still be holding
- * it, so asking the route again is a recovery rather than a duplicate request.
- */
-export function claimLooksStale(
-  meeting: Pick<Meeting, 'status' | 'updatedAt'>,
-  now: number = Date.now(),
-): boolean {
-  const lease = IN_FLIGHT_LEASE[meeting.status]
-  if (lease === undefined) return false
-  return now - new Date(meeting.updatedAt).getTime() >= lease
 }
 
 /**

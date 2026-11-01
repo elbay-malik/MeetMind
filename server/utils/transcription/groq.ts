@@ -1,9 +1,7 @@
-import { z } from 'zod'
-import { normalizeSegments } from './normalize'
+import { retryAfterMs } from '../summary/groq'
 import {
   TranscriptionError,
   type TranscribeInput,
-  type TranscribeResult,
   type Transcriber,
 } from './transcriber'
 
@@ -11,26 +9,6 @@ const ENDPOINT = 'https://api.groq.com/openai/v1/audio/transcriptions'
 
 /** Turbo is 216x real time and a third the price; we do not need translation. */
 const MODEL = 'whisper-large-v3-turbo'
-
-/**
- * Groq never publishes a full verbose_json envelope — only the per-segment
- * fields, which are documented verbatim. So parse leniently: take the segments
- * we need, tolerate unknown keys, and treat a missing `segments` array as a
- * provider change worth failing loudly on rather than silently transcribing to
- * nothing.
- */
-const groqSegmentSchema = z.object({
-  start: z.number(),
-  end: z.number(),
-  text: z.string(),
-})
-
-const groqResponseSchema = z.object({
-  text: z.string().optional(),
-  language: z.string().nullish(),
-  duration: z.number().nullish(),
-  segments: z.array(groqSegmentSchema),
-})
 
 export interface GroqOptions {
   apiKey: string
@@ -47,7 +25,7 @@ export function createGroqTranscriber(options: GroqOptions): Transcriber {
   return {
     kind: 'groq',
 
-    async transcribe(input: TranscribeInput): Promise<TranscribeResult> {
+    async transcribe(input: TranscribeInput): Promise<Uint8Array> {
       const form = new FormData()
       // The filename's extension is how the API infers the container.
       form.append('file', new Blob([input.bytes as BlobPart], { type: input.contentType }), 'audio.ogg')
@@ -68,10 +46,10 @@ export function createGroqTranscriber(options: GroqOptions): Transcriber {
 
       if (!response.ok) throw await describeFailure(response)
 
-      // A truncated or non-JSON body is a provider fault, and retrying can fix
-      // it. Letting it throw here would surface as a 500 and mark the meeting
-      // permanently failed.
-      const body = await response.json().catch((err: unknown) => {
+      // A native copy with no parse: what the reply says is only read later, a
+      // page at a time. A connection lost here is a provider fault that retrying
+      // can fix; letting it throw would surface as a 500.
+      const body = await response.arrayBuffer().catch((err: unknown) => {
         const detail = err instanceof Error ? err.message : String(err)
         throw new TranscriptionError(
           `Transcription service returned a body we could not read: ${detail}`,
@@ -79,21 +57,7 @@ export function createGroqTranscriber(options: GroqOptions): Transcriber {
           true,
         )
       })
-
-      const parsed = groqResponseSchema.safeParse(body)
-      if (!parsed.success) {
-        throw new TranscriptionError(
-          `Transcription service returned an unexpected response: ${z.prettifyError(parsed.error)}`,
-          502,
-          false,
-        )
-      }
-
-      return {
-        segments: normalizeSegments(parsed.data.segments),
-        durationSec: parsed.data.duration ?? null,
-        language: parsed.data.language ?? null,
-      }
+      return new Uint8Array(body)
     },
   }
 }
@@ -111,6 +75,7 @@ async function describeFailure(response: Response): Promise<TranscriptionError> 
       `Transcription quota is exhausted for now.${when}`,
       429,
       true,
+      retryAfterMs(retryAfter),
     )
   }
   if (response.status === 401 || response.status === 403) {

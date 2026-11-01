@@ -8,6 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { MAX_QUESTION_CHARS } from '../../shared/schemas/qa'
 import type { CreateMeetingResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
+import { driveTranscription } from './helpers/transcribe'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-ask-'))
@@ -54,7 +55,7 @@ async function setStoredTranscript(meetingId: string, segments: TranscriptSegmen
 
 async function indexedMeeting(): Promise<Meeting> {
   const meeting = await uploadedMeeting()
-  await $fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+  await driveTranscription(meeting.id)
   await setStoredTranscript(meeting.id, DISCUSSION)
   await $fetch(`/api/meetings/${meeting.id}/search-index`, { method: 'POST' })
   return meeting
@@ -97,7 +98,7 @@ describe('POST /api/meetings/:id/ask', () => {
 
   it('asks for indexing first rather than failing, before a meeting is indexed', async () => {
     const meeting = await uploadedMeeting()
-    await $fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+    await driveTranscription(meeting.id)
     const res = await ask(meeting.id, 'What about the budget?')
     expect(res.status).toBe(409)
     expect((await res.json()).message).toMatch(/not been indexed/)
