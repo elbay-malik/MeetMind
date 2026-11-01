@@ -129,20 +129,24 @@ require() { # require <job> <what> <test-cmd> <how-to-fix>
 # Everything that actually VERIFIES anything is run exactly as CI runs it,
 # including `set -o pipefail` semantics for the piped driver — CI needed an
 # explicit `shell: bash` for that and got it wrong for two phases.
+#
+# Every step that can fail says `|| return 1`, because `set -e` does nothing here:
+# run_job runs as an `if` condition, where bash ignores it all the way down. Without
+# these the job's status was cleanup's, so a failing driver reported a pass.
 run_browser_job() {
   require browser ffmpeg 'command -v ffmpeg' 'brew install ffmpeg' || return 1
 
   if [ ! -f fixtures/fixture-30s-720p.mp4 ]; then
     echo "  generating the test fixture (not committed)"
-    bash scripts/make-fixture.sh
+    bash scripts/make-fixture.sh || return 1
   fi
 
   if ! pnpm exec playwright-core install --dry-run chromium >/dev/null 2>&1; then
     note "  could not confirm Chromium; installing it for playwright-core"
-    pnpm exec playwright-core install chromium
+    pnpm exec playwright-core install chromium || return 1
   fi
 
-  pnpm build
+  pnpm build || return 1
 
   local port=$PORT_BASE
   while lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; do
@@ -168,12 +172,12 @@ run_browser_job() {
   # pipefail is on (set -o pipefail at the top of this file), so the driver's
   # own exit code survives the pipe. This is the exact bug ci.yml had.
   node scripts/drive-upload.mjs "$base" fixtures/fixture-30s-720p.mp4 "$data_dir" \
-    | tee "$LOG_DIR/upload.log"
+    | tee "$LOG_DIR/upload.log" || return 1
   local meeting_id
   meeting_id=$(grep -oE 'landed on progress page for [0-9a-f-]{36}' "$LOG_DIR/upload.log" | awk '{print $NF}')
   [ -n "$meeting_id" ] || { echo "  no meeting id in upload output" >&2; return 1; }
 
-  node scripts/drive-player.mjs "$base" "$meeting_id"
+  node scripts/drive-player.mjs "$base" "$meeting_id" || return 1
 
   cleanup
 }

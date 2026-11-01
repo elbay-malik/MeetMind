@@ -75,6 +75,19 @@ function ciCommands(yaml: string): string[] {
 }
 
 describe('ci:local parity with ci.yml', () => {
+  it('fails the browser job when a step in it fails', async () => {
+    // The job runs as an `if` condition, where bash ignores `set -e`, so a step
+    // with no explicit `|| return 1` cannot fail the job. drive-upload and
+    // drive-player both failed behind a green result this way.
+    const script = await readFile(scriptPath, 'utf8')
+    const body = /^run_browser_job\(\) \{\n([\s\S]*?)^\}$/m.exec(script)?.[1]
+    expect(body, 'could not find run_browser_job in ci-local.sh').toBeTruthy()
+    const steps = body!.split('\n').filter(line =>
+      /^\s*(\| tee |node scripts\/drive-player|pnpm build|bash scripts\/|pnpm exec playwright-core install chromium)/.test(line))
+    expect(steps, 'matched too few steps: the pattern has drifted from the script').toHaveLength(5)
+    expect(steps.filter(line => !line.trimEnd().endsWith('|| return 1'))).toEqual([])
+  })
+
   it('runs every verifying command CI runs, or explains why not', async () => {
     const [yaml, script] = await Promise.all([
       readFile(workflowPath, 'utf8'),
