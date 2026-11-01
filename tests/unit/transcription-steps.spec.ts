@@ -6,7 +6,7 @@ import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Meeting, MeetingStatus, TranscriptSegment } from '../../shared/types/meeting'
-import { whisperReplyKey } from '../../shared/utils/meeting'
+import { PROVIDER_BLOCKED_ERROR, whisperReplyKey } from '../../shared/utils/meeting'
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
 import { createLocalPipelineRepository } from '../../server/utils/db/pipeline-local'
 import { createLocalSlotRepository } from '../../server/utils/db/slots-local'
@@ -654,6 +654,20 @@ describe('429 during transcription', () => {
     expect((parked as { retryAt: Date }).retryAt.getTime()).toBeGreaterThan(Date.now())
     expect(script.calls()).toBe(1)
     expect((await run(b.id))!.attempts).toBe(0)
+  })
+
+  // The page has nothing else to go on, for as long as Retry-After says.
+  it('says why a step is parked on the block, to this caller and to the next', async () => {
+    const script = scripted()
+    script.queue(quota(60_000))
+    const a = await newMeeting()
+    const b = await newMeeting()
+    const deps = depsWith(script.transcriber)
+    await advanceTranscription(a.id, deps)
+    const parked = { kind: 'progress', next: 'wait', progress: { lastError: PROVIDER_BLOCKED_ERROR, total: null } }
+    expect(await advanceTranscription(b.id, deps)).toMatchObject(parked)
+    expect(await advanceTranscription(b.id, deps)).toMatchObject(parked)
+    expect((await getMeeting(b.id)).errorMessage).toBeNull()
   })
 
   it('still reports the 429 when the block cannot be recorded', async () => {
