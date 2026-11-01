@@ -4,3 +4,11 @@ allowBuilds:
   unrs-resolver: true
   vue-demi: true
   workerd: true
+# Advisories the audit job accepts. Keep each one justified, and drop it when the
+# dependency moves past the fix.
+auditConfig:
+  ignoreGhsas:
+    # @tiptap/core and prosemirror-view come only through @nuxt/ui's UEditor.
+    # The app does not use it, and neither package is in the build output.
+    - GHSA-j95f-988m-3j2f
+    - GHSA-c8x8-7fp4-3x9w
