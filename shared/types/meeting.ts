@@ -126,6 +126,31 @@ export interface ExtractionStepResponse {
   retryAfterMs: number | null
 }
 
+/**
+ * What `POST /api/meetings/:id/transcribe` answers while the work is not
+ * finished, shaped like {@link ExtractionStepResponse}. The finished answer is
+ * `{ meeting }` with a 200; the transcript is its own request, because reading
+ * it back here would grow this step with the meeting.
+ */
+export interface TranscriptionStepResponse {
+  meeting: Meeting
+  progress: {
+    /** Bytes of the provider's reply read so far. */
+    done: number
+    /** Bytes in the reply; null until the provider has answered. */
+    total: number | null
+    /** Segments stored so far. */
+    segments: number
+    /** Why the last step of this run ended without a result, if it did. */
+    lastError: string | null
+  }
+  /** `continue`: ask again now. `wait`: ask again at `retryAt`. */
+  next: 'continue' | 'wait'
+  retryAt: string | null
+  /** The same wait as a duration measured on the server; see {@link ExtractionStepResponse}. */
+  retryAfterMs: number | null
+}
+
 /** Fields the client supplies when registering a meeting before uploading its audio. */
 export interface CreateMeetingInput {
   title: string

@@ -7,6 +7,7 @@ import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
+import { driveTranscription } from './helpers/transcribe'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-index-'))
@@ -35,7 +36,7 @@ async function uploadedMeeting(): Promise<Meeting> {
 
 async function transcribedMeeting(): Promise<Meeting> {
   const meeting = await uploadedMeeting()
-  return (await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })).meeting
+  return (await driveTranscription(meeting.id)).meeting
 }
 
 const status = async (id: string) =>

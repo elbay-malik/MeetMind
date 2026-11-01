@@ -9,6 +9,7 @@ import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
 import { quoteStartsAt } from '../../server/utils/summary/reconcile'
 import type { CreateMeetingResponse, ExtractionStepResponse, Meeting, MeetingSummary, TranscriptSegment } from '../../shared/types/meeting'
+import { driveTranscription } from './helpers/transcribe'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-summary-'))
@@ -45,7 +46,7 @@ async function transcribedMeeting(): Promise<Meeting> {
   })
   await fetch(upload.url, { method: 'PUT', headers: { 'content-type': 'audio/ogg' }, body: audio })
   await $fetch(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
-  const done = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+  const done = await driveTranscription(meeting.id)
   return done.meeting
 }
 
@@ -80,10 +81,14 @@ async function deleteStoredSummary(meetingId: string): Promise<void> {
 
 /** Reach past the repository interface to replace a meeting's whole stored
  * transcript, for shapes the stub transcriber cannot produce on its own
- * (silence, or a transcript needing more than MAX_CHUNKS requests). */
+ * (silence, or a transcript needing more than MAX_CHUNKS requests). Drops the
+ * extraction plan transcription stored with the old one, so extraction plans
+ * from what is there now, as it does for a meeting transcribed before plans
+ * were stored. */
 async function setStoredTranscript(meetingId: string, segments: TranscriptSegment[]): Promise<void> {
   const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
   await storage.setItem(`transcripts/${meetingId}`, segments)
+  await storage.removeItem(`pipeline/${meetingId}`)
 }
 
 /** Simulate a silent recording: transcription completed but found no speech.
@@ -100,13 +105,13 @@ async function backdateUpdatedAt(id: string, msAgo: number): Promise<void> {
 }
 
 describe('POST /api/meetings/:id/summarize', () => {
-  it('answers 202 with progress while steps remain, starting with the plan', async () => {
+  it('answers 202 with progress while steps remain, starting at the first chunk of the plan transcription stored', async () => {
     const meeting = await transcribedMeeting()
     const { status, body } = await step(meeting.id)
     expect(status).toBe(202)
     const progress = body as ExtractionStepResponse
     expect(progress.meeting.status).toBe('indexing')
-    expect(progress.progress).toEqual({ done: 0, total: 1, lastError: null })
+    expect(progress.progress).toEqual({ done: 1, total: 1, lastError: null })
     expect(progress.next).toBe('continue')
     expect(progress.retryAt).toBeNull()
     expect(progress.retryAfterMs).toBeNull()

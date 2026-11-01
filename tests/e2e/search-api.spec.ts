@@ -8,6 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { MAX_QUESTION_CHARS } from '../../shared/schemas/qa'
 import type { CreateMeetingResponse, Meeting, MeetingSearchResult, TranscriptSegment } from '../../shared/types/meeting'
+import { driveTranscription } from './helpers/transcribe'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-search-'))
@@ -31,7 +32,7 @@ async function indexedMeeting(title: string, segments: TranscriptSegment[]): Pro
   })
   await fetch(upload.url, { method: 'PUT', headers: { 'content-type': 'audio/ogg' }, body: audio })
   await $fetch(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
-  await $fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
+  await driveTranscription(meeting.id)
 
   // The stub transcriber's lines differ only by number, which gives
   // retrieval nothing to tell apart — replace with a distinctive transcript,

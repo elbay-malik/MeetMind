@@ -3,9 +3,8 @@ import {
   AUDIO_MIME,
   MAX_AUDIO_BYTES,
   MAX_TITLE_LENGTH,
-  TRANSCRIBE_CLAIM_LEASE_MS,
   audioObjectKey,
-  claimLooksStale,
+  whisperReplyKey,
   titleFromFileName,
   transcribedButEmpty,
   uploadWasRejected,
@@ -89,40 +88,13 @@ describe('uploadWasRejected', () => {
   })
 })
 
-describe('claimLooksStale', () => {
-  const at = (ms: number) => new Date(ms).toISOString()
-
-  // The reason this exists: a meeting left in transcribing/indexing by a
-  // crashed or evicted worker was recoverable ONLY by calling the route again,
-  // and the progress page — the only caller there is — offered no button for
-  // those statuses. The spinner polled forever. The page needs the same notion
-  // of "stale" the routes use to know when offering that call is recovery.
-  it('is false while a claim is still within its lease', () => {
-    const now = 10 * 60 * 60_000
-    expect(claimLooksStale({ status: 'transcribing', updatedAt: at(now - 60_000) }, now)).toBe(false)
-  })
-
-  it('is true once nothing can still be holding the claim', () => {
-    const now = 10 * 60 * 60_000
-    expect(claimLooksStale(
-      { status: 'transcribing', updatedAt: at(now - TRANSCRIBE_CLAIM_LEASE_MS - 1) }, now,
-    )).toBe(true)
-  })
-
-  it('does not treat indexing as a claim: extraction steps carry their own leases', () => {
-    // Extraction used to hold a 4 h status lease. It now runs in short steps,
-    // each leased in the run ledger (ADR-0012), so `indexing` says nothing
-    // about whether a step is live -- the server answers that when asked.
-    const now = 10 * 60 * 60_000
-    expect(claimLooksStale({ status: 'indexing', updatedAt: at(now - 60_000) }, now)).toBe(false)
-    expect(claimLooksStale({ status: 'indexing', updatedAt: at(0) }, now)).toBe(false)
-  })
-
-  it('is false for statuses that are not an in-flight claim at all', () => {
-    const now = 10 * 60 * 60_000
-    const ancient = at(0)
-    for (const status of ['pending_upload', 'uploaded', 'summarizing', 'ready', 'failed'] as const) {
-      expect(claimLooksStale({ status, updatedAt: ancient }, now), status).toBe(false)
-    }
+describe('whisperReplyKey', () => {
+  // ADR-0012 §2 and ADR-0010: only keys under `meetings/` are expired by the
+  // bucket's lifecycle rule, which is what removes a reply a crash left behind.
+  it('is under the prefix the bucket lifecycle rule covers, beside the audio', () => {
+    const id = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
+    expect(whisperReplyKey(id).startsWith('meetings/')).toBe(true)
+    expect(whisperReplyKey(id).startsWith(audioObjectKey(id).replace('audio.ogg', ''))).toBe(true)
+    expect(whisperReplyKey(id)).not.toBe(audioObjectKey(id))
   })
 })

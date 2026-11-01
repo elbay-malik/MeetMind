@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest'
+import { normalizeSegments } from '../../server/utils/transcription/normalize'
+import { INITIAL_SCAN, parseSegments, scanWindow } from '../../server/utils/transcription/reply-scanner'
 import { createStubTranscriber } from '../../server/utils/transcription/stub'
 
-const transcriber = createStubTranscriber()
+const stub = createStubTranscriber()
+/** The stub's reply as the pages will read it: the same scanner, the same normalising. */
+const transcriber = {
+  async transcribe(input: { bytes: Uint8Array, contentType: string }) {
+    const reply = await stub.transcribe(input)
+    const { objects } = scanWindow(reply, INITIAL_SCAN, { atEnd: true, maxObjects: 1000 })
+    const { duration } = JSON.parse(new TextDecoder().decode(reply)) as { duration: number }
+    return { segments: normalizeSegments(parseSegments(objects)), durationSec: duration }
+  },
+}
 const audioOf = (bytes: number) => ({ bytes: new Uint8Array(bytes), contentType: 'audio/ogg' })
 
 describe('stub transcriber', () => {

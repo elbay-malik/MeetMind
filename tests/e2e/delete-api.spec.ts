@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { fetch, setup } from '@nuxt/test-utils/e2e'
 import type { Meeting } from '../../shared/types/meeting'
-import { audioObjectKey } from '../../shared/utils/meeting'
+import { audioObjectKey, whisperReplyKey } from '../../shared/utils/meeting'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-delete-'))
@@ -191,6 +191,17 @@ const ledger = (stepLeaseUntil: number | null) => ({
   chunks: [],
 })
 
+/** The same, with one transcription run, paused or holding a step. */
+const transcriptionLedger = (stepLeaseUntil: number | null) => ({
+  runs: {
+    transcription: {
+      runId: randomUUID(), cursor: {}, stepToken: stepLeaseUntil === null ? null : randomUUID(), stepLeaseUntil,
+      attempts: 1, lastError: null, retryAt: null,
+    },
+  },
+  chunks: [],
+})
+
 describe('DELETE /api/meetings/:id while the meeting may still be written', () => {
   it('409s while a pipeline step holds a live lease, until that lease ends', async () => {
     // ADR-0012: a step mid provider call would write its result back after
@@ -222,16 +233,30 @@ describe('DELETE /api/meetings/:id while the meeting may still be written', () =
     expect((await fetch(`/api/meetings/${meeting.id}`)).status).toBe(200)
   })
 
-  it('409s while a transcription claim is live, long after the upload window', async () => {
-    // Transcription writes the transcript before it moves the status, so the
-    // row fence alone would not stop it leaving a transcript with no meeting.
+  it('409s while a transcription step is live, long after the upload window', async () => {
     const meeting = await seedMeeting({ status: 'transcribing', updatedAt: new Date().toISOString() })
+    await db.setItem(`pipeline/${meeting.id}`, transcriptionLedger(Date.now() + 90_000))
     const refused = await del(meeting.id)
     expect(refused.status).toBe(409)
     expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(0)
     const after = await fetch(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe(200)
     expect(((await after.json()) as { meeting: Meeting }).meeting.status).toBe('transcribing')
+  })
+
+  it('deletes a transcribing meeting paused between steps, however recently it moved, with its raw reply', async () => {
+    // ADR-0012: a run parked between steps holds nothing. The old 15-minute
+    // status lease kept a paused transcription undeletable.
+    const meeting = await seedMeeting({ status: 'transcribing', updatedAt: new Date().toISOString() })
+    await db.setItem(`pipeline/${meeting.id}`, transcriptionLedger(null))
+    const reply = join(dataDir, 'audio', ...whisperReplyKey(meeting.id).split('/'))
+    await mkdir(dirname(reply), { recursive: true })
+    await writeFile(reply, '{"segments":[]}')
+
+    const res = await del(meeting.id)
+    expect(res.status).toBe(204)
+    await expect(access(reply)).rejects.toThrow()
+    expect(await db.hasItem(`pipeline/${meeting.id}`)).toBe(false)
   })
 
   it('deletes an indexing meeting whose extraction is paused between steps, however recently it moved', async () => {

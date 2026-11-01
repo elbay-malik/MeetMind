@@ -59,6 +59,31 @@ describe.skipIf(!has('NUXT_R2_ACCOUNT_ID', 'NUXT_R2_ACCESS_KEY_ID', 'NUXT_R2_SEC
       expect(new Uint8Array(await get.arrayBuffer())).toEqual(body)
     })
 
+    // ADR-0012 step 7: a page checks it is reading the reply the Whisper step
+    // stored. The validator from the PUT has to be the one a range read reports.
+    it('reports the same validator on a server PUT and on a range read of it, and serves the range', async () => {
+      const { createR2AudioStore } = await import('../../server/utils/storage/r2')
+      const store = createR2AudioStore({
+        accountId: process.env.NUXT_R2_ACCOUNT_ID!,
+        accessKeyId: process.env.NUXT_R2_ACCESS_KEY_ID!,
+        secretAccessKey: process.env.NUXT_R2_SECRET_ACCESS_KEY!,
+        bucket: process.env.NUXT_R2_BUCKET!,
+      })
+      const key = `verify-${Date.now()}/whisper-reply.json`
+      const reply = new TextEncoder().encode('{"segments":[{"start":0,"end":1,"text":"hello"}]}')
+      try {
+        const { etag } = await store.put(key, reply, 'application/json')
+        expect(etag).toBeTruthy()
+        const opened = (await store.openRange(key, { start: 13, end: 20 }))!
+        expect(opened.etag).toBe(etag)
+        expect(opened.size).toBe(reply.byteLength)
+        expect(new TextDecoder().decode(await new Response(opened.body).arrayBuffer())).toBe('{"start"')
+      }
+      finally {
+        await store.delete(key)
+      }
+    })
+
     it('answers 404 for a missing object rather than an error', async () => {
       const missing = await client().fetch(`${objectUrl().href}-absent`, { method: 'HEAD' })
       expect(missing.status).toBe(404)
@@ -444,6 +469,89 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
     }
     finally {
       await client.from('meetings').delete().in('id', ids)
+    }
+  })
+})
+
+// ------------------------------------------------- Step-wise transcription
+describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('step-wise transcription (ADR-0012, step 7)', () => {
+  it('drives a reply into the real tables through the real rpcs, and refuses a stale token', { timeout: 60_000 }, async () => {
+    // The stub transcriber and a store in memory stand in for Groq and R2: this
+    // is about append_segments and finish_transcription, and spends no quota.
+    const { createClient } = await import('@supabase/supabase-js')
+    const { createSupabaseMeetingRepository } = await import('../../server/utils/db/supabase')
+    const { createSupabasePipelineRepository } = await import('../../server/utils/db/pipeline-supabase')
+    const { createSupabaseSlotRepository } = await import('../../server/utils/db/slots-supabase')
+    const { createSupabaseTranscriptRepository } = await import('../../server/utils/db/transcripts-supabase')
+    const { advanceTranscription } = await import('../../server/utils/transcription/steps')
+    const { createStubTranscriber } = await import('../../server/utils/transcription/stub')
+    const options = { url: process.env.NUXT_SUPABASE_URL!, serviceKey: process.env.NUXT_SUPABASE_SERVICE_KEY! }
+    const client = createClient(options.url, options.serviceKey, { auth: { persistSession: false } })
+
+    const id = crypto.randomUUID()
+    const objects = new Map<string, Uint8Array>()
+    const audioKey = `verify-${id}/audio.ogg`
+    objects.set(audioKey, new Uint8Array(20_000))
+    const deps = {
+      meetings: createSupabaseMeetingRepository(options),
+      pipeline: createSupabasePipelineRepository(options),
+      slots: createSupabaseSlotRepository(options),
+      transcriber: createStubTranscriber(),
+      store: {
+        async get(key: string) {
+          const bytes = objects.get(key)
+          return bytes ? { bytes, size: bytes.byteLength, contentType: 'audio/ogg', etag: null } : null
+        },
+        async put(key: string, body: Uint8Array) {
+          objects.set(key, body)
+          return { etag: null }
+        },
+        async openRange(key: string, window: { start: number, end: number } | null) {
+          const bytes = objects.get(key)
+          if (!bytes) return null
+          const served = window ?? { start: 0, end: bytes.byteLength - 1 }
+          return {
+            body: new Response(bytes.subarray(served.start, served.end + 1)).body!,
+            size: bytes.byteLength,
+            contentType: null,
+            window: served,
+            etag: null,
+          }
+        },
+        async delete(key: string) {
+          objects.delete(key)
+        },
+      },
+    }
+    try {
+      const { error } = await client.from('meetings').insert({
+        id, title: 'verify', status: 'uploaded', source_file_name: 'a.mp4', source_bytes: 1,
+        audio_key: audioKey, audio_bytes: 20_000,
+      })
+      expect(error).toBeNull()
+
+      const first = await advanceTranscription(id, deps)
+      expect(first, 'is the transcription steps migration applied?').toMatchObject({ kind: 'progress', meeting: { status: 'transcribing' } })
+      let outcome = first
+      for (let i = 0; i < 5 && outcome.kind === 'progress'; i++) outcome = await advanceTranscription(id, deps)
+      expect(outcome).toMatchObject({ kind: 'done', meeting: { status: 'summarizing' } })
+
+      const stored = await createSupabaseTranscriptRepository(options).listForMeeting(id)
+      expect(stored.length).toBeGreaterThan(0)
+      expect(stored.map(s => s.idx)).toEqual(stored.map((_, i) => i))
+      const chunks = await deps.pipeline.listChunks(id)
+      expect(chunks[0]).toMatchObject({ chunkNo: 0, segFrom: 0, segTo: stored.length - 1, result: null })
+
+      // Past transcription: the transcript is not touched, whoever holds what.
+      const refused = await client.rpc('append_segments', {
+        p_meeting: id, p_token: crypto.randomUUID(), p_from_idx: 0, p_segments: [], p_cursor: {},
+      })
+      expect(refused.error).toBeNull()
+      expect(refused.data).toBe(false)
+      expect((await createSupabaseTranscriptRepository(options).listForMeeting(id)).length).toBe(stored.length)
+    }
+    finally {
+      await client.from('meetings').delete().eq('id', id)
     }
   })
 })

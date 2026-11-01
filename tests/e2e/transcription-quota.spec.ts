@@ -7,6 +7,7 @@ import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
+import { driveTranscription } from './helpers/transcribe'
 
 // Isolated from transcription-api.spec.ts: NUXT_TRANSCRIBE_STUB_QUOTA_FAIL
 // makes the stub throw a 429 exactly ONCE for the whole server process, which
@@ -74,9 +75,7 @@ describe('transcription quota exhaustion', () => {
     // Past the cooldown, and past the stub's single-shot failure, a retry
     // succeeds normally.
     await backdateUpdatedAt(meeting.id, 61_000)
-    const { meeting: recovered } = await $fetch<{ meeting: Meeting }>(
-      `/api/meetings/${meeting.id}/transcribe`, { method: 'POST' },
-    )
+    const { meeting: recovered } = await driveTranscription(meeting.id)
     expect(recovered.status).toBe('summarizing')
     expect(recovered.failedStage).toBeNull()
   })
