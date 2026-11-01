@@ -1,7 +1,7 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   modules: ['@nuxt/ui', '@nuxt/eslint'],
-  devtools: { enabled: true },
+  devtools: { enabled: false },
   css: ['~/assets/css/main.css'],
   runtimeConfig: {
     // Server-only secrets, overridden by NUXT_* env vars at runtime.
@@ -64,6 +64,9 @@ export default defineNuxtConfig({
     public: {},
   },
   routeRules: {
+    // A portfolio demo, not a site to be found by search. robots.txt asks crawlers
+    // to stay out; this covers a page reached through a link from elsewhere.
+    '/**': { headers: { 'X-Robots-Tag': 'noindex, nofollow' } },
     '/spike/**': { ssr: false },
   },
   compatibilityDate: '2025-07-15',
