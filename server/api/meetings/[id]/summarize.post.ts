@@ -5,6 +5,7 @@ import {
   useSummaryRepository,
   useTranscriptRepository,
 } from '../../../utils/db'
+import { refuseOnPublicDemo } from '../../../utils/demo-meeting'
 import { conflict, notFound, requireMeetingId } from '../../../utils/http'
 import { useStepSummarizer } from '../../../utils/summary'
 import { advanceExtraction } from '../../../utils/summary/steps'
@@ -24,6 +25,7 @@ import { advanceExtraction } from '../../../utils/summary/steps'
  */
 export default defineEventHandler(async (event): Promise<{ meeting: Meeting, summary: MeetingSummary } | ExtractionStepResponse> => {
   const id = requireMeetingId(event)
+  refuseOnPublicDemo(event, id)
   const outcome = await advanceExtraction(id, {
     meetings: useMeetingRepository(event),
     pipeline: usePipelineRepository(event),

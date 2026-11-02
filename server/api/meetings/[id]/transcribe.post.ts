@@ -1,5 +1,6 @@
 import type { Meeting, TranscriptionStepResponse } from '#shared/types/meeting'
 import { useMeetingRepository, usePipelineRepository, useSlotRepository } from '../../../utils/db'
+import { refuseOnPublicDemo } from '../../../utils/demo-meeting'
 import { conflict, notFound, requireMeetingId } from '../../../utils/http'
 import { useAudioStore } from '../../../utils/storage'
 import { useTranscriber } from '../../../utils/transcription'
@@ -22,6 +23,7 @@ import { advanceTranscription } from '../../../utils/transcription/steps'
  */
 export default defineEventHandler(async (event): Promise<{ meeting: Meeting } | TranscriptionStepResponse> => {
   const id = requireMeetingId(event)
+  refuseOnPublicDemo(event, id)
   const outcome = await advanceTranscription(id, {
     meetings: useMeetingRepository(event),
     pipeline: usePipelineRepository(event),

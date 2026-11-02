@@ -1,6 +1,7 @@
 import type { SearchIndexStatus } from '#shared/types/meeting'
 import { transcriptionFinished } from '#shared/utils/meeting'
 import { useMeetingRepository, useTranscriptIndexRepository, useTranscriptRepository } from '../../../utils/db'
+import { refuseOnPublicDemo } from '../../../utils/demo-meeting'
 import { conflict, notFound, requireMeetingId, retryLater } from '../../../utils/http'
 import { useEmbedder } from '../../../utils/qa'
 import { EmbeddingError, EmbeddingInputTooLongError } from '../../../utils/qa/embedder'
@@ -14,6 +15,7 @@ import { indexingInFlight } from '../../../utils/qa/in-flight'
  */
 export default defineEventHandler(async (event): Promise<{ index: SearchIndexStatus }> => {
   const id = requireMeetingId(event)
+  refuseOnPublicDemo(event, id)
 
   let run = indexingInFlight.get(id)
   if (!run) {
