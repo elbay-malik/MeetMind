@@ -31,7 +31,7 @@ await setup({
 const db = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 
-const ANY_CHANGING_ROUTE = ['complete', 'transcribe', 'summarize', 'search-index'] as const
+const ANY_CHANGING_ROUTE = ['complete', 'transcribe', 'summarize', 'search-index', 'advance'] as const
 
 /** A distinctive line for retrieval to find, as in ask-api.spec.ts. */
 const DISCUSSION: TranscriptSegment[] = Array.from({ length: 40 }, (_, i) => ({
@@ -187,8 +187,34 @@ describe('the demo meeting', () => {
     expect(await everythingStored()).toEqual(before)
   })
 
-  it.each(['', '/transcript', '/summary', '/search-index', '/audio'])('still serves GET /api/meetings/:id%s', async (path) => {
+  it.each(['', '/transcript', '/summary', '/search-index', '/audio', '/pipeline'])('still serves GET /api/meetings/:id%s', async (path) => {
     expect((await fetch(`/api/meetings/${demoId}${path}`)).status).toBe(200)
+  })
+
+  it('says how far it has got to anyone, writing nothing, not even a slot', async () => {
+    const provider = await readdir(join(dataDir, 'db', 'slots')).then(names => names.sort()).catch(() => [])
+    const before = await everythingStored()
+    const res = await fetch(`/api/meetings/${demoId}/pipeline`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ status: 'ready', next: 'done', index: { state: 'complete' } })
+    expect(await everythingStored()).toEqual(before)
+    expect(await readdir(join(dataDir, 'db', 'slots')).then(names => names.sort()).catch(() => [])).toEqual(provider)
+  })
+
+  // The answer a read gives on a demo that is not finished is still only a read: telling a
+  // visitor the next step could go is not taking it.
+  it('reads the same for the id in capitals, and is not moved by being read while it has work to do', async () => {
+    const key = `summaries/${demoId}`
+    const saved = await db.getItem(key)
+    const row = await db.getItem<Meeting>(`meetings/${demoId}`)
+    await db.setItem(`meetings/${demoId}`, { ...row!, status: 'uploaded' })
+    const before = await everythingStored()
+    const res = await fetch(`/api/meetings/${demoId.toUpperCase()}/pipeline`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ status: 'uploaded', next: 'continue' })
+    expect(await everythingStored()).toEqual(before)
+    await db.setItem(`meetings/${demoId}`, row as never)
+    await db.setItem(key, saved as never)
   })
 
   it.each(['', '/progress'])('still renders /meetings/:id%s', async (path) => {
