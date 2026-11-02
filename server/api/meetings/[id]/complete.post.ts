@@ -1,6 +1,7 @@
 import type { Meeting } from '#shared/types/meeting'
 import { useAudioStore } from '../../../utils/storage'
 import { useMeetingRepository } from '../../../utils/db'
+import { refuseOnPublicDemo } from '../../../utils/demo-meeting'
 import { conflict, notFound, requireMeetingId } from '../../../utils/http'
 import { failMeetingUpload, inspectStoredAudio } from '../../../utils/verify-upload'
 
@@ -12,6 +13,7 @@ import { failMeetingUpload, inspectStoredAudio } from '../../../utils/verify-upl
  */
 export default defineEventHandler(async (event): Promise<{ meeting: Meeting }> => {
   const id = requireMeetingId(event)
+  refuseOnPublicDemo(event, id)
   const repo = useMeetingRepository(event)
   const store = useAudioStore(event)
 

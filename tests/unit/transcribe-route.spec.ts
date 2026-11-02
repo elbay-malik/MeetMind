@@ -10,6 +10,7 @@ const advance = vi.hoisted(() => vi.fn<() => Promise<TranscriptionOutcome>>())
 vi.mock('../../server/utils/transcription/steps', () => ({ advanceTranscription: advance }))
 vi.mock('../../server/utils/transcription', () => ({ useTranscriber: () => ({}) }))
 vi.mock('../../server/utils/storage', () => ({ useAudioStore: () => ({}) }))
+vi.mock('../../server/utils/demo-meeting', () => ({ refuseOnPublicDemo: () => {} }))
 vi.mock('../../server/utils/db', () => ({
   useMeetingRepository: () => ({}),
   usePipelineRepository: () => ({}),
