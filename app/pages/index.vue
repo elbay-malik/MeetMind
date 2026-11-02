@@ -238,7 +238,7 @@ async function uploadAndContinue() {
           color="error"
           variant="subtle"
           icon="i-lucide-triangle-alert"
-          title="Invite code not accepted"
+          title="Could not continue"
           :description="inviteError"
         />
       </form>
