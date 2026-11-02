@@ -44,6 +44,11 @@ export default defineNuxtConfig({
     // (ADR-0012). One request a minute fits the free tier's 8,000 tokens per
     // minute for gpt-oss-120b. Lower only with a higher Groq tier.
     groqChatIntervalMs: 60_000, // NUXT_GROQ_CHAT_INTERVAL_MS
+    // Minimum gap between embedding requests of indexing steps across every server
+    // instance, through the slot ledger (ADR-0012). The daily allocation is what
+    // binds (ADR-0014), and a 429 blocks the slot until it resets; this only keeps
+    // many meetings indexing at once from arriving together.
+    embedIntervalMs: 1_000, // NUXT_EMBED_INTERVAL_MS
     // How long a question waits for its Groq slot before it is refused with a
     // 429 and Retry-After. Short, so a question never queues behind a whole
     // extraction and the queue stays bounded (ADR-0012).
