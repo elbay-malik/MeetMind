@@ -661,6 +661,42 @@ describe('the marker', () => {
     expect(again.texts()).toEqual(after.filter((w, i) => w.contentHash !== plan[i]!.contentHash).map(w => w.text))
   })
 
+  it('does not call an index done when its last step lost the claim', async () => {
+    const id = newId()
+    await meetingWith(id, transcript(30))
+    let lost = false
+    const pipeline = {
+      ...repos().pipeline,
+      finishIndex: async () => {
+        lost = true
+        return 'lost' as const
+      },
+    }
+    const deps = depsWith(scripted().embedder, { pipeline })
+    let outcome = await advanceIndexing(id, deps)
+    for (let i = 0; i < 50 && !lost; i++) outcome = await advanceIndexing(id, deps)
+    expect(lost).toBe(true)
+    expect(outcome).toMatchObject({ kind: 'progress', next: 'wait' })
+  })
+
+  it('removes only its own meeting\'s windows when a shorter transcript finishes', async () => {
+    const other = newId()
+    await meetingWith(other, transcript(100, 'other'))
+    const { embedder } = scripted()
+    expect((await drive(other, depsWith(embedder))).at(-1)!.kind).toBe('done')
+    const keys = await keysOf(other)
+
+    const id = newId()
+    await meetingWith(id, transcript(100))
+    expect((await drive(id, depsWith(embedder))).at(-1)!.kind).toBe('done')
+    await repos().transcripts.replaceForMeeting(id, transcript(30))
+    expect((await drive(id, depsWith(embedder))).at(-1)!.kind).toBe('done')
+
+    expect((await keysOf(id)).length).toBe((await planWindows(transcript(30))).length)
+    expect(await keysOf(other)).toEqual(keys)
+    expect(readyWindowCount(await stateOf(other), 'model-a')).toBe(keys.length)
+  })
+
   it('goes round again when the last step finds the windows do not add up, and stops going round', async () => {
     const id = newId()
     const segments = transcript(30)
@@ -677,10 +713,18 @@ describe('the marker', () => {
     // A driver whose last step always refuses cannot circle for ever.
     const stubborn = newId()
     await meetingWith(stubborn, segments)
-    const refusing = { ...repos().pipeline, finishIndex: async () => 'changed' as const }
+    let lastSteps = 0
+    const refusing = {
+      ...repos().pipeline,
+      finishIndex: async () => {
+        lastSteps++
+        return 'changed' as const
+      },
+    }
     const stuck = await drive(stubborn, depsWith(scripted().embedder, { pipeline: refusing }))
     expect(stuck.at(-1)).toMatchObject({ kind: 'failed', statusCode: 500, resumes: true })
     expect(stuck.filter(o => o.kind === 'progress').length).toBeLessThanOrEqual(2 * (MAX_INDEX_RESTARTS + 1))
+    expect(lastSteps).toBe(MAX_INDEX_RESTARTS + 1)
     expect((await runOf(stubborn))!.retryAt!.getTime()).toBeGreaterThan(now())
   })
 })
@@ -777,6 +821,29 @@ describe('quota', () => {
     await clearBlock()
   })
 
+  it('tells a second caller to wait while a step is live after the limit has reset, not that the limit still holds', async () => {
+    await clearBlock()
+    const id = newId()
+    await meetingWith(id, transcript(100))
+    const first = scripted()
+    first.queue(new EmbeddingError(DAILY_LIMIT_MESSAGE, 429, false, new Date(Date.now() + 1)))
+    expect(await advanceIndexing(id, depsWith(first.embedder))).toMatchObject({ kind: 'failed', statusCode: 429 })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    await clearBlock()
+
+    const gate = deferred()
+    first.queue(() => gate.promise)
+    const live = advanceIndexing(id, depsWith(first.embedder))
+    await vi.waitFor(() => expect(first.calls).toHaveLength(2))
+    expect((await runOf(id))!.lastError).toBe(DAILY_LIMIT_MESSAGE)
+
+    const second = scripted()
+    expect(await advanceIndexing(id, depsWith(second.embedder))).toMatchObject({ kind: 'progress', next: 'wait' })
+    expect(second.calls).toHaveLength(0)
+    gate.resolve()
+    expect(await live).toMatchObject({ kind: 'progress' })
+  })
+
   it('does not block the account for a day over a refusal just after the reset', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
@@ -852,6 +919,8 @@ describe('quota', () => {
     expect(outcome.kind === 'progress' && outcome.retryAt!.getTime()).toBeGreaterThan(Date.now())
     expect(calls).toHaveLength(0)
     expect((await runOf(id))!.attempts).toBe(0)
+    // Parked as well, so another tab asking is answered without taking a claim.
+    expect((await runOf(id))!.retryAt).toEqual(outcome.kind === 'progress' && outcome.retryAt)
   })
 
   it('does not read a pacing wait as the daily limit once that has reset', async () => {

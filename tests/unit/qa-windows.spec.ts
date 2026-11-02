@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { estimateTokens } from '../../server/utils/summary/plan'
 import { planWindows, planWindowSlice, windowOver, WINDOW_TARGET_MS, WINDOW_TOKEN_BUDGET } from '../../server/utils/qa/windows'
 import type { TranscriptSegment } from '../../shared/types/meeting'
 
@@ -42,6 +43,19 @@ describe('planWindows', () => {
       // …and not by more than the one segment that crossed the line.
       expect(w.endMs - w.startMs).toBeLessThan(20_000 + 5_000)
     }
+  })
+
+  it('closes a window that spans exactly the target, and not a segment later', async () => {
+    const segments = [0, 1, 2].map(i => ({ idx: i, startMs: i * 10_000, endMs: (i + 1) * 10_000, text: `line ${i}` }))
+    const windows = await planWindows(segments, { targetMs: 20_000 })
+    expect(windows.map(w => [w.firstSegmentIdx, w.lastSegmentIdx])).toEqual([[0, 1], [1, 2]])
+  })
+
+  it('takes a segment that brings a window to exactly the token budget, and no more', async () => {
+    const segments = transcript(3)
+    const tokenBudget = estimateTokens(segments[0]!.text) + estimateTokens(segments[1]!.text)
+    const windows = await planWindows(segments, { targetMs: 10 * 60_000, tokenBudget })
+    expect(windows.map(w => [w.firstSegmentIdx, w.lastSegmentIdx])).toEqual([[0, 1], [1, 2]])
   })
 
   it('overlaps consecutive windows by exactly one segment', async () => {

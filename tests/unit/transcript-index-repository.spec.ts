@@ -341,6 +341,10 @@ describe('supabase transcript index repository', () => {
     it('refuses an unusable answer rather than reading it as a state', async () => {
       stub(() => [])
       await expect(repo.readState('m1', 'm')).rejects.toThrow(/unusable row/)
+      stub(() => [{ ...row, current_hash: null }])
+      await expect(repo.readState('m1', 'm')).rejects.toThrow(/unusable row/)
+      stub(() => [{ ...row, stored_windows: null }])
+      await expect(repo.readState('m1', 'm')).rejects.toThrow(/unusable row/)
     })
   })
 
@@ -414,6 +418,7 @@ describe('readyWindowCount', () => {
     ['a window has gone', { ...finished, storedWindows: 4, storedForModel: 4 }],
     ['a window has appeared past the plan', { ...finished, storedWindows: 6, storedForModel: 6 }],
     ['another model\'s window is stored', { ...finished, storedWindows: 6 }],
+    ['another model\'s window makes up the count', { ...finished, storedForModel: 4 }],
   ])('is null when %s', (_name, state) => {
     expect(readyWindowCount(state, 'm')).toBeNull()
   })
