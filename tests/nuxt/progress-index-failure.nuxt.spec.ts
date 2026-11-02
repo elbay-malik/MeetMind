@@ -58,3 +58,20 @@ describe('the progress page when the provider\'s daily limit stops indexing', ()
     expect(page.findAll('button').some(b => b.text().includes('Update the index'))).toBe(true)
   })
 })
+
+describe('the progress page when the index status cannot be read', () => {
+  const BROKEN = '1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b'
+  registerEndpoint(`/api/meetings/${BROKEN}`, () => ({ meeting: { ...meeting, id: BROKEN } }))
+  registerEndpoint(`/api/meetings/${BROKEN}/transcript`, () => ({ segments: [] }))
+  registerEndpoint(`/api/meetings/${BROKEN}/search-index`, (event: { node: { res: { statusCode: number } } }) => {
+    event.node.res.statusCode = 500
+    return { error: true, statusCode: 500, statusMessage: 'Server Error' }
+  })
+
+  it('says that, rather than blaming transcription that has finished', async () => {
+    const page = await mountSuspended(ProgressPage, { route: `/meetings/${BROKEN}/progress` })
+    await flushPromises()
+    expect(page.text()).toContain('Could not check whether this meeting can be asked questions')
+    expect(page.text()).not.toContain('Available once transcription has finished')
+  })
+})

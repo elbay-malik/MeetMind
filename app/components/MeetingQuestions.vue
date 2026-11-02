@@ -8,7 +8,7 @@ const emit = defineEmits<{
   seek: [startMs: number, segmentIdx: number]
 }>()
 
-const { data: indexData, refresh: refreshIndex } = await useFetch<{ index: SearchIndexStatus }>(
+const { data: indexData, error: indexUnread, refresh: refreshIndex } = await useFetch<{ index: SearchIndexStatus }>(
   () => `/api/meetings/${props.meetingId}/search-index`,
 )
 const index = computed(() => indexData.value?.index ?? null)
@@ -117,8 +117,16 @@ const status = computed(() => {
       </h2>
     </template>
 
+    <!-- First: with no status to read, every reason below would be a guess. -->
     <p
-      v-if="!index || index.state === 'unavailable'"
+      v-if="indexUnread"
+      class="text-sm text-muted"
+    >
+      Could not check whether this meeting can be asked questions. Reload the page to try again.
+    </p>
+
+    <p
+      v-else-if="!index || index.state === 'unavailable'"
       class="text-sm text-muted"
     >
       Questions become available once the transcript is ready.

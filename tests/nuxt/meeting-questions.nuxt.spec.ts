@@ -55,3 +55,18 @@ describe('the question form at the provider\'s daily limit', () => {
     expect(wrapper.text()).not.toMatch(/Questions can be asked again at/)
   })
 })
+
+describe('the question card when the index status cannot be read', () => {
+  const BROKEN = '1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b'
+  registerEndpoint(`/api/meetings/${BROKEN}/search-index`, (event: { node: { res: { statusCode: number } } }) => {
+    event.node.res.statusCode = 500
+    return { error: true, statusCode: 500, statusMessage: 'Server Error' }
+  })
+
+  it('says that, rather than blaming a transcript that may be finished', async () => {
+    const wrapper = await mountSuspended(MeetingQuestions, { props: { meetingId: BROKEN } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Could not check whether this meeting can be asked questions')
+    expect(wrapper.text()).not.toContain('once the transcript is ready')
+  })
+})
