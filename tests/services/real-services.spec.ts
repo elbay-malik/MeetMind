@@ -2,8 +2,10 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { AwsClient } from 'aws4fetch'
-import { EMBEDDING_DIMENSIONS, EmbeddingInputTooLongError } from '../../server/utils/qa/embedder'
+import { EMBEDDING_DIMENSIONS, EmbeddingInputTooLongError, MAX_BATCH_TOKENS, planEmbeddingBatches } from '../../server/utils/qa/embedder'
+import { INDEX_BATCH } from '../../server/utils/qa/steps'
 import { createWorkersAiEmbedder, WORKERS_AI_EMBEDDING_MODEL } from '../../server/utils/qa/workers-ai'
+import { estimateTokens } from '../../server/utils/summary/plan'
 import { createGroqTranscriber } from '../../server/utils/transcription/groq'
 import { normalizeSegments } from '../../server/utils/transcription/normalize'
 import { INITIAL_SCAN, parseSegments, replyDuration, scanWindow } from '../../server/utils/transcription/reply-scanner'
@@ -559,6 +561,135 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('step-wi
   })
 })
 
+// ---------------------------------------------------- Step-wise search indexing
+describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('step-wise indexing (ADR-0012, step 8)', () => {
+  // The stub embedder stands in for the provider: this is about the marker, the fence
+  // and the vectors going through the real rpcs, and it spends no quota. Needs
+  // 20261103120000_search_index_steps.sql applied, which until then fails here.
+  async function realDrivers() {
+    const { createClient } = await import('@supabase/supabase-js')
+    const { createSupabaseMeetingRepository } = await import('../../server/utils/db/supabase')
+    const { createSupabasePipelineRepository } = await import('../../server/utils/db/pipeline-supabase')
+    const { createSupabaseSlotRepository } = await import('../../server/utils/db/slots-supabase')
+    const { createSupabaseTranscriptRepository } = await import('../../server/utils/db/transcripts-supabase')
+    const { createSupabaseTranscriptIndexRepository } = await import('../../server/utils/db/windows-supabase')
+    const { createStubEmbedder } = await import('../../server/utils/qa/stub')
+    const options = { url: process.env.NUXT_SUPABASE_URL!, serviceKey: process.env.NUXT_SUPABASE_SERVICE_KEY! }
+    return {
+      client: createClient(options.url, options.serviceKey, { auth: { persistSession: false } }),
+      transcripts: createSupabaseTranscriptRepository(options),
+      deps: {
+        meetings: createSupabaseMeetingRepository(options),
+        pipeline: createSupabasePipelineRepository(options),
+        transcripts: createSupabaseTranscriptRepository(options),
+        index: createSupabaseTranscriptIndexRepository(options),
+        slots: createSupabaseSlotRepository(options),
+        embedder: createStubEmbedder(),
+        embedIntervalMs: 0,
+      },
+    }
+  }
+
+  const lines = (count: number) => Array.from({ length: count }, (_, i) => ({
+    idx: i, startMs: i * 5_000, endMs: i * 5_000 + 4_800, text: `Verify line ${i} about subject ${i}.`,
+  }))
+
+  it('drives a transcript into the real tables, with the plan the whole transcript gives, and marks it complete', { timeout: 60_000 }, async () => {
+    const { client, deps, transcripts } = await realDrivers()
+    const { advanceIndexing } = await import('../../server/utils/qa/steps')
+    const { planWindows } = await import('../../server/utils/qa/windows')
+    const { readyWindowCount } = await import('../../server/utils/db/windows')
+
+    const id = crypto.randomUUID()
+    const model = deps.embedder.model
+    const segments = lines(220)
+    try {
+      expect((await client.from('meetings').insert({
+        id, title: 'verify', status: 'ready', source_file_name: 'a.mp4', source_bytes: 1,
+        audio_key: `verify-${id}/audio.ogg`, audio_bytes: 1,
+      })).error).toBeNull()
+      await transcripts.replaceForMeeting(id, segments)
+
+      const empty = await deps.index.readState(id, model)
+      expect(empty, 'is the search index steps migration applied?').toMatchObject({ marker: null, segmentCount: 220, storedWindows: 0 })
+      expect(readyWindowCount(empty, model)).toBeNull()
+
+      // The first batch: stored, the marker incomplete, a question would be refused.
+      const first = await advanceIndexing(id, deps)
+      expect(first).toMatchObject({ kind: 'progress', next: 'continue' })
+      const partway = await deps.index.readState(id, model)
+      expect(partway.marker).toMatchObject({ complete: false, model, windowCount: 0, textHash: partway.transcriptHash })
+      expect(partway.storedForModel).toBeGreaterThan(0)
+      expect(readyWindowCount(partway, model)).toBeNull()
+
+      let outcome = first
+      for (let i = 0; i < 20 && outcome.kind === 'progress'; i++) outcome = await advanceIndexing(id, deps)
+      const plan = await planWindows(segments)
+      expect(outcome).toMatchObject({ kind: 'done', index: { state: 'ready', windowCount: plan.length, indexedCount: plan.length, model } })
+
+      // Hash for hash, through PostgREST, which reads what upsert_windows stored.
+      expect(await deps.index.listKeys(id)).toEqual(plan.map(w => ({ idx: w.idx, contentHash: w.contentHash, model })))
+      const finished = await deps.index.readState(id, model)
+      expect(finished.marker).toEqual({ complete: true, model, windowCount: plan.length, textHash: finished.transcriptHash })
+      expect(readyWindowCount(finished, model)).toBe(plan.length)
+
+      // The vectors went in as vectors: the search function finds its own text.
+      const [nearest] = await deps.index.search(id, await deps.embedder.embedQuery(plan[2]!.text), { model, limit: 1 })
+      expect(nearest!.idx).toBe(2)
+      expect(nearest!.contentHash).toBe(plan[2]!.contentHash)
+
+      // A replaced transcript is noticed from the marker alone.
+      await transcripts.replaceForMeeting(id, lines(220).map(s => s.idx === 7 ? { ...s, text: 'Said differently.' } : s))
+      expect(readyWindowCount(await deps.index.readState(id, model), model)).toBeNull()
+    }
+    finally {
+      await client.from('meetings').delete().eq('id', id)
+    }
+  })
+
+  it('refuses a stale token, and a delete leaves no marker, window or run behind', { timeout: 60_000 }, async () => {
+    const { client, deps, transcripts } = await realDrivers()
+    const { hashedTokenVector } = await import('../../server/utils/qa/stub')
+    const id = crypto.randomUUID()
+    const model = deps.embedder.model
+    const window = {
+      idx: 0, firstSegmentIdx: 0, lastSegmentIdx: 2, startMs: 0, endMs: 14_800, text: 'A window.',
+      contentHash: 'a'.repeat(64), model, embedding: hashedTokenVector('A window.'),
+    }
+    try {
+      expect((await client.from('meetings').insert({
+        id, title: 'verify', status: 'ready', source_file_name: 'a.mp4', source_bytes: 1,
+        audio_key: `verify-${id}/audio.ogg`, audio_bytes: 1,
+      })).error).toBeNull()
+      await transcripts.replaceForMeeting(id, lines(3))
+      const { transcriptHash } = await deps.index.readState(id, model)
+      const batch = { windows: [window], cursor: { at: 1 }, textHash: transcriptHash, model }
+
+      const stale = (await deps.pipeline.claimStep(id, 'search_index', { status: 'ready', leaseMs: 1 }))!
+      await new Promise(resolve => setTimeout(resolve, 20))
+      const live = (await deps.pipeline.claimStep(id, 'search_index', { status: 'ready', leaseMs: 60_000 }))!
+      expect(live.attempts).toBe(2)
+      expect(await deps.pipeline.upsertWindows(id, stale.token, batch)).toBe(false)
+      expect(await deps.pipeline.finishIndex(id, stale.token, { textHash: transcriptHash, model, windowCount: 1 })).toBe('lost')
+      expect(await deps.index.listKeys(id)).toEqual([])
+
+      expect(await deps.pipeline.upsertWindows(id, live.token, batch)).toBe(true)
+      const finishing = (await deps.pipeline.claimStep(id, 'search_index', { status: 'ready', leaseMs: 60_000 }))!
+      expect(await deps.pipeline.finishIndex(id, finishing.token, { textHash: 'b'.repeat(64), model, windowCount: 1 })).toBe('changed')
+      expect(await deps.pipeline.finishIndex(id, finishing.token, { textHash: transcriptHash, model, windowCount: 1 })).toBe('complete')
+
+      expect((await client.from('meetings').delete().eq('id', id)).error).toBeNull()
+      expect((await client.from('meeting_index_state').select().eq('meeting_id', id)).data).toEqual([])
+      expect(await deps.index.listKeys(id)).toEqual([])
+      expect(await deps.pipeline.listRuns(id)).toEqual([])
+      expect(await deps.pipeline.upsertWindows(id, finishing.token, batch)).toBe(false)
+    }
+    finally {
+      await client.from('meetings').delete().eq('id', id)
+    }
+  })
+})
+
 // ----------------------------------------------------------------------- Groq
 /**
  * The probe needs a native ffmpeg and the committed fixture. Build it up front
@@ -706,6 +837,44 @@ describe.skipIf(!has('NUXT_WORKERS_AI_ACCOUNT_ID', 'NUXT_WORKERS_AI_API_TOKEN'))
     const client = embedder()
     const [, second] = await client.embedDocuments(['An unrelated first text.', 'The second text in the batch.'])
     expect(cosine(await client.embedQuery('The second text in the batch.'), second!)).toBeGreaterThan(0.999)
+  })
+
+  it('takes one indexing step\'s largest batch as one request, whatever fills it', async () => {
+    // ADR-0012 step 8: at most INDEX_BATCH windows and MAX_BATCH_TOKENS. A step's batch
+    // is split by the same rule the driver splits by, so what it sends is sent whole,
+    // once. About 30 neurons.
+    const real = globalThis.fetch
+    let requests = 0
+    const counting: typeof fetch = (...args) => {
+      requests++
+      return real(...args)
+    }
+    globalThis.fetch = counting
+    try {
+      const step = createWorkersAiEmbedder({
+        accountId: process.env.NUXT_WORKERS_AI_ACCOUNT_ID!,
+        apiToken: process.env.NUXT_WORKERS_AI_API_TOKEN!,
+        maxAttempts: 1,
+      })
+      const atTheBudget = (i: number) => Array.from({ length: 600 }, (_, k) => `word${i}x${k}`).join(' ')
+      const windows = Array.from({ length: INDEX_BATCH }, (_, i) => atTheBudget(i))
+      const [batch] = planEmbeddingBatches(windows, text => text)
+      // The premise: these are big enough that the tokens bind before the count.
+      expect(batch!.length).toBeLessThan(INDEX_BATCH)
+      expect(batch!.reduce((sum, text) => sum + estimateTokens(text), 0)).toBeLessThanOrEqual(MAX_BATCH_TOKENS)
+
+      const vectors = await step.embedDocuments(batch!)
+      expect(requests).toBe(1)
+      expect(vectors).toHaveLength(batch!.length)
+      for (const vector of vectors) expect(vector).toHaveLength(EMBEDDING_DIMENSIONS)
+
+      const short = await step.embedDocuments(Array.from({ length: INDEX_BATCH }, (_, i) => `A short window, number ${i}.`))
+      expect(requests).toBe(2)
+      expect(short).toHaveLength(INDEX_BATCH)
+    }
+    finally {
+      globalThis.fetch = real
+    }
   })
 
   it('refuses an input over 8,192 tokens rather than truncating it', async () => {
