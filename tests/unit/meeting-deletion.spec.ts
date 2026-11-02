@@ -8,7 +8,6 @@ import {
   deleteMeeting,
   DeletionIncompleteError,
   deletionBlocker,
-  INDEXING_RETRY_AFTER_SEC,
   UPLOAD_GRACE_SEC,
 } from '../../server/utils/meeting-deletion'
 import { UPLOAD_URL_TTL_SEC } from '../../server/utils/storage-budget'
@@ -156,7 +155,6 @@ describe('deleteMeeting', () => {
     meetings: MeetingRepository
     deleteCalls: Array<{ id: string, expected: Pick<Meeting, 'status' | 'updatedAt'> }>
     removeCalls: Array<{ meetingId: string, audioKey: string }>
-    indexingRuns: Map<string, Promise<unknown>>
     deps: Parameters<typeof deleteMeeting>[1]
   }
 
@@ -178,7 +176,6 @@ describe('deleteMeeting', () => {
     const h = {
       deleteCalls: [],
       removeCalls: [],
-      indexingRuns: new Map(),
     } as unknown as Harness
     h.meetings = {
       kind: 'local',
@@ -203,25 +200,10 @@ describe('deleteMeeting', () => {
         h.removeCalls.push({ meetingId, audioKey })
         await options.removeData?.(meetingId, audioKey)
       },
-      indexingRuns: h.indexingRuns,
       now: () => options.now ?? later,
     }
     return h
   }
-
-  function deferred() {
-    let resolve!: () => void
-    let reject!: (err: unknown) => void
-    const promise = new Promise<void>((res, rej) => {
-      resolve = res
-      reject = rej
-    })
-    return { promise, resolve, reject }
-  }
-
-  // Lets every already-queued continuation run, so "not called yet" is
-  // asserted after deleteMeeting has had every chance to get there.
-  const settle = () => new Promise(resolve => setTimeout(resolve, 0))
 
   it('deletes the row, then removes its data under the key the row records', async () => {
     const h = harness()
@@ -284,18 +266,29 @@ describe('deleteMeeting', () => {
     expect(order).toEqual(['meeting', 'runs'])
   })
 
-  // Indexing holds no claim deletionBlocker can see on a 'ready' row, so the
-  // in-process registry is the only thing standing between a running embed
-  // and windows written back after the delete.
-  it('refuses while an indexing run is already in flight, deleting nothing', async () => {
-    const h = harness()
-    // Already settled, so that if the check were dropped the late-run wait
-    // would not hang the test: it fails on the assertions instead.
-    h.indexingRuns.set(id, Promise.resolve())
+  // Indexing was the one stage with no claim on a 'ready' row, so a map in this
+  // process stood between a running embed and windows written back after the delete.
+  // It is a stage like any other now: the lease is what refuses, on every isolate.
+  it('refuses while an indexing step holds a live lease, deleting nothing', async () => {
+    const runs: PipelineRun[] = [{
+      stage: 'search_index', runId: 'r', cursor: {}, attempts: 1, lastError: null, retryAt: null,
+      stepLeaseUntil: new Date(later + 45_000),
+    }]
+    const h = harness({ runs })
     const outcome = await deleteMeeting(id, h.deps)
-    expect(outcome).toMatchObject({ kind: 'blocked', retryAfterSec: INDEXING_RETRY_AFTER_SEC })
+    expect(outcome).toMatchObject({ kind: 'blocked', retryAfterSec: 45 })
     expect(h.deleteCalls).toHaveLength(0)
     expect(h.removeCalls).toHaveLength(0)
+  })
+
+  it('deletes an indexing run parked between steps, however long its park', async () => {
+    const runs: PipelineRun[] = [{
+      stage: 'search_index', runId: 'r', cursor: {}, attempts: 0, lastError: 'The free daily limit', stepLeaseUntil: null,
+      retryAt: new Date(later + 20 * 60 * MIN),
+    }]
+    const h = harness({ runs })
+    await expect(deleteMeeting(id, h.deps)).resolves.toEqual({ kind: 'deleted' })
+    expect(h.removeCalls).toEqual([{ meetingId: id, audioKey: rowAudioKey }])
   })
 
   // The fenced delete lost: the row changed after it was read (e.g. a claim
@@ -308,54 +301,6 @@ describe('deleteMeeting', () => {
     // The fence is only as good as what it is fenced on: exactly the row as read.
     expect(h.deleteCalls).toEqual([{ id, expected: { status: 'failed', updatedAt: stored.updatedAt } }])
     expect(h.removeCalls).toHaveLength(0)
-  })
-
-  describe('an indexing run registered after the in-flight check', () => {
-    // The race the late-run wait exists for: a run registered between the
-    // check and the row's removal would write its windows after removeData
-    // cleared them. Registering it from inside the fake delete puts it in
-    // exactly that gap.
-    it('is awaited before the data is removed', async () => {
-      const run = deferred()
-      const h = harness({ onDelete: hh => hh.indexingRuns.set(id, run.promise) })
-      const pending = deleteMeeting(id, h.deps)
-      await settle()
-      expect(h.deleteCalls).toHaveLength(1)
-      expect(h.removeCalls).toHaveLength(0)
-
-      run.resolve()
-      await expect(pending).resolves.toEqual({ kind: 'deleted' })
-      expect(h.removeCalls).toEqual([{ meetingId: id, audioKey: rowAudioKey }])
-    })
-
-    // On Supabase the late run fails on the foreign key once the row is gone;
-    // that failure is expected and must not abort the cleanup.
-    it('is awaited even when it rejects, and the cleanup still runs', async () => {
-      const run = deferred()
-      const h = harness({ onDelete: hh => hh.indexingRuns.set(id, run.promise) })
-      const pending = deleteMeeting(id, h.deps)
-      await settle()
-      expect(h.removeCalls).toHaveLength(0)
-
-      run.reject(new Error('foreign key violation'))
-      await expect(pending).resolves.toEqual({ kind: 'deleted' })
-      expect(h.removeCalls).toEqual([{ meetingId: id, audioKey: rowAudioKey }])
-    })
-
-    // The sweep after a failed delete removes windows too, so a run that read
-    // the row before it went would write them straight back after the sweep.
-    it('is awaited before sweeping leftovers of a row that is already gone', async () => {
-      const run = deferred()
-      const h = harness({ stored: null })
-      h.indexingRuns.set(id, run.promise)
-      const pending = deleteMeeting(id, h.deps)
-      await settle()
-      expect(h.removeCalls).toHaveLength(0)
-
-      run.resolve()
-      await expect(pending).resolves.toEqual({ kind: 'not-found' })
-      expect(h.removeCalls).toEqual([{ meetingId: id, audioKey: audioObjectKey(id) }])
-    })
   })
 
   // The route turns DeletionIncompleteError into "repeat the request"; any

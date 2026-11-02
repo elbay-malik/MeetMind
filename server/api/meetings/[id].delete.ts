@@ -2,7 +2,6 @@ import { requireAdmin } from '../../utils/admin'
 import { useMeetingRepository, usePipelineRepository } from '../../utils/db'
 import { conflict, notFound, requireMeetingId } from '../../utils/http'
 import { deleteMeeting, DeletionIncompleteError, removeMeetingData } from '../../utils/meeting-deletion'
-import { indexingInFlight } from '../../utils/qa/in-flight'
 
 /**
  * Delete a meeting and everything stored for it: the audio object, the row, the
@@ -29,7 +28,6 @@ export default defineEventHandler(async (event) => {
       meetings: useMeetingRepository(event),
       pipeline: usePipelineRepository(event),
       removeData: (meetingId, audioKey) => removeMeetingData(event, meetingId, audioKey),
-      indexingRuns: indexingInFlight,
     })
   }
   catch (err) {
