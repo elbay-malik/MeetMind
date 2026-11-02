@@ -29,6 +29,9 @@ const OVER_CONTEXT_WORDING = /max context reached/i
 /** One input over MAX_INPUT_TOKENS, with its real count. Also code 8007. */
 const SEQUENCE_TOO_LONG = /sequence too long:\s*(\d+)/i
 
+/** The provider's own timeout: codes 3007 and 3008 on its error page. Not seen here. */
+const PROVIDER_TIMEOUT_STATUS = 408
+
 export interface WorkersAiEmbedderOptions {
   accountId: string
   apiToken: string
@@ -158,7 +161,7 @@ function describeRefusal(
   if (status === 401 || status === 403) {
     return new EmbeddingError('The embedding service rejected our credentials.', 502, false)
   }
-  if (status >= 500) {
+  if (status >= 500 || status === PROVIDER_TIMEOUT_STATUS) {
     return new EmbeddingError(`Embedding service is unavailable (HTTP ${status}).`, 502, true)
   }
   const code = codes.find(c => typeof c === 'number')
