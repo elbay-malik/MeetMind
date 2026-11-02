@@ -322,10 +322,27 @@ describe('failures', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it.each([400, 404, 408, 422])('does not retry any other refusal (HTTP %i)', async (status) => {
+  it.each([400, 404, 422])('does not retry any other refusal (HTTP %i)', async (status) => {
     const calls = stubWorkersAi(() => refusal(status, 5007, 'No such model'))
     await expect(embedder.embedQuery('x')).rejects.toMatchObject({ retryable: false })
     expect(calls).toHaveLength(1)
+  })
+
+  // Cloudflare's error page lists both as 408. Our own timeout is retried, so the
+  // provider's is too. Not seen against the real API.
+  it.each([
+    [3007, 'Timeout'],
+    [3008, 'Aborted'],
+  ])('retries a provider timeout once, then succeeds (code %i)', async (code, message) => {
+    const calls = stubWorkersAi((sent, call) => call === 1 ? refusal(408, code, message) : embeddingsFor(sent))
+    expect(await embedder.embedQuery('x')).toHaveLength(EMBEDDING_DIMENSIONS)
+    expect(calls).toHaveLength(2)
+  })
+
+  it('gives up after the configured attempts on a persistent provider timeout', async () => {
+    const calls = stubWorkersAi(() => refusal(408, 3007, 'Timeout'))
+    await expect(embedder.embedQuery('x')).rejects.toMatchObject({ statusCode: 502, retryable: true })
+    expect(calls).toHaveLength(2)
   })
 
   it('retries a server error once, then succeeds', async () => {

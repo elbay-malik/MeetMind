@@ -159,7 +159,9 @@ of short questions. Groq should bind first, but anyone with a link can spend thi
   "Try again shortly", with no hold. Nor is it retried in place.
 
 Every other failure keeps the shape it had. A 5xx or a network failure is retried once, and
-any other refusal is final. No message carries the token or the account id, including text
+any other refusal is final. A 408 is the one addition to what is retried: the error page lists
+Timeout (3007) and Aborted (3008) under it, none has been seen against the real API, and our
+own timeout was already retried. No message carries the token or the account id, including text
 the provider echoes back, because these messages reach visitors.
 
 ### 6. The migration deletes the rows and changes the column.
