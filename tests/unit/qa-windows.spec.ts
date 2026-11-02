@@ -22,6 +22,19 @@ describe('planWindows', () => {
     expect(windows[0]).toMatchObject({ idx: 0, firstSegmentIdx: 0, lastSegmentIdx: 2, startMs: 0, endMs: 14_800 })
   })
 
+  it('prices text that expands under normalization at the floor, so the budget does not bound its real tokens', async () => {
+    // U+FDFA counts 4 tokens per character in bge-m3's tokenizer (ADR-0014 decision 4),
+    // so this one window is about 23,000 real tokens, far over the 8,192 limit, and
+    // no segment in it is over the budget. Speech does not produce this.
+    const text = '\uFDFA'.repeat(2_900)
+    const windows = await planWindows([
+      { idx: 0, startMs: 0, endMs: 5_000, text },
+      { idx: 1, startMs: 5_000, endMs: 10_000, text },
+    ])
+    expect(windows).toHaveLength(1)
+    expect([...windows[0]!.text].length).toBeGreaterThan(5_800)
+  })
+
   it('closes a window once it spans the target duration', async () => {
     const windows = await planWindows(transcript(40), { targetMs: 20_000 })
     for (const w of windows.slice(0, -1)) {

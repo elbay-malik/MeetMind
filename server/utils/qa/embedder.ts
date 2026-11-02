@@ -9,8 +9,8 @@ export const EMBEDDING_DIMENSIONS = 1024
 
 /**
  * Longest single input the model takes, in its own tokens. Over it the provider
- * refuses rather than truncating (measured, ADR-0014). Only a single transcript
- * segment over the window budget can get there: see WINDOW_TOKEN_BUDGET.
+ * refuses rather than truncating (measured, ADR-0014). A single transcript segment
+ * over the window budget is how to expect to get there: see WINDOW_TOKEN_BUDGET.
  */
 export const MAX_INPUT_TOKENS = 8_192
 

@@ -95,7 +95,7 @@ of 2,500, plus overlap), so about 3 requests, at about a second each for this si
 stores each batch as soon as it is embedded, through the same `planEmbeddingBatches` the
 driver uses, so a batch is exactly one request and resuming still loses at most one.
 
-### 4. The estimate's margin holds, and only a lone oversize segment can pass the limit.
+### 4. The estimate's margin holds on everything measured, and a lone oversize segment is the case to expect.
 
 Windows close at `WINDOW_TOKEN_BUDGET` = 1,500 estimated tokens. Real counts at that size,
 from the `input_tokens` the reply reports, one window each:
@@ -122,15 +122,26 @@ it undercounts, and 8,192 is still nearly 3.9 times what that came to. Even the 
 stays under the limit, since at about one token per character the estimate's floor of a
 quarter token per character caps a window near 6,000 tokens.
 
-So only a single segment over the budget can reach 8,192, since a segment is never split
-(ADR-0007 decision 2). Whisper's segments are a few seconds long, so this should not come
-up, but a transcript is data and the path has to be right.
+So among what was measured, a single segment over the budget is what reaches 8,192, since a
+segment is never split (ADR-0007 decision 2). Whisper's segments are a few seconds long, so
+this should not come up, but a transcript is data and the path has to be right.
+
+That is a measurement, not a bound. A compatibility character that expands under the
+tokenizer's normalization can pass the limit inside a window under budget: U+FDFA counts 4
+tokens per character, by the published `BAAI/bge-m3` tokenizer run locally on 2026-11-02 and
+not against the API, so about 2,050 of them are enough. A window lasts about 45 seconds and
+its text comes only from speech-to-text, so this is not expected from real speech.
 
 **Such an input fails clearly, and the meeting stays without questions.** The provider
 refuses it with HTTP 400, code 8007, "Sequence too long: 9223 > 8192", and refuses the
 whole request with it. The driver raises `EmbeddingInputTooLongError` with that count, the
 route answers 422 and says so plainly, and it does not offer "indexing again resumes",
 which would be false. Nothing is lost: the transcript and summary still hold every word.
+
+One wrong message stays possible with expanding text. A request of several inputs over
+60,000 real tokens, if the provider answers "Max context reached" before it reaches "Sequence
+too long", gets the generic 502 and its "indexing again resumes", which would be false since
+the same batch fails again. Which of the two comes first is not measured.
 
 Handling it instead, by splitting the text and averaging the pieces' vectors, was rejected.
 It builds retrieval quality nobody has measured for a case that should not occur. And a
