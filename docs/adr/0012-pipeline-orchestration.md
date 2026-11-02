@@ -1,8 +1,16 @@
 # ADR-0012: Pipeline orchestration under the Workers free plan
 
-- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md)
+- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md) and [ADR-0014](0014-workers-ai-embeddings.md)
 - **Date:** 2026-10-25
 - **Supersedes:** PLAYBOOK Phase 9 point 2 and its "No queue … single streaming request" key decision. Amends ADR-0006 §2–3 (per-chunk retry, chunk-local attestation), ADR-0007 §5–7 (index claim, pacing), ADR-0011 (what blocks a delete) and the Phase 13 note that "streaming AI calls … don't accrue CPU time".
+
+> **Note, 2026-11-02:** embeddings moved to Cloudflare Workers AI
+> ([ADR-0014](0014-workers-ai-embeddings.md)). Where this ADR says Gemini or `gemini-embed`,
+> read Workers AI and a slot of its own. Step 8 is not built, and it inherits three things: a
+> block at the daily limit lasts until 00:00 UTC, not 1 h; an index batch must also stay
+> within `MAX_BATCH_TOKENS`, which 16 windows at the full budget would not; and a 1024-dimension
+> reply is a third larger, with the upsert's `JSON.stringify` costing more CPU than the parse,
+> so `INDEX_BATCH` of 16 still has to be measured on real Workers CPU.
 
 ## Context
 

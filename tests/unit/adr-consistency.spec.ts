@@ -32,3 +32,29 @@ describe('ADRs changed by ADR-0013', () => {
     expect(await adr('0010')).not.toMatch(/already flags the open search endpoint/)
   })
 })
+
+describe('ADRs changed by ADR-0014', () => {
+  it('every ADR it names in its header says so in its own status', async () => {
+    const header = /^- \*\*Supersedes:\*\* (.*)$/m.exec(await adr('0014'))?.[1]
+    expect(header, 'could not find the header line of ADR-0014').toBeTruthy()
+    const named = [...new Set([...header!.matchAll(/ADR-(\d{4})/g)].map(m => m[1]!))]
+    expect(named).toEqual(expect.arrayContaining(['0007', '0008', '0012', '0013']))
+    const silent: string[] = []
+    for (const number of named) {
+      const status = /^- \*\*Status:\*\* (.*)$/m.exec(await adr(number))?.[1] ?? ''
+      if (!status.includes('ADR-0014')) silent.push(number)
+    }
+    expect(silent).toEqual([])
+  })
+
+  it('marks the decision it supersedes where a reader of ADR-0007 will land', async () => {
+    const text = await adr('0007')
+    const decision = text.slice(text.indexOf('### 1.'), text.indexOf('### 2.'))
+    expect(decision).toMatch(/Superseded on .* by \[ADR-0014\]/)
+  })
+
+  it('leaves no ADR calling the dropped function something that stays', async () => {
+    expect((await adr('0008')).split('\n').find(line => line.startsWith('- **Status:**')))
+      .not.toMatch(/stays unused/)
+  })
+})

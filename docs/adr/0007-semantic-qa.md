@@ -1,6 +1,6 @@
 # ADR-0007: Semantic Q&A — windowed embeddings, answers held to the same citation check
 
-- **Status:** Accepted
+- **Status:** Accepted. Decision 1 superseded by [ADR-0014](0014-workers-ai-embeddings.md)
 - **Date:** 2026-09-14
 
 ## Context
@@ -28,6 +28,12 @@ and runs for real only once keys exist.
 ## Decision
 
 ### 1. `gemini-embedding-2`, not the playbook's `gemini-embedding-001`.
+
+> **Superseded on 2026-11-02 by [ADR-0014](0014-workers-ai-embeddings.md):** embeddings
+> now come from Cloudflare Workers AI's `@cf/baai/bge-m3` at 1024 dimensions, because
+> Gemini's terms require a paid plan for users in the EEA, Switzerland and the UK. What
+> follows, and every mention below of Gemini, its quota or 768 dimensions, is what was
+> decided then. The rest of this ADR still stands.
 
 Google's embeddings documentation lists `gemini-embedding-2` (stable, April
 2026) as the current model. `gemini-embedding-001` is still stable but is the

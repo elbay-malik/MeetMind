@@ -1,5 +1,7 @@
 # MeetMind: Zero-to-Deployed Execution Pathway (No-Code Technical Playbook)
 
+> Note, 2026-11-02: this is the original plan, kept as written. Gemini is no longer used anywhere in MeetMind; embeddings come from Cloudflare Workers AI ([ADR-0014](adr/0014-workers-ai-embeddings.md)).
+
 ## TL;DR
 - **Recommended stack:** Extract/compress audio client-side in a Web Worker with single-thread ffmpeg.wasm (@ffmpeg/core 0.12.x), encoding to 16kHz mono Opus (~7-11MB per hour, well under Groq's 25MB free cap); transcribe on Groq Whisper Large v3 Turbo (2,000 requests/day free, 216x real-time per Groq/Artificial Analysis) with Gemini 2.5 Flash audio as fallback; extract summary/decisions/action items with Vercel AI SDK v6 `generateText` + `Output.object()` and Zod on Groq llama-3.3-70b-versatile; embed transcript segments with gemini-embedding-001 at 768 dims into Supabase pgvector (HNSW); play with Wavesurfer.js v7 using server-precomputed peaks; deploy on Cloudflare Workers **free** tier (streaming AI proxies are I/O-bound and stay under the 10ms CPU limit).
 - **The two risky phases** are the FFmpeg WASM spike and the bidirectional transcript↔player time-sync; budget extra time there. Everything else is well-trodden.
