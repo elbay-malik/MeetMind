@@ -384,6 +384,7 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
 
       const plan = [{ chunkNo: 0, segFrom: 0, segTo: 1, estTokens: 10 }, { chunkNo: 1, segFrom: 2, segTo: 3, estTokens: 10 }]
       expect(await pipeline.planChunks(ledgerId, claim!.token, plan)).toBe(true)
+      expect(await pipeline.countChunks(ledgerId, claim!.runId)).toEqual({ done: 0, total: 2 })
       const result = (segmentIdx: number) => ({
         summary: `around ${segmentIdx}`,
         decisions: [{ decision: 'Ship', quote: `line ${segmentIdx}`, segmentIdx, startMs: segmentIdx * 1000 }],
@@ -398,6 +399,7 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
       expect(second).toMatchObject({ attempts: 1 })
       expect(await pipeline.recordChunk(ledgerId, second!.token, plan[1]!, result(3))).toBe(true)
       expect((await pipeline.listChunks(ledgerId)).map(c => c.result)).toEqual([result(1), result(3)])
+      expect(await pipeline.countChunks(ledgerId, claim!.runId)).toEqual({ done: 2, total: 2 })
 
       const final = await pipeline.claimStep(ledgerId, 'summarization', { status: 'indexing', leaseMs: 60_000 })
       const summary = {

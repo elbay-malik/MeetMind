@@ -124,6 +124,21 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
       })
     },
 
+    async countChunks(meetingId, runId) {
+      // Two HEADs rather than one read of the rows: the answer is the same few bytes on
+      // any length of meeting, and no result crosses the wire.
+      const count = () => db().from('summary_chunks').select('chunk_no', { count: 'exact', head: true })
+        .eq('meeting_id', meetingId).eq('run_id', runId)
+      const [all, finished] = await Promise.all([count(), count().not('result', 'is', null)])
+      if (all.error) fail('summary chunks count', all.error)
+      if (finished.error) fail('summary chunks count', finished.error)
+      // Anything else must not read as "none", which would plan again.
+      if (typeof all.count !== 'number' || typeof finished.count !== 'number') {
+        throw new Error('Supabase summary chunks count returned an unusable answer')
+      }
+      return { done: finished.count, total: all.count }
+    },
+
     async recordChunk(meetingId, token, chunk, result) {
       assertStorableResult(chunk, result)
       const { data, error } = await db().rpc('record_chunk', {

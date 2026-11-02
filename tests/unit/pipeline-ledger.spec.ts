@@ -333,6 +333,34 @@ describe('releaseStep', () => {
   })
 })
 
+describe('countChunks', () => {
+  it('counts the plan and what has a result, for that run only', async () => {
+    const { m, pipeline, claim: planning } = await planned()
+    const { runId } = planning
+    expect(await pipeline.countChunks(m.id, runId)).toEqual({ done: 0, total: 2 })
+    await pipeline.recordChunk(m.id, planning.token, plan[0]!, result(2))
+    expect(await pipeline.countChunks(m.id, runId)).toEqual({ done: 1, total: 2 })
+    expect(await pipeline.countChunks(m.id, randomUUID())).toEqual({ done: 0, total: 0 })
+  })
+
+  it('counts nothing for a meeting with no ledger', async () => {
+    expect(await repos().pipeline.countChunks(randomUUID(), randomUUID())).toEqual({ done: 0, total: 0 })
+  })
+
+  it('counts a result that would fail its read-back check, which only moves its redo down the queue', async () => {
+    const { m, pipeline, claim: planning } = await planned()
+    await pipeline.recordChunk(m.id, planning.token, plan[0]!, result(2))
+    const db = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+    const ledger = await db.getItem<{ chunks: Array<{ result: unknown }> }>(`pipeline/${m.id}`)
+    ledger!.chunks[0]!.result = { not: 'a result' }
+    await db.setItem(`pipeline/${m.id}`, ledger)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await pipeline.countChunks(m.id, planning.runId)).toEqual({ done: 1, total: 2 })
+    expect((await pipeline.listChunks(m.id))[0]).toMatchObject({ result: null, unusable: true })
+    vi.restoreAllMocks()
+  })
+})
+
 describe('planChunks', () => {
   it('writes the plan and keeps the step\'s claim, since planning makes no provider call', async () => {
     const { m, pipeline } = await planned()

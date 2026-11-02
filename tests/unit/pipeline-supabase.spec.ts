@@ -174,6 +174,73 @@ describe('finishIndex', () => {
   })
 })
 
+describe('what a read costs, which the worst case in ADR-0012\'s step 9 addendum adds up', () => {
+  function stubRows(rows: unknown[]) {
+    const requests: string[] = []
+    vi.stubGlobal('fetch', async (input: string | Request, options?: RequestInit) => {
+      const request = typeof input === 'string' ? new Request(input, options) : input
+      requests.push(new URL(request.url).pathname.split('/').pop()!)
+      return new Response(JSON.stringify(rows), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    return requests
+  }
+
+  it('is one request for the runs', async () => {
+    const requests = stubRows([])
+    await repo.listRuns(MEETING)
+    expect(requests).toEqual(['pipeline_runs'])
+  })
+
+  it('is two for the chunks: the current run, then its plan', async () => {
+    const requests = stubRows([{ run_id: 'run', chunk_no: 0, seg_from: 0, seg_to: 1, est_tokens: 1, attempts: 0, result: null }])
+    await repo.listChunks(MEETING)
+    expect(requests).toEqual(['pipeline_runs', 'summary_chunks'])
+  })
+})
+
+describe('countChunks', () => {
+  const RUN = '6ec0bd7f-11c0-43da-975e-2a8ad9ebae0b'
+
+  /** Answer every count as PostgREST does, in `content-range`, recording what each asked for. */
+  function stubCounts(answer: (url: URL) => string | null) {
+    const calls: { method: string, url: URL, prefer: string | null }[] = []
+    vi.stubGlobal('fetch', async (input: string | Request, options?: RequestInit) => {
+      const request = typeof input === 'string' ? new Request(input, options) : input
+      const url = new URL(request.url)
+      calls.push({ method: request.method, url, prefer: request.headers.get('prefer') })
+      const range = answer(url)
+      return new Response(null, { status: 200, headers: range ? { 'content-range': range } : {} })
+    })
+    return calls
+  }
+  const finished = (url: URL) => url.searchParams.get('result') === 'not.is.null'
+
+  it('asks twice with HEAD, for the count alone, so no result crosses the wire', async () => {
+    const calls = stubCounts(url => (finished(url) ? '*/3' : '*/7'))
+    await expect(repo.countChunks(MEETING, RUN)).resolves.toEqual({ done: 3, total: 7 })
+    expect(calls).toHaveLength(2)
+    for (const { method, url, prefer } of calls) {
+      expect(method).toBe('HEAD')
+      expect(url.pathname.split('/').pop()).toBe('summary_chunks')
+      expect(url.searchParams.get('meeting_id')).toBe(`eq.${MEETING}`)
+      expect(url.searchParams.get('run_id')).toBe(`eq.${RUN}`)
+      expect(url.searchParams.get('select')).toBe('chunk_no')
+      expect(prefer).toContain('count=exact')
+    }
+    expect(calls.filter(call => finished(call.url))).toHaveLength(1)
+  })
+
+  it('never reads an answer with no count as none, which would plan again', async () => {
+    stubCounts(() => null)
+    await expect(repo.countChunks(MEETING, RUN)).rejects.toThrow(/unusable/)
+  })
+
+  it('reports a refused count as a failure', async () => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ code: '42501', message: 'denied' }), { status: 403, headers: { 'content-type': 'application/json' } }))
+    await expect(repo.countChunks(MEETING, RUN)).rejects.toThrow(/summary chunks count failed/)
+  })
+})
+
 describe('deleteForMeeting', () => {
   it('removes the marker with the runs and chunks, each filtered to the meeting', async () => {
     const calls: URL[] = []
