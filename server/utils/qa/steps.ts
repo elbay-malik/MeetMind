@@ -62,6 +62,15 @@ export const MAX_INDEX_ATTEMPTS = 2
 /** Passes in a row finished by finding that the stored windows do not add up. */
 export const MAX_INDEX_RESTARTS = 2
 
+/**
+ * How long a run stays parked when a step nobody explicitly asked for stops, instead of
+ * {@link RETRY_COOLDOWN_MS} or nothing: its attempts ran out, the provider refused, or the
+ * stored windows keep not adding up. Whoever keeps a page open must not be retrying that
+ * every minute for ever. Past the longest wait a client is told to sit through, so this
+ * ends a driver's loop, and the next driver to open the meeting after it tries once more.
+ */
+export const UNATTENDED_PARK_MS = 15 * 60_000
+
 export interface IndexingDeps {
   meetings: Pick<MeetingRepository, 'get'>
   pipeline: PipelineRepository
@@ -72,6 +81,15 @@ export interface IndexingDeps {
   /** Minimum gap between embedding requests, through the slot ledger. */
   embedIntervalMs: number
   now?: () => number
+}
+
+export interface IndexingOptions {
+  /**
+   * Nobody asked for this step: `POST .../advance` takes it because it is next, and a page
+   * calls that by itself (ADR-0012, step 9). It then stays away from anything
+   * {@link unattendedMayIndex} refuses, and no stop leaves it free to be retried at once.
+   */
+  unattended?: boolean
 }
 
 export interface IndexingProgress {
@@ -119,8 +137,38 @@ type IndexCursor = {
 /** What the caller and the run are told of a failure that is not the provider's. */
 const INTERNAL_FAILURE_MESSAGE = 'Indexing hit a problem on the server.'
 
+const NOT_UNATTENDED_MESSAGE = 'This meeting\'s index belongs to another model or transcript. Only an explicit request replaces it.'
+
 const STAGE = 'search_index'
 const PROVIDER = 'workers-ai-embed'
+
+/**
+ * Whether a step nobody explicitly asked for may write this meeting's index. Only a missing
+ * or unfinished index under the current model. Anything stored or begun under another
+ * model, or finished for another transcript, is for an explicit request to replace.
+ *
+ * A deployment that has lost its provider's settings falls back to the stub, which is just
+ * such "another model" (SEC-16), and a page opening a meeting is not a request to re-embed
+ * it. That includes a half-built index under another model: `advanceIndexing` would start
+ * over from its first window and overwrite as it went, losing paid-for vectors just the same.
+ */
+export function unattendedMayIndex(state: IndexState, model: string): boolean {
+  if (state.storedForModel !== state.storedWindows) return false
+  const { marker } = state
+  if (!marker) return true
+  if (marker.model !== model) return false
+  return !marker.complete || marker.textHash === state.transcriptHash
+}
+
+/** How far this meeting's index has got, from what is stored. */
+export function indexProgress(run: Pick<PipelineRun, 'cursor'> | undefined, state: IndexState, model: string): { done: number, total: number | null } {
+  const ready = readyWindowCount(state, model)
+  if (ready !== null) return { done: ready, total: ready }
+  const pass = (run?.cursor as IndexCursor | undefined)?.pass
+  // A pass for anything else starts over at the next step, so none of it counts.
+  if (pass?.model !== model || pass.textHash !== state.transcriptHash) return { done: 0, total: null }
+  return { done: pass.nextWindow, total: pass.planned ? pass.nextWindow : null }
+}
 
 function newPass(state: IndexState, model: string): IndexPass {
   return {
@@ -134,7 +182,7 @@ function newPass(state: IndexState, model: string): IndexPass {
 }
 
 /** Do the meeting's next indexing step, if one is runnable. */
-export async function advanceIndexing(meetingId: string, deps: IndexingDeps): Promise<IndexingOutcome> {
+export async function advanceIndexing(meetingId: string, deps: IndexingDeps, options: IndexingOptions = {}): Promise<IndexingOutcome> {
   const now = deps.now ?? Date.now
   const { model } = deps.embedder
 
@@ -144,11 +192,12 @@ export async function advanceIndexing(meetingId: string, deps: IndexingDeps): Pr
     return { kind: 'refused', statusCode: 409, message: `Meeting is ${meeting.status}; it has no finished transcript to index yet` }
   }
 
-  const steps = stepsFor(meetingId, deps, now)
+  const steps = stepsFor(meetingId, deps, now, options)
 
   const state = await deps.index.readState(meetingId, model)
   const ready = readyWindowCount(state, model)
   if (ready !== null) return steps.done(ready)
+  if (options.unattended && !unattendedMayIndex(state, model)) return { kind: 'refused', statusCode: 409, message: NOT_UNATTENDED_MESSAGE }
 
   const run = await steps.readRun()
   const parked = waitingOn(run, now())
@@ -164,7 +213,7 @@ export async function advanceIndexing(meetingId: string, deps: IndexingDeps): Pr
   return steps.step(claimed, state, lastError)
 }
 
-function stepsFor(meetingId: string, deps: IndexingDeps, now: () => number) {
+function stepsFor(meetingId: string, deps: IndexingDeps, now: () => number, options: IndexingOptions) {
   const { pipeline, embedder } = deps
   const { model } = embedder
 
@@ -213,7 +262,7 @@ function stepsFor(meetingId: string, deps: IndexingDeps, now: () => number) {
    * as someone keeps asking.
    */
   async function park(claimed: StepClaim, statusCode: number, message: string, cursor?: IndexCursor): Promise<IndexingOutcome> {
-    const retryAt = new Date(now() + RETRY_COOLDOWN_MS)
+    const retryAt = new Date(now() + (options.unattended ? UNATTENDED_PARK_MS : RETRY_COOLDOWN_MS))
     const parkedCursor = cursor ?? { ...cursorOf(claimed), parkedAtAttempt: claimed.attempts }
     if (!await release(claimed, { error: message, retryAt, cursor: parkedCursor })) return snapshot()
     return { kind: 'failed', statusCode, message, retryAt, resumes: true }
@@ -240,14 +289,13 @@ function stepsFor(meetingId: string, deps: IndexingDeps, now: () => number) {
         return { kind: 'failed', statusCode: failure.statusCode, message, retryAt: failure.retryAt, resumes: true }
       }
       if (failure && !failure.retryable) {
-        if (!await release(claimed, { error: message, retryAt: null, refundAttempt: true })) return await snapshot()
-        return {
-          kind: 'failed',
-          statusCode: failure.statusCode,
-          message,
-          retryAt: null,
-          resumes: !(failure instanceof EmbeddingInputTooLongError),
-        }
+        const resumes = !(failure instanceof EmbeddingInputTooLongError)
+        // A person who asked is told, and asks again or not. Nothing tells a page calling
+        // by itself to stop asking but the park. A passage over the limit is refused the
+        // same way every time, so that one waits for someone to ask.
+        const retryAt = options.unattended && resumes ? new Date(now() + UNATTENDED_PARK_MS) : null
+        if (!await release(claimed, { error: message, retryAt, refundAttempt: true })) return await snapshot()
+        return { kind: 'failed', statusCode: failure.statusCode, message, retryAt, resumes }
       }
       if (attemptsOf(claimed) < MAX_INDEX_ATTEMPTS) {
         const retryAt = new Date(now() + RETRYABLE_PARK_MS)
@@ -374,6 +422,10 @@ function stepsFor(meetingId: string, deps: IndexingDeps, now: () => number) {
       if (ready !== null) {
         await release(claimed, { error: null, retryAt: null, refundAttempt: true })
         return done(ready)
+      }
+      if (options.unattended && (stored ? stored.model !== model : !unattendedMayIndex(current, model))) {
+        await release(claimed, { error: null, retryAt: null, refundAttempt: true })
+        return { kind: 'refused', statusCode: 409, message: NOT_UNATTENDED_MESSAGE }
       }
       const pass = stored?.textHash === current.transcriptHash && stored.model === model ? stored : newPass(current, model)
       return await (pass.planned ? finish(claimed, pass) : batch(claimed, pass, lastError))
