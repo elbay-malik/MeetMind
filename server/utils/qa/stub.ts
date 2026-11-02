@@ -1,7 +1,18 @@
 import { normalise, tokenize } from '../summary/reconcile'
-import { EMBEDDING_DIMENSIONS, type Embedder } from './embedder'
+import { estimateTokens } from '../summary/plan'
+import {
+  dailyLimitReached,
+  EMBEDDING_DIMENSIONS,
+  EmbeddingInputTooLongError,
+  MAX_INPUT_TOKENS,
+  type Embedder,
+} from './embedder'
 
-export const STUB_EMBEDDING_MODEL = 'stub-hashed-tokens-v1'
+/**
+ * Not v1, which was 768 dimensions: a local index built then has to read as
+ * another model's, to be built again, rather than failing on its first question.
+ */
+export const STUB_EMBEDDING_MODEL = 'stub-hashed-tokens-v2'
 
 /** FNV-1a, 32-bit: small, dependency-free and well spread for bucketing. */
 function fnv1a(text: string): number {
@@ -35,22 +46,38 @@ export function hashedTokenVector(text: string, dimensions = EMBEDDING_DIMENSION
   return norm === 0 ? vector : vector.map(v => v / norm)
 }
 
+export interface StubEmbedderOptions {
+  /**
+   * Test-only: a text containing this is refused as the real provider refuses
+   * once its daily allocation is spent, so tests can prove what a visitor is told
+   * over the real HTTP routes.
+   */
+  quotaCanary?: string
+}
+
 /**
- * Stands in for the embedding provider when no API key is configured — the same
- * principle as the stub transcriber and summarizer. Documents and queries are
- * embedded identically: the provider's query/document prefixes exist to align
- * two differently-shaped inputs, and a bag of tokens has no such asymmetry.
+ * Stands in for the embedding provider when no credentials are configured — the
+ * same principle as the stub transcriber and summarizer. Documents and queries
+ * are embedded identically, as the real model does. It refuses an input over the
+ * model's limit too, by its estimate, so that path runs without credentials.
  */
-export function createStubEmbedder(): Embedder {
+export function createStubEmbedder(options: StubEmbedderOptions = {}): Embedder {
+  function embed(text: string): number[] {
+    if (options.quotaCanary && text.includes(options.quotaCanary)) throw dailyLimitReached()
+    const tokens = estimateTokens(text)
+    if (tokens > MAX_INPUT_TOKENS) throw new EmbeddingInputTooLongError(tokens)
+    return hashedTokenVector(text)
+  }
+
   return {
     kind: 'stub',
     model: STUB_EMBEDDING_MODEL,
     dimensions: EMBEDDING_DIMENSIONS,
     async embedDocuments(texts) {
-      return texts.map(text => hashedTokenVector(text))
+      return texts.map(embed)
     },
     async embedQuery(text) {
-      return hashedTokenVector(text)
+      return embed(text)
     },
   }
 }

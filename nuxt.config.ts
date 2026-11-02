@@ -6,7 +6,11 @@ export default defineNuxtConfig({
   runtimeConfig: {
     // Server-only secrets, overridden by NUXT_* env vars at runtime.
     groqApiKey: '', // NUXT_GROQ_API_KEY
-    geminiApiKey: '', // NUXT_GEMINI_API_KEY
+    // Cloudflare Workers AI embeddings (ADR-0014). Both must be set to activate
+    // the driver; otherwise a local stub embeds. The token should be scoped to
+    // Workers AI alone: it is not the wrangler token, nor the R2 keys.
+    workersAiAccountId: '', // NUXT_WORKERS_AI_ACCOUNT_ID
+    workersAiApiToken: '', // NUXT_WORKERS_AI_API_TOKEN
     supabaseUrl: '', // NUXT_SUPABASE_URL
     supabaseServiceKey: '', // NUXT_SUPABASE_SERVICE_KEY
     // Cloudflare R2 (S3 API) for compressed audio. All four must be set to
@@ -61,6 +65,11 @@ export default defineNuxtConfig({
     // so tests can prove a question refused for a held slot gets a 429 with
     // Retry-After over the real HTTP route. Never set outside tests.
     answerStubPaced: false, // NUXT_ANSWER_STUB_PACED
+    // Test-only: the stub embedder refuses any text containing this string the way
+    // the real provider refuses once its daily allocation is spent, so tests can
+    // prove what a visitor is told, and that indexing resumes, over the real HTTP
+    // routes. Never set outside tests.
+    embedStubQuotaCanary: '', // NUXT_EMBED_STUB_QUOTA_CANARY
     public: {
       // The one meeting linked publicly, from the home page (ADR-0013). Its id
       // ends up in every page's payload, so only ever a meeting meant to be seen.

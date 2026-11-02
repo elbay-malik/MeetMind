@@ -25,15 +25,15 @@ const set = (...keys: string[]) => keys.every(k => (process.env[k] ?? '').length
  * One entry per `describe.skipIf` group in tests/services/real-services.spec.ts.
  * Keep them in step: a group missing from here still runs, but the banner then
  * under-reports what was covered, and this banner is the only way to tell a
- * credential-less skip from a check that quietly stopped existing. Gemini was
- * absent from this list while its three checks were running and passing, which
- * is the mistake worth not repeating.
+ * credential-less skip from a check that quietly stopped existing. A group was
+ * once absent from this list while its three checks were running and passing,
+ * which is the mistake worth not repeating.
  */
 const groups: [name: string, keys: string[]][] = [
   ['R2', ['NUXT_R2_ACCOUNT_ID', 'NUXT_R2_ACCESS_KEY_ID', 'NUXT_R2_SECRET_ACCESS_KEY', 'NUXT_R2_BUCKET']],
   ['Supabase', ['NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY']],
   ['Groq', ['NUXT_GROQ_API_KEY']],
-  ['Gemini', ['NUXT_GEMINI_API_KEY']],
+  ['Workers AI', ['NUXT_WORKERS_AI_ACCOUNT_ID', 'NUXT_WORKERS_AI_API_TOKEN']],
 ]
 const detected = groups.filter(([, keys]) => set(...keys)).map(([name]) => name)
 const absent = groups.filter(([, keys]) => !set(...keys)).map(([name]) => name)

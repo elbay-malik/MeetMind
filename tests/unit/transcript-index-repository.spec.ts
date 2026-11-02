@@ -15,7 +15,7 @@ import {
 import { createLocalTranscriptIndexRepository } from '../../server/utils/db/windows-local'
 import { createSupabaseTranscriptIndexRepository } from '../../server/utils/db/windows-supabase'
 
-const DIMS = 768
+const DIMS = 1024
 
 /** A unit vector along one axis, blended towards a second when `towards` is given. */
 function axis(n: number, towards?: { n: number, weight: number }): number[] {
@@ -36,7 +36,7 @@ function window(idx: number, embedding: number[], overrides: Partial<EmbeddedWin
     endMs: idx * 1000 + 999,
     text: `window ${idx}`,
     contentHash: hash('a'),
-    model: 'gemini-embedding-2',
+    model: '@cf/baai/bge-m3',
     embedding,
     ...overrides,
   }
@@ -62,7 +62,7 @@ describe('shared helpers', () => {
   })
 
   it('refuses to compare vectors of different sizes', () => {
-    expect(() => cosineSimilarity(axis(0), [1, 0, 0])).toThrow(/768 and 3/)
+    expect(() => cosineSimilarity(axis(0), [1, 0, 0])).toThrow(/1024 and 3/)
   })
 
   it('clamps a search limit exactly as the SQL function does', () => {
@@ -77,7 +77,7 @@ describe('shared helpers', () => {
     const w = window(3, axis(0), { contentHash: hash('c') })
     expect(windowToRow('m1', w)).toEqual({
       meeting_id: 'm1', idx: 3, first_segment_idx: 3, last_segment_idx: 4, start_ms: 3000, end_ms: 3999,
-      content: 'window 3', content_hash: hash('c'), model: 'gemini-embedding-2', embedding: w.embedding,
+      content: 'window 3', content_hash: hash('c'), model: '@cf/baai/bge-m3', embedding: w.embedding,
     })
     expect(rowToMatch({
       idx: 3, first_segment_idx: 3, last_segment_idx: 4, start_ms: 3000, end_ms: 3999,
@@ -101,8 +101,8 @@ describe('local transcript index repository', () => {
     await repo.upsertWindows('m1', [window(1, axis(1)), window(0, axis(0))])
     const keys = await repo.listKeys('m1')
     expect(keys).toEqual([
-      { idx: 0, contentHash: hash('a'), model: 'gemini-embedding-2' },
-      { idx: 1, contentHash: hash('a'), model: 'gemini-embedding-2' },
+      { idx: 0, contentHash: hash('a'), model: '@cf/baai/bge-m3' },
+      { idx: 1, contentHash: hash('a'), model: '@cf/baai/bge-m3' },
     ])
   })
 
@@ -110,7 +110,7 @@ describe('local transcript index repository', () => {
     const repo = createLocalTranscriptIndexRepository({ dataDir })
     await repo.upsertWindows('m2', [window(0, axis(0))])
     await repo.upsertWindows('m2', [window(0, axis(1), { contentHash: hash('b') })])
-    expect(await repo.listKeys('m2')).toEqual([{ idx: 0, contentHash: hash('b'), model: 'gemini-embedding-2' }])
+    expect(await repo.listKeys('m2')).toEqual([{ idx: 0, contentHash: hash('b'), model: '@cf/baai/bge-m3' }])
   })
 
   it('deletes every window not kept, and everything when nothing is kept', async () => {
@@ -125,7 +125,7 @@ describe('local transcript index repository', () => {
   it('returns the nearest windows first, with their similarity and no embedding', async () => {
     const repo = createLocalTranscriptIndexRepository({ dataDir })
     await repo.upsertWindows('m4', [window(0, axis(0)), window(1, axis(1)), window(2, axis(2))])
-    const matches = await repo.search('m4', axis(1, { n: 0, weight: 0.4 }), { model: 'gemini-embedding-2', limit: 5 })
+    const matches = await repo.search('m4', axis(1, { n: 0, weight: 0.4 }), { model: '@cf/baai/bge-m3', limit: 5 })
 
     expect(matches.map(m => m.idx)).toEqual([1, 0, 2])
     expect(matches[0]!.similarity).toBeGreaterThan(matches[1]!.similarity)
@@ -147,7 +147,7 @@ describe('local transcript index repository', () => {
       window(1, opposite),
       window(2, new Array(DIMS).fill(0)),
     ])
-    const matches = await repo.search('m10', axis(0), { model: 'gemini-embedding-2', limit: 5 })
+    const matches = await repo.search('m10', axis(0), { model: '@cf/baai/bge-m3', limit: 5 })
     expect(matches.map(m => m.idx)).toEqual([0, 1, 2])
   })
 
@@ -156,7 +156,7 @@ describe('local transcript index repository', () => {
     // together would be meaningless.
     const repo = createLocalTranscriptIndexRepository({ dataDir })
     await repo.upsertWindows('m5', [window(0, axis(0)), window(1, axis(0), { model: 'stub-hashed-tokens-v1' })])
-    const matches = await repo.search('m5', axis(0), { model: 'gemini-embedding-2', limit: 5 })
+    const matches = await repo.search('m5', axis(0), { model: '@cf/baai/bge-m3', limit: 5 })
     expect(matches.map(m => m.idx)).toEqual([0])
   })
 
@@ -164,7 +164,7 @@ describe('local transcript index repository', () => {
     const repo = createLocalTranscriptIndexRepository({ dataDir })
     await repo.upsertWindows('m6', [window(0, axis(3))])
     await repo.upsertWindows('m7', [window(0, axis(4))])
-    const matches = await repo.search('m6', axis(4), { model: 'gemini-embedding-2', limit: 5 })
+    const matches = await repo.search('m6', axis(4), { model: '@cf/baai/bge-m3', limit: 5 })
     expect(matches).toHaveLength(1)
     expect(matches[0]!.similarity).toBe(0)
   })
@@ -172,9 +172,9 @@ describe('local transcript index repository', () => {
   it('breaks similarity ties by index and clamps the limit', async () => {
     const repo = createLocalTranscriptIndexRepository({ dataDir })
     await repo.upsertWindows('m8', [window(2, axis(0)), window(0, axis(0)), window(1, axis(0))])
-    expect((await repo.search('m8', axis(0), { model: 'gemini-embedding-2', limit: 5 })).map(m => m.idx))
+    expect((await repo.search('m8', axis(0), { model: '@cf/baai/bge-m3', limit: 5 })).map(m => m.idx))
       .toEqual([0, 1, 2])
-    expect(await repo.search('m8', axis(0), { model: 'gemini-embedding-2', limit: 0 })).toHaveLength(1)
+    expect(await repo.search('m8', axis(0), { model: '@cf/baai/bge-m3', limit: 0 })).toHaveLength(1)
   })
 
   it('keeps every window when upserts for one meeting run concurrently', async () => {
@@ -246,8 +246,8 @@ describe('supabase transcript index repository', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('lists keys without downloading any vector, filtered to the meeting', async () => {
-    const calls = stub(() => [{ idx: 0, content_hash: hash('a'), model: 'gemini-embedding-2' }])
-    expect(await repo.listKeys('m1')).toEqual([{ idx: 0, contentHash: hash('a'), model: 'gemini-embedding-2' }])
+    const calls = stub(() => [{ idx: 0, content_hash: hash('a'), model: '@cf/baai/bge-m3' }])
+    expect(await repo.listKeys('m1')).toEqual([{ idx: 0, contentHash: hash('a'), model: '@cf/baai/bge-m3' }])
     const url = calls[0]!.url
     expect(url.pathname).toBe('/rest/v1/transcript_windows')
     // A meeting's embeddings are megabytes; comparing hashes needs none of them.
@@ -309,14 +309,14 @@ describe('supabase transcript index repository', () => {
       content: 'window 1', content_hash: hash('a'), similarity: 0.9,
     }])
     const query = axis(1)
-    const matches = await repo.search('m1', query, { model: 'gemini-embedding-2', limit: 500 })
+    const matches = await repo.search('m1', query, { model: '@cf/baai/bge-m3', limit: 500 })
 
     expect(calls[0]!.method).toBe('POST')
     expect(calls[0]!.url.pathname).toBe('/rest/v1/rpc/match_transcript_windows')
     expect(calls[0]!.body).toEqual({
       p_meeting_id: 'm1',
       p_query: JSON.stringify(query),
-      p_model: 'gemini-embedding-2',
+      p_model: '@cf/baai/bge-m3',
       p_match_count: MAX_MATCHES,
     })
     expect(matches).toEqual([{

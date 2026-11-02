@@ -31,7 +31,7 @@ function fail(action: string, error: { code?: string, message: string }): never 
 const PAGE = 1000
 
 /**
- * Rows per upsert request. Each row carries 768 floats as JSON, roughly 12 KB,
+ * Rows per upsert request. Each row carries 1024 floats as JSON, roughly 20 KB,
  * so a meeting's worth in one body would be several megabytes for no benefit.
  */
 const UPSERT_BATCH = 50
