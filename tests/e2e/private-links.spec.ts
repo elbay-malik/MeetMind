@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
+import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
 /**
  * ADR-0013: a meeting's id is the capability to read it, so nothing may hand an
@@ -18,7 +19,7 @@ await setup({
   rootDir,
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
-  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret' },
+  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret', NUXT_INVITE_CODE: INVITE_CODE },
 })
 
 let meeting: Meeting
@@ -26,6 +27,7 @@ let meeting: Meeting
 beforeAll(async () => {
   const created = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
+    headers: inviteHeaders,
     body: {
       title: 'Private sync', sourceFileName: 'private-sync.mp4', sourceBytes: 1_000_000,
       sourceMime: 'video/mp4', durationSec: 10, audioBytes: 4096,

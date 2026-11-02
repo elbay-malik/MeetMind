@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
+import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-audio-'))
@@ -13,7 +14,7 @@ await setup({
   rootDir,
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
-  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret' },
+  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret', NUXT_INVITE_CODE: INVITE_CODE },
 })
 
 // Distinct bytes so a served window can be checked against its offset.
@@ -22,6 +23,7 @@ const audio = new Uint8Array(5000).map((_, i) => i % 251)
 async function uploadedMeeting(): Promise<Meeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
+    headers: inviteHeaders,
     body: {
       title: 'Audio route test',
       sourceFileName: 'meeting.mp4',
@@ -177,6 +179,7 @@ describe('GET /api/meetings/:id/audio', () => {
 
     const { meeting } = await $fetch<CreateMeetingResponse>('/api/meetings', {
       method: 'POST',
+      headers: inviteHeaders,
       body: {
         title: 'Never uploaded',
         sourceFileName: 'a.mp4',

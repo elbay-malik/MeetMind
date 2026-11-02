@@ -8,6 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
 import { MAX_AUDIO_BYTES } from '../../shared/utils/meeting'
+import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 
@@ -24,6 +25,7 @@ await setup({
   env: {
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
+    NUXT_INVITE_CODE: INVITE_CODE,
   },
 })
 
@@ -41,6 +43,7 @@ const validBody = {
 async function register(overrides: Partial<typeof validBody> = {}) {
   return $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
+    headers: inviteHeaders,
     body: { ...validBody, ...overrides },
   })
 }
@@ -55,7 +58,7 @@ describe('POST /api/meetings', () => {
   it('registers a pending meeting and issues a local upload URL', async () => {
     const res = await fetch('/api/meetings', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...inviteHeaders },
       body: JSON.stringify(validBody),
     })
     expect(res.status).toBe(201)
@@ -77,7 +80,7 @@ describe('POST /api/meetings', () => {
     // applied from the Content-Length before reading.
     const res = await fetch('/api/meetings', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...inviteHeaders },
       body: JSON.stringify({ ...validBody, title: 'x'.repeat(8192) }),
     })
     expect(res.status).toBe(413)
@@ -86,7 +89,7 @@ describe('POST /api/meetings', () => {
   it('requires a Content-Length so the body cannot be streamed past the limit', async () => {
     const res = await fetch('/api/meetings', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...inviteHeaders },
       body: new ReadableStream({
         start(controller) {
           controller.enqueue(new TextEncoder().encode(JSON.stringify(validBody)))
@@ -109,7 +112,7 @@ describe('POST /api/meetings', () => {
     ]) {
       const res = await fetch('/api/meetings', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...inviteHeaders },
         body: JSON.stringify(body),
       })
       expect(res.status, JSON.stringify(body)).toBe(400)

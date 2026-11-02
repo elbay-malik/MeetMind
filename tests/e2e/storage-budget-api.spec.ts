@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { fetch, setup } from '@nuxt/test-utils/e2e'
+import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-budget-'))
@@ -21,6 +22,7 @@ await setup({
   env: {
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
+    NUXT_INVITE_CODE: INVITE_CODE,
     NUXT_R2_MAX_STORED_BYTES: '5000',
   },
 })
@@ -28,7 +30,7 @@ await setup({
 function register(audioBytes: number): Promise<Response> {
   return fetch('/api/meetings', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...inviteHeaders },
     body: JSON.stringify({
       title: 'budget',
       sourceFileName: 'a.mp4',

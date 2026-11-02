@@ -9,6 +9,7 @@ import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { MAX_QUESTION_CHARS } from '../../shared/schemas/qa'
 import type { CreateMeetingResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
+import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-ask-'))
@@ -17,7 +18,7 @@ await setup({
   rootDir,
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
-  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret' },
+  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret', NUXT_INVITE_CODE: INVITE_CODE },
 })
 
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
@@ -25,6 +26,7 @@ const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 async function uploadedMeeting(): Promise<Meeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
+    headers: inviteHeaders,
     body: {
       title: 'Ask test', sourceFileName: 'meeting.mp4', sourceBytes: 1_000_000,
       sourceMime: 'video/mp4', durationSec: 10, audioBytes: audio.byteLength,

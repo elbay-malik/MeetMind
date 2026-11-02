@@ -9,6 +9,7 @@ import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { SlotState } from '../../server/utils/db/slots'
 import type { CreateMeetingResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
+import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
 // Isolated from ask-api.spec.ts: NUXT_ANSWER_STUB_PACED puts every question on
 // the slot ledger, which the other file's tests have no reason to wait on.
@@ -25,6 +26,7 @@ await setup({
   env: {
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
+    NUXT_INVITE_CODE: INVITE_CODE,
     NUXT_ANSWER_STUB_PACED: 'true',
     NUXT_GROQ_CHAT_INTERVAL_MS: '0',
     NUXT_ASK_MAX_SLOT_WAIT_MS: String(MAX_WAIT_MS),
@@ -46,6 +48,7 @@ const DISCUSSION: TranscriptSegment[] = Array.from({ length: 40 }, (_, i) => ({
 async function indexedMeeting(): Promise<Meeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
+    headers: inviteHeaders,
     body: {
       title: 'Busy ask test', sourceFileName: 'meeting.mp4', sourceBytes: 1_000_000,
       sourceMime: 'video/mp4', durationSec: 10, audioBytes: audio.byteLength,
