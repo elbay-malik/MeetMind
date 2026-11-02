@@ -6,3 +6,8 @@
 export const INVITE_REFUSED_MESSAGE = 'Uploading needs a valid invite code.'
 
 export const UPLOADS_CLOSED_MESSAGE = 'Uploading is closed at the moment, whatever code is entered.'
+
+/** How a request presents the code. In a header, because URLs land in logs and history. */
+export function inviteAuthorization(code: string): { authorization: string } {
+  return { authorization: `Bearer ${code}` }
+}

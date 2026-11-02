@@ -60,6 +60,20 @@ const REFUSED: [string, Record<string, string>][] = [
   ['the admin token, which is a different secret', bearer(ADMIN_TOKEN)],
 ]
 
+describe('the home page, before any code', () => {
+  it('says uploading is invite-only and renders no way to start on a recording', async () => {
+    const html = (await (await fetch('/')).text()).replace(/\s+/g, ' ')
+    expect(html).toContain('Uploading is invite-only')
+    expect(html).not.toContain('type="file"')
+  })
+
+  it('renders the code field with no name, so a form submitted before the page is interactive cannot put it in a URL', async () => {
+    const field = /<input[^>]*type="password"[^>]*>/.exec(await (await fetch('/')).text())?.[0]
+    expect(field).toBeTruthy()
+    expect(field).not.toMatch(/\sname=/)
+  })
+})
+
 describe('POST /api/meetings without the code', () => {
   it.each(REFUSED)('refuses %s, and stores nothing', async (_name, headers) => {
     const before = await meetingRows()

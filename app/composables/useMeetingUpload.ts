@@ -11,6 +11,8 @@ export interface UploadState {
   totalBytes: number
   meeting: Meeting | null
   error: string | null
+  /** The server refused the invite code, rather than anything about the upload. */
+  inviteRefused: boolean
 }
 
 /** Thrown when the user aborts the transfer — an outcome, not a fault. */
@@ -23,6 +25,7 @@ class UploadCancelled extends Error {
 
 export interface UploadJob {
   audio: Blob
+  inviteCode: string
   meta: Omit<CreateMeetingInput, 'audioBytes'>
 }
 
@@ -39,6 +42,7 @@ export function useMeetingUpload() {
     totalBytes: 0,
     meeting: null,
     error: null,
+    inviteRefused: false,
   })
 
   const notRemembered = useNotRememberedMeetings()
@@ -88,11 +92,13 @@ export function useMeetingUpload() {
       totalBytes: job.audio.size,
       meeting: null,
       error: null,
+      inviteRefused: false,
     } satisfies Partial<UploadState>)
 
     try {
       const created = await $fetch<CreateMeetingResponse>('/api/meetings', {
         method: 'POST',
+        headers: inviteAuthorization(job.inviteCode),
         body: { ...job.meta, audioBytes: job.audio.size } satisfies CreateMeetingInput,
       })
       state.meeting = created.meeting
@@ -128,6 +134,8 @@ export function useMeetingUpload() {
       else {
         state.error = describeError(err)
         state.status = 'error'
+        // Only registration carries the code, and until it succeeds there is no meeting.
+        state.inviteRefused = !state.meeting && (err as { statusCode?: number }).statusCode === 401
       }
       return null
     }
@@ -152,6 +160,7 @@ export function useMeetingUpload() {
       totalBytes: 0,
       meeting: null,
       error: null,
+      inviteRefused: false,
     } satisfies Partial<UploadState>)
   }
 

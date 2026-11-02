@@ -66,6 +66,14 @@ function itIsClosed(presented: Record<string, string>[], configured: string | nu
     if (configured) expect(logs).not.toContain(configured)
   })
 
+  it('still serves the home page, which says uploading is invite-only', async () => {
+    const res = await fetch('/')
+    expect(res.status).toBe(200)
+    const html = (await res.text()).replace(/\s+/g, ' ')
+    expect(html).toContain('Uploading is invite-only')
+    expect(html).not.toContain('type="file"')
+    if (configured) expect(html).not.toContain(configured)
+  })
 }
 
 /** A test, not a `beforeAll`: the context these helpers need exists only inside a test. */
