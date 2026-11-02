@@ -45,14 +45,24 @@ function register(audioBytes: number): Promise<Response> {
 /**
  * R2 has no spending cap, so this is the only thing that stops storage cost
  * growing: past the free allowance Cloudflare bills rather than refusing.
- * `POST /api/meetings` is anonymous and deleting a recording is admin-only
- * (ADR-0011), so without this an upload loop grows a standing monthly bill
- * until an operator notices. delete-api.spec.ts proves deleting makes room again.
+ * Deleting a recording is admin-only (ADR-0011), so without this anyone holding
+ * the invite code could grow a standing monthly bill until an operator notices.
+ * delete-api.spec.ts proves deleting makes room again.
  *
  * These run in order and share one store: each registration adds to the total
  * the next one is measured against, which is the behaviour under test.
  */
 describe('POST /api/meetings storage budget', () => {
+  it('asks for the invite code before anything about the budget, so a refusal says nothing about it', async () => {
+    const res = await fetch('/api/meetings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'budget', sourceFileName: 'a.mp4', sourceBytes: 1, sourceMime: null, durationSec: 30, audioBytes: 9000 }),
+    })
+    expect(res.status).toBe(401)
+    expect(await res.text()).not.toContain('ceilingBytes')
+  })
+
   it('registers a meeting while there is room under the ceiling', async () => {
     const res = await register(1000)
     expect(res.status).toBe(201)
