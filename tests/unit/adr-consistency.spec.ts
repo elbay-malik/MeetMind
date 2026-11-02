@@ -38,13 +38,18 @@ describe('ADRs changed by ADR-0014', () => {
     const header = /^- \*\*Supersedes:\*\* (.*)$/m.exec(await adr('0014'))?.[1]
     expect(header, 'could not find the header line of ADR-0014').toBeTruthy()
     const named = [...new Set([...header!.matchAll(/ADR-(\d{4})/g)].map(m => m[1]!))]
-    expect(named).toEqual(expect.arrayContaining(['0007', '0008', '0012', '0013']))
+    expect(named).toEqual(expect.arrayContaining(['0004', '0007', '0008', '0012', '0013']))
     const silent: string[] = []
     for (const number of named) {
       const status = /^- \*\*Status:\*\* (.*)$/m.exec(await adr(number))?.[1] ?? ''
       if (!status.includes('ADR-0014')) silent.push(number)
     }
     expect(silent).toEqual([])
+  })
+
+  it('closes the provider fallback ADR-0004 deferred, where a reader of it will land', async () => {
+    const passage = (await adr('0004')).split('\n- **').find(item => item.startsWith('Gemini as a fallback provider'))
+    expect(passage?.replace(/\s+/g, ' ')).toMatch(/Closed on .* by \[ADR-0014\]/)
   })
 
   it('marks the decision it supersedes where a reader of ADR-0007 will land', async () => {

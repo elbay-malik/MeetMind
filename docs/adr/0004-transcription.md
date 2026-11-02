@@ -1,6 +1,6 @@
 # ADR-0004: Transcription — one request per meeting, no chunking, with a stub provider for credential-free development
 
-- **Status:** Accepted
+- **Status:** Accepted. Its deferred Gemini fallback is closed by [ADR-0014](0014-workers-ai-embeddings.md)
 - **Date:** 2026-09-05
 
 ## Context
@@ -148,7 +148,9 @@ new database constraint for no behavioural gain.
   no longer publishes free-tier limits for any model, a dedicated transcription
   model now exists that makes the playbook's prompt-based approach obsolete, and a
   second unverifiable provider adds more surface than confidence. The `Transcriber`
-  interface is the seam it would slot into.
+  interface is the seam it would slot into. Closed on 2026-11-02 by
+  [ADR-0014](0014-workers-ai-embeddings.md): Gemini's terms allow only paid use for visitors
+  in the EEA, Switzerland and the UK, so it is not an option here for any purpose.
 - **Storing float seconds, as the provider returns them** — rejected; see decision 2.
 
 ## Follow-ups

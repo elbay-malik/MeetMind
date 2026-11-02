@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-02
-- **Supersedes:** ADR-0007 decision 1 (`gemini-embedding-2` at 768 dimensions). Amends ADR-0008 (its SQL function is now dropped), ADR-0012 (the `gemini-embed` slot, and what step 8 inherits) and ADR-0013 (who receives a transcript; its decision 7's cleanup is done here).
+- **Supersedes:** ADR-0007 decision 1 (`gemini-embedding-2` at 768 dimensions). Amends ADR-0008 (its SQL function is now dropped), ADR-0012 (the `gemini-embed` slot, and what step 8 inherits) and ADR-0013 (who receives a transcript; its decision 7's cleanup is done here). Closes the Gemini fallback ADR-0004 deferred.
 
 ## Context
 
