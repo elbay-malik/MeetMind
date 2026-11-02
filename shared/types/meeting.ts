@@ -151,6 +151,27 @@ export interface TranscriptionStepResponse {
   retryAfterMs: number | null
 }
 
+/**
+ * What `POST /api/meetings/:id/search-index` answers while the index is not finished,
+ * shaped like {@link TranscriptionStepResponse}. The finished answer is `{ index }` with
+ * a 200.
+ */
+export interface IndexingStepResponse {
+  progress: {
+    /** Passages of the plan this run has dealt with: embedded, or found stored. */
+    done: number
+    /** Passages in the plan, once the run has reached its end; null until then. */
+    total: number | null
+    /** Why the last step of this run ended without a result, if it did. */
+    lastError: string | null
+  }
+  /** `continue`: ask again now. `wait`: ask again at `retryAt`. */
+  next: 'continue' | 'wait'
+  retryAt: string | null
+  /** The same wait as a duration measured on the server; see {@link ExtractionStepResponse}. */
+  retryAfterMs: number | null
+}
+
 /** Fields the client supplies when registering a meeting before uploading its audio. */
 export interface CreateMeetingInput {
   title: string
@@ -175,16 +196,18 @@ export interface CreateMeetingResponse {
 }
 
 /**
- * Whether a meeting can be asked questions yet (ADR-0007 decision 6). Derived
- * from the stored windows, never kept as a meeting status: `indexing` in the
- * status machine is extraction's in-flight claim, not this.
+ * Whether a meeting can be asked questions yet (ADR-0007 decision 6). Never kept as
+ * a meeting status: `indexing` in the status machine is extraction's in-flight
+ * claim, not this.
  *
  * - `unavailable` — transcription has not finished, so there is nothing to index.
  * - `none` — nothing is indexed for the current embedding model.
- * - `incomplete` — some windows are missing or no longer match the transcript:
- *   an interrupted run (the embedding quota), or a replaced transcript.
- * - `ready` — every window of the current transcript is indexed. A transcript
- *   with no segments is `ready` with zero windows: there is nothing to find.
+ * - `incomplete` — no finished run says the index is whole for this transcript: an
+ *   interrupted run (the embedding quota), a replaced transcript, or a meeting indexed
+ *   before the marker existed, whose windows may all be there.
+ * - `ready` — a run finished for this transcript and model, and its marker says so
+ *   (ADR-0012). A transcript with no segments is `ready` with zero windows: there is
+ *   nothing to find.
  */
 export interface SearchIndexStatus {
   state: 'unavailable' | 'none' | 'incomplete' | 'ready'
