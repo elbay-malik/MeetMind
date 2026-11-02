@@ -1132,6 +1132,17 @@ check "finishing removes only what is past the plan's end, leaving no window of 
   "select $(result i2f) = 'complete' and $(windows_of "$I2") = 1 and $(window_model "$I2" 0) = 'model-a'
           and $(marker "$I2" window_count) = 1"
 
+# A hole with both ends in place: only the count can see it.
+I5=a0000000-0000-0000-0000-000000000025
+ledger_meeting "$I5" ready
+claim i5 "$I5" search_index ready 60000
+upsert i5a "$I5" "$(tok i5)" "[$(win 0 0 4),$(win 2 7 9)]" '{}'
+claim i5b "$I5" search_index ready 60000
+finish_idx i5hole "$I5" "$(tok i5b)" 3
+check "finish_index refuses a hole in the middle of a plan whose last window does reach the end" \
+  "select $(result i5hole) = 'changed' and $(marker "$I5" complete) = false"
+psql -q -c "delete from public.meetings where id = '$I5';"
+
 # A transcript with no lines.
 I3=a0000000-0000-0000-0000-000000000023
 empty_meeting "$I3" ready
