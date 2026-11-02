@@ -15,6 +15,25 @@ if (configuredDemoId && !demoMeetingId) {
 
 const { state, extract, cancel, reset: resetExtraction } = useAudioExtract()
 const uploader = useMeetingUpload()
+const { code: inviteCode, status: inviteStatus, error: inviteError, check: checkInvite, forget: forgetInvite } = useInviteCode()
+
+const inviteInput = ref<{ inputRef?: HTMLInputElement } | null>(null)
+const recordingInput = ref<HTMLInputElement | null>(null)
+
+/** What just happened to the code. Mounted whichever card is showing, so it is announced. */
+const inviteLabel = computed(() => ({
+  needed: '',
+  checking: 'Checking the code…',
+  accepted: 'Invite code accepted.',
+}[inviteStatus.value]))
+
+/** The form goes away once the code is accepted, so focus goes on with it rather than falling to <body>. */
+async function submitInvite() {
+  await checkInvite()
+  await nextTick()
+  if (inviteStatus.value === 'accepted') recordingInput.value?.focus()
+  else inviteInput.value?.inputRef?.focus()
+}
 
 const selectedFile = ref<File | null>(null)
 const dragOver = ref(false)
@@ -95,6 +114,7 @@ async function uploadAndContinue() {
   if (!file || !audio) return
   const meeting = await uploader.upload({
     audio,
+    inviteCode: inviteCode.value,
     meta: {
       title: title.value.trim() || titleFromFileName(file.name),
       sourceFileName: file.name,
@@ -104,6 +124,8 @@ async function uploadAndContinue() {
     },
   })
   if (meeting) await navigateTo(`/meetings/${meeting.id}/progress`)
+  // Rotated since this page checked it. The audio stays, so a new code costs no second extraction.
+  else if (uploader.state.inviteRefused) forgetInvite()
 }
 </script>
 
@@ -111,24 +133,40 @@ async function uploadAndContinue() {
   <UContainer class="max-w-2xl space-y-6 py-10">
     <div>
       <h1 class="text-2xl font-semibold tracking-tight">
-        Upload a meeting recording
+        MeetMind
       </h1>
       <p class="mt-1 text-muted">
-        Your video is compressed to audio entirely in this browser, and the video stays on
-        your machine. The compressed audio is uploaded, with the original file's name, size
-        and type.
+        Timestamped transcripts, summaries with decisions and action items, and answers to
+        questions about a meeting recording, each citing the lines it came from.
       </p>
       <p
         v-if="demoMeetingId"
-        class="mt-3"
+        class="mt-4"
       >
         <UButton
           :to="`/meetings/${demoMeetingId}`"
-          variant="soft"
+          size="lg"
           icon="i-lucide-play"
         >
           Open the demo meeting
         </UButton>
+      </p>
+    </div>
+
+    <div>
+      <h2 class="text-lg font-semibold">
+        Upload a meeting recording
+      </h2>
+      <p class="mt-1 text-muted">
+        Uploading is invite-only: it takes a code from whoever runs this demo.
+        <template v-if="demoMeetingId">
+          The demo meeting above needs no code.
+        </template>
+      </p>
+      <p class="mt-1 text-muted">
+        Your video is compressed to audio entirely in this browser, and the video stays on
+        your machine. The compressed audio is uploaded, with the original file's name, size
+        and type.
       </p>
     </div>
 
@@ -151,7 +189,54 @@ async function uploadAndContinue() {
       </template>
     </UAlert>
 
-    <UCard>
+    <UCard v-if="inviteStatus !== 'accepted'">
+      <!-- The field has no name on purpose: a form submitted before the page is
+           interactive sends only named fields, and it would send them in the URL. -->
+      <form
+        class="space-y-3"
+        @submit.prevent="submitInvite"
+      >
+        <UFormField
+          label="Invite code"
+          help="Held in this page only, and checked before anything is read from your recording."
+        >
+          <UInput
+            ref="inviteInput"
+            v-model="inviteCode"
+            type="password"
+            autocomplete="off"
+            :readonly="inviteStatus === 'checking'"
+            class="w-full"
+          />
+        </UFormField>
+        <UButton
+          type="submit"
+          :loading="inviteStatus === 'checking'"
+          :disabled="!inviteCode.trim()"
+          icon="i-lucide-key-round"
+        >
+          Continue
+        </UButton>
+        <UAlert
+          v-if="inviteError"
+          role="alert"
+          color="error"
+          variant="subtle"
+          icon="i-lucide-triangle-alert"
+          title="Invite code not accepted"
+          :description="inviteError"
+        />
+      </form>
+    </UCard>
+
+    <!-- Always mounted: see inviteLabel. A span, so empty:hidden works. -->
+    <span
+      class="block text-sm text-muted empty:hidden"
+      role="status"
+      aria-live="polite"
+    >{{ inviteLabel }}</span>
+
+    <UCard v-if="inviteStatus === 'accepted'">
       <div class="space-y-5">
         <div
           class="rounded-lg border-2 border-dashed p-10 text-center transition-colors"
@@ -169,6 +254,7 @@ async function uploadAndContinue() {
           </p>
           <input
             id="recording-file"
+            ref="recordingInput"
             type="file"
             accept="video/*,audio/*"
             aria-label="Choose a meeting recording"
@@ -282,7 +368,7 @@ async function uploadAndContinue() {
         </UFormField>
         <div class="flex flex-wrap items-center gap-3">
           <UButton
-            :disabled="uploading || !title.trim() || oversized"
+            :disabled="uploading || !title.trim() || oversized || inviteStatus !== 'accepted'"
             :loading="uploading"
             icon="i-lucide-arrow-right"
             trailing

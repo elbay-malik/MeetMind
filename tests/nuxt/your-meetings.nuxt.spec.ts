@@ -309,6 +309,7 @@ describe('useMeetingUpload', () => {
 
   const job = {
     audio: new Blob(['x']),
+    inviteCode: 'a-code',
     meta: { title: 'Weekly sync', sourceFileName: 'a.mp4', sourceBytes: 1, sourceMime: null, durationSec: null },
   }
 
