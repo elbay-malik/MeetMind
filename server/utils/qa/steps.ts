@@ -116,12 +116,11 @@ type IndexCursor = {
   parkedAtAttempt?: number
 }
 
+/** What the caller and the run are told of a failure that is not the provider's. */
+const INTERNAL_FAILURE_MESSAGE = 'Indexing hit a problem on the server.'
+
 const STAGE = 'search_index'
 const PROVIDER = 'workers-ai-embed'
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
 
 function newPass(state: IndexState, model: string): IndexPass {
   return {
@@ -222,7 +221,10 @@ function stepsFor(meetingId: string, deps: IndexingDeps, now: () => number) {
    */
   async function stepFailed(claimed: StepClaim, err: unknown): Promise<IndexingOutcome> {
     const failure = err instanceof EmbeddingError ? err : null
-    const message = errorMessage(err)
+    // A provider's message is written for visitors, with the credentials scrubbed. Our
+    // own errors are not, and a database's can name its tables, so those stay in the log.
+    if (!failure) console.warn('[meetmind] an indexing step failed:', err)
+    const message = failure ? failure.message : INTERNAL_FAILURE_MESSAGE
     try {
       if (failure?.retryAt) {
         // Best effort: what the caller must see is the limit, and the run's own retryAt
