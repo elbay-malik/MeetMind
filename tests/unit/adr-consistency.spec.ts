@@ -5,6 +5,17 @@ import { describe, expect, it } from 'vitest'
 
 const adrDir = fileURLToPath(new URL('../../docs/adr/', import.meta.url))
 
+/**
+ * The method a route file under server/api answers and its path, as Nitro reads the name:
+ * the method is optional (with none, the file answers every verb) and an environment can
+ * follow it. Null for a GET, which is the only kind the ADR-0015 table leaves out.
+ */
+function routeFile(fileName: string): { method: string, stem: string } | null {
+  const name = /^(.+?)(?:\.(connect|delete|get|head|options|patch|post|put|trace))?(?:\.(?:dev|prod|prerender))?\.[cm]?[jt]s$/.exec(fileName)
+  if (!name || name[2] === 'get') return null
+  return { method: (name[2] ?? 'all').toUpperCase(), stem: name[1]! }
+}
+
 async function adr(number: string): Promise<string> {
   const name = (await readdir(adrDir)).find(file => file.startsWith(`${number}-`))
   expect(name, `no ADR ${number}`).toBeTruthy()
@@ -143,16 +154,36 @@ describe('ADRs changed by ADR-0015', () => {
     })
   })
 
+  it.each([
+    ['retry.post.ts', 'POST'],
+    ['retry.delete.ts', 'DELETE'],
+    // With no method, Nitro answers every verb, POST included.
+    ['retry.ts', 'ALL'],
+    ['retry.head.ts', 'HEAD'],
+    ['retry.options.ts', 'OPTIONS'],
+    ['retry.connect.ts', 'CONNECT'],
+    ['retry.trace.ts', 'TRACE'],
+    ['retry.post.prod.ts', 'POST'],
+    ['retry.prod.ts', 'ALL'],
+    ['retry.post.mjs', 'POST'],
+  ])('counts %s as a route to examine, one that answers %s', (file, method) => {
+    expect(routeFile(file)).toEqual({ method, stem: 'retry' })
+  })
+
+  it.each(['retry.get.ts', 'retry.get.prod.ts'])('leaves %s out, as a GET', (file) => {
+    expect(routeFile(file)).toBeNull()
+  })
+
   it('records a guard for every route that is not a GET, so a new one cannot go unexamined', async () => {
     const apiDir = fileURLToPath(new URL('../../server/api/', import.meta.url))
     const files = (await readdir(apiDir, { recursive: true, withFileTypes: true })).filter(f => f.isFile())
     const routes = files.flatMap((file) => {
-      const name = /^(.*)\.(post|put|delete|patch)\.ts$/.exec(file.name)
-      if (!name) return []
+      const route = routeFile(file.name)
+      if (!route) return []
       const dir = relative(apiDir, file.parentPath)
-      const segments = [...dir.split('/'), name[1]!].filter(segment => segment && segment !== 'index')
+      const segments = [...dir.split('/'), route.stem].filter(segment => segment && segment !== 'index')
       const path = segments.map(segment => segment.replace(/^\[(.+)\]$/, ':$1')).join('/')
-      return [`${name[2]!.toUpperCase()} /api/${path}`]
+      return [`${route.method} /api/${path}`]
     })
     // Guard the guard: a walk that matched nothing would pass forever.
     expect(routes).toContain('POST /api/meetings')

@@ -97,8 +97,9 @@ with the variable unset (see below).
 
 ## What guards each route
 
-Checked against the code on 2026-11-02. `tests/unit/adr-consistency.spec.ts` fails if a route
-that is not a `GET` is missing here. No `GET` route writes anything.
+Checked against the code on 2026-11-02. `tests/unit/adr-consistency.spec.ts` fails if a file under
+`server/api` that is not a `GET` is missing here, including one with no method in its name, which
+answers every method. No `GET` route writes anything.
 
 | Route | Guard | What it can write or spend | On the demo |
 | --- | --- | --- | --- |
