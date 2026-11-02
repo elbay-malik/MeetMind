@@ -30,7 +30,7 @@ const justSummarized = ref(false)
  * focusing is the real <button>, whatever the UI library wraps it in. */
 const footer = ref<HTMLElement | null>(null)
 
-const { data: indexData, refresh: refreshIndex }
+const { data: indexData, error: indexUnread, refresh: refreshIndex }
   = await useFetch<{ index: SearchIndexStatus }>(`/api/meetings/${meetingId.value}/search-index`)
 const searchIndex = computed(() => indexData.value?.index ?? null)
 
@@ -80,6 +80,8 @@ async function startIndexing() {
 const indexLabel = computed(() => {
   const index = searchIndex.value
   if (indexing.value) return 'Indexing the transcript for questions.'
+  // With no status to read, every reason below would be a guess.
+  if (indexUnread.value) return 'Could not check whether this meeting can be asked questions. Reload the page to try again.'
   if (!index || index.state === 'unavailable') return 'Available once transcription has finished.'
   if (justIndexed.value && index.state === 'ready') return 'Indexing finished. This meeting can be asked questions.'
   if (index.state === 'ready') {
