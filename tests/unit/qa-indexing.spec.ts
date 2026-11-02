@@ -3,11 +3,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createLocalTranscriptIndexRepository } from '../../server/utils/db/windows-local'
-import { EmbeddingError, type Embedder } from '../../server/utils/qa/embedder'
-import { MAX_BATCH } from '../../server/utils/qa/gemini'
+import {
+  EmbeddingError,
+  MAX_BATCH,
+  MAX_BATCH_TOKENS,
+  planEmbeddingBatches,
+  type Embedder,
+} from '../../server/utils/qa/embedder'
 import { indexMeeting, indexStatus } from '../../server/utils/qa/indexing'
 import { hashedTokenVector } from '../../server/utils/qa/stub'
 import { planWindows } from '../../server/utils/qa/windows'
+import { estimateTokens } from '../../server/utils/summary/plan'
 import type { TranscriptSegment } from '../../shared/types/meeting'
 
 /** `count` five-second segments with distinct words, so windows differ. */
@@ -127,6 +133,35 @@ describe('indexMeeting', () => {
     const status = await indexMeeting({ meetingId: 'i3', segments, embedder: resumed.embedder, repo: repo() })
     // Only what was not already paid for.
     expect(resumed.embeddedTexts()).toEqual(plan.slice(MAX_BATCH).map(w => w.text))
+    expect(status).toMatchObject({ state: 'ready', indexedCount: plan.length })
+  })
+
+  it('stores a batch per request, bounded by tokens, and resumes from a failure there too', async () => {
+    // Windows near the budget, where the token cap binds long before the count.
+    const wordy = (i: number) => Array.from({ length: 500 }, (_, k) => `word${i}x${k}`).join(' ')
+    const segments: TranscriptSegment[] = Array.from({ length: 30 }, (_, i) => ({
+      idx: i, startMs: i * 5_000, endMs: i * 5_000 + 4_800, text: wordy(i),
+    }))
+    const plan = await planWindows(segments)
+    const batches = planEmbeddingBatches(plan, w => w.text)
+    expect(batches.length).toBeGreaterThan(2)
+    expect(batches[0]!.length).toBeLessThan(MAX_BATCH)
+
+    const interrupted = recordingEmbedder({ failOnCall: 3 })
+    await expect(indexMeeting({ meetingId: 'i9', segments, embedder: interrupted.embedder, repo: repo() }))
+      .rejects.toMatchObject({ statusCode: 429 })
+
+    // One embedder call per request, each within the cap.
+    expect(interrupted.calls.map(c => c.length)).toEqual(batches.slice(0, 3).map(b => b.length))
+    for (const call of interrupted.calls) {
+      expect(call.reduce((sum, t) => sum + estimateTokens(t), 0)).toBeLessThanOrEqual(MAX_BATCH_TOKENS)
+    }
+    const stored = batches.slice(0, 2).flat().map(w => w.idx)
+    expect((await repo().listKeys('i9')).map(k => k.idx)).toEqual(stored)
+
+    const resumed = recordingEmbedder()
+    const status = await indexMeeting({ meetingId: 'i9', segments, embedder: resumed.embedder, repo: repo() })
+    expect(resumed.embeddedTexts()).toEqual(batches.slice(2).flat().map(w => w.text))
     expect(status).toMatchObject({ state: 'ready', indexedCount: plan.length })
   })
 

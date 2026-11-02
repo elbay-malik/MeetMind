@@ -1,18 +1,10 @@
-import { assertEmbedding, EMBEDDING_DIMENSIONS, EmbeddingError, type Embedder } from './embedder'
+import { assertEmbedding, EMBEDDING_DIMENSIONS, EmbeddingError, planEmbeddingBatches, type Embedder } from './embedder'
 
 /** Current Google embedding model (ADR-0007 decision 1). */
 export const GEMINI_EMBEDDING_MODEL = 'gemini-embedding-2'
 
 const ENDPOINT
   = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EMBEDDING_MODEL}:batchEmbedContents`
-
-/**
- * Texts per batchEmbedContents call. The API reference states no limit; 100 is
- * a conservative cap rather than a documented one. Whether a batch counts as
- * one request against the free tier's daily quota or one per text is also not
- * documented, which is why indexing is resumable (ADR-0007 decision 5).
- */
-export const MAX_BATCH = 100
 
 /**
  * gemini-embedding-2 takes its task as a text prefix rather than a taskType
@@ -92,9 +84,8 @@ export function createGeminiEmbedder(options: GeminiEmbedderOptions): Embedder {
     async embedDocuments(texts) {
       const vectors: number[][] = []
       // Sequential: the per-minute request limit is the one that binds.
-      for (let i = 0; i < texts.length; i += MAX_BATCH) {
-        const batch = texts.slice(i, i + MAX_BATCH).map(documentText)
-        vectors.push(...await withRetries(() => embedBatch(batch)))
+      for (const batch of planEmbeddingBatches(texts, text => text)) {
+        vectors.push(...await withRetries(() => embedBatch(batch.map(documentText))))
       }
       return vectors
     },
