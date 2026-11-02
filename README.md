@@ -65,8 +65,9 @@ existing links keep working.
 
 Set `NUXT_PUBLIC_DEMO_MEETING_ID` to link one finished meeting from the home page. Anyone can
 read that meeting and ask it questions, which spends the shared quotas, and nobody can change
-it through its link. To create it, see "Creating the demo meeting" in
-[ADR-0015](docs/adr/0015-invite-only-uploads.md), which also records what guards every route
+it through its link. Its audio expires with the bucket's lifecycle rule (below) like any other,
+so it has to be put back every 30 days or the player stops working. To create it, see "Creating
+the demo meeting" in [ADR-0015](docs/adr/0015-invite-only-uploads.md), which also records what guards every route
 that can write, and what this does not do.
 
 ## Architecture Decision Records

@@ -111,6 +111,29 @@ describe('ADRs changed by ADR-0015', () => {
     expect((await adr('0010')).replace(/\s+/g, ' ')).not.toMatch(/left is open registration/)
   })
 
+  describe('the operator creating the demo', () => {
+    const flat = (text: string) => text.replace(/\s+/g, ' ')
+    const procedure = async () => flat((await adr('0015')).split('## Creating the demo meeting')[1]!.split('\n## ')[0]!)
+
+    // README step 3's rule covers meetings/, which is where the demo's audio lives too.
+    it('is told that the demo\'s audio expires with the bucket\'s lifecycle rule, and what to do about it', async () => {
+      const text = await procedure()
+      expect(text).toContain('`expire-meeting-audio-30d`')
+      expect(text).toContain('`wrangler r2 object put')
+      expect(text).toContain('Download audio')
+    })
+
+    it('hears it from the README too, which tells them to add the rule', async () => {
+      const readme = await readFile(fileURLToPath(new URL('../../README.md', import.meta.url)), 'utf8')
+      const section = flat(readme.slice(readme.indexOf('Set `NUXT_PUBLIC_DEMO_MEETING_ID`'), readme.indexOf('## Architecture Decision Records')))
+      expect(section).toMatch(/audio expires/)
+    })
+
+    it('lists it among the limits this decision accepts', async () => {
+      expect(flat((await adr('0015')).split('## Consequences')[1]!)).toContain('**The demo\'s audio expires like any other.**')
+    })
+  })
+
   it('records a guard for every route that is not a GET, so a new one cannot go unexamined', async () => {
     const apiDir = fileURLToPath(new URL('../../server/api/', import.meta.url))
     const files = (await readdir(apiDir, { recursive: true, withFileTypes: true })).filter(f => f.isFile())

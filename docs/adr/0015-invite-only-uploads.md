@@ -119,10 +119,22 @@ that is not a `GET` is missing here. No `GET` route writes anything.
    this one too, and anyone will be able to read and play it.
 2. Set `NUXT_INVITE_CODE` (`openssl rand -hex 24`; on Workers, `wrangler secret put`). Leave
    `NUXT_PUBLIC_DEMO_MEETING_ID` empty: while it names a meeting, that meeting's pipeline refuses.
-3. Open the home page, enter the code and upload. On the progress page start transcription, then
+3. Open the home page, enter the code and extract the audio. Use **Download audio** to keep a copy
+   before uploading (see below), then upload. On the progress page start transcription, then
    extraction, then indexing, until it says it is ready for questions.
 4. Take the id from the meeting's link, set `NUXT_PUBLIC_DEMO_MEETING_ID` to it, and redeploy.
 5. Open it from the home page in a private window and ask it something.
+
+The demo's audio expires like any other. README step 3's `expire-meeting-audio-30d` rule covers all
+of `meetings/`, a rule goes by prefix so it cannot leave out one key, and nothing in the app can
+upload to an existing meeting again. The transcript, summary and questions live in Postgres and
+carry on, but the player and citation seeks stop working 30 days after upload. Before then, and
+again every time, put the same file back, which restarts the object's age:
+`wrangler r2 object put <bucket>/meetings/<id>/audio.ogg --file meeting-audio.ogg --content-type audio/ogg --remote`.
+The bytes must be the ones uploaded, because the row holds their length. `wrangler r2 object get --remote`
+fetches a copy while the object still exists. This has not yet been run against a real bucket. The
+alternative is to create a new demo and change the id. The storage budget's estimate stops counting
+the object after `NUXT_R2_RETENTION_DAYS`, which for one recording is small enough to ignore.
 
 To repair or replace it, clear the variable, redeploy, finish the work and set it again. A change
 of embedding model needs this, since questions are refused until the index is rebuilt. To remove
@@ -154,6 +166,8 @@ Honest limits, all accepted for a demo:
   out. At 192 random bits that is enough; it is why the minimum is enforced.
 - **Nothing warns until someone tries.** The closed warning is logged per refused request, not at
   startup, so a deployment that nobody has tried to upload to has said nothing.
+- **The demo's audio expires like any other.** Nothing warns the operator, and visitors see the
+  player's "Audio unavailable" alert until the object is put back (see "Creating the demo meeting").
 - **Who else sees the code.** Cloudflare terminates TLS, so it sees the header. Whether its logs
   (`observability.enabled` in `wrangler.jsonc`) record request headers is not settled by its
   documentation, so look at one invocation log on the first deployment. Any script running in the
