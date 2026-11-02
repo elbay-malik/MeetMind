@@ -44,6 +44,11 @@ function onAudioError() {
   audioError.value = 'The audio could not be loaded, so seeking is unavailable.'
 }
 
+/** Without replacing a load failure: audio that has gone from storage will never be ready. */
+function explainNoAudio() {
+  audioError.value ??= 'The audio is not ready yet, so this line cannot be played.'
+}
+
 /** Clear a previous complaint once the element proves it can play. */
 function onAudioReady() {
   audioError.value = null
@@ -130,7 +135,7 @@ function seekTo(segment: TranscriptSegment) {
   const audio = player.value
   if (!audio) return
   if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
-    audioError.value = 'The audio is not ready yet, so this line cannot be played.'
+    explainNoAudio()
     return
   }
   audio.currentTime = segment.startMs / 1000
@@ -164,7 +169,7 @@ function seekToCitation(startMs: number, segmentIdx: number) {
   // when the audio was not ready, while clicking a transcript line in that
   // same state explained itself.
   if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
-    audioError.value = 'The audio is not ready yet, so this line cannot be played.'
+    explainNoAudio()
     return
   }
   audio.currentTime = startMs / 1000
