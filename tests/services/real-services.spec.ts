@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 import { AwsClient } from 'aws4fetch'
 import { createGeminiEmbedder, GEMINI_EMBEDDING_MODEL } from '../../server/utils/qa/gemini'
 import { createGroqTranscriber } from '../../server/utils/transcription/groq'
+import { normalizeSegments } from '../../server/utils/transcription/normalize'
+import { INITIAL_SCAN, parseSegments, replyDuration, scanWindow } from '../../server/utils/transcription/reply-scanner'
 import { meetingSchema, transcriptSegmentSchema } from '../../shared/schemas/meeting'
 import { MAX_AUDIO_BYTES } from '../../shared/utils/meeting'
 
@@ -612,16 +614,47 @@ describe.skipIf(!has('NUXT_GROQ_API_KEY') || !probe)('Groq Whisper', () => {
     }
   })
 
-  it('is parsed by the production transcriber into valid segments', async () => {
-    const result = await createGroqTranscriber({ apiKey: process.env.NUXT_GROQ_API_KEY! })
+  it('sends back a reply the production scanner reads a window at a time, and agrees with parsing it whole', async () => {
+    const reply = await createGroqTranscriber({ apiKey: process.env.NUXT_GROQ_API_KEY! })
       .transcribe({ bytes: audio, contentType: 'audio/ogg' })
 
-    for (const [i, segment] of result.segments.entries()) {
+    // Windows far smaller than the real page, so every boundary the reply has
+    // gets cut: the same calls, in the same order, as `page` in steps.ts.
+    const objects: Uint8Array[] = []
+    let scan = INITIAL_SCAN
+    let offset = 0
+    let width = 16
+    let finished = false
+    while (!finished) {
+      const window = reply.subarray(offset, offset + width)
+      const scanned = scanWindow(window, scan, { atEnd: offset + window.byteLength >= reply.byteLength, maxObjects: 2 })
+      if (scanned.consumed === 0 && scanned.objects.length === 0 && !scanned.finished) {
+        width *= 2
+        continue
+      }
+      objects.push(...scanned.objects)
+      offset += scanned.consumed
+      scan = scanned.state
+      finished = scanned.finished
+      width = 16
+    }
+
+    const whole = JSON.parse(new TextDecoder().decode(reply)) as { duration: number, segments: Array<{ start: number, end: number, text: string }> }
+    const lines = parseSegments(objects)
+    expect(lines.length, 'the clip came back with no segments, so nothing was compared').toBeGreaterThan(0)
+    expect(lines).toEqual(whole.segments.map(({ start, end, text }) => ({ start, end, text })))
+
+    // The audio's end comes from the head of the reply alone. Null here would
+    // quietly turn off the check for timestamps past the end of the audio.
+    expect(replyDuration(reply)).toBe(whole.duration)
+
+    const segments = normalizeSegments(lines)
+    for (const [i, segment] of segments.entries()) {
       expect(transcriptSegmentSchema.safeParse(segment).success).toBe(true)
       expect(segment.idx).toBe(i)
       expect(segment.endMs).toBeGreaterThanOrEqual(segment.startMs)
     }
-    console.info(`[verify] transcribed into ${result.segments.length} segments, duration ${result.durationSec}s`)
+    console.info(`[verify] scanned ${reply.byteLength} bytes into ${segments.length} segments, duration ${whole.duration}s`)
   })
 })
 
