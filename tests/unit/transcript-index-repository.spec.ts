@@ -8,9 +8,11 @@ import {
   clampLimit,
   cosineSimilarity,
   MAX_MATCHES,
+  readyWindowCount,
   rowToMatch,
   windowToRow,
   type EmbeddedWindow,
+  type IndexState,
 } from '../../server/utils/db/windows'
 import { createLocalTranscriptIndexRepository } from '../../server/utils/db/windows-local'
 import { createSupabaseTranscriptIndexRepository } from '../../server/utils/db/windows-supabase'
@@ -113,13 +115,32 @@ describe('local transcript index repository', () => {
     expect(await repo.listKeys('m2')).toEqual([{ idx: 0, contentHash: hash('b'), model: '@cf/baai/bge-m3' }])
   })
 
-  it('deletes every window not kept, and everything when nothing is kept', async () => {
+  it('reads only the keys in a range when given one, which is what keeps a step\'s read the size of its batch', async () => {
     const repo = createLocalTranscriptIndexRepository({ dataDir })
-    await repo.upsertWindows('m3', [window(0, axis(0)), window(1, axis(1)), window(2, axis(2))])
-    await repo.deleteExcept('m3', [0, 2])
-    expect((await repo.listKeys('m3')).map(k => k.idx)).toEqual([0, 2])
-    await repo.deleteExcept('m3', [])
-    expect(await repo.listKeys('m3')).toEqual([])
+    await repo.upsertWindows('m3', [window(0, axis(0)), window(1, axis(1)), window(2, axis(2)), window(3, axis(3))])
+    expect((await repo.listKeys('m3', { from: 1, to: 2 })).map(k => k.idx)).toEqual([1, 2])
+    expect((await repo.listKeys('m3', { from: 9, to: 12 }))).toEqual([])
+    expect((await repo.listKeys('m3')).map(k => k.idx)).toEqual([0, 1, 2, 3])
+  })
+
+  it('reads the state of a meeting nothing has been stored for', async () => {
+    const repo = createLocalTranscriptIndexRepository({ dataDir })
+    const state = await repo.readState('never-indexed', 'model-a')
+    expect(state).toEqual({
+      marker: null,
+      // The hash of nothing, which is also what the SQL answers for no lines.
+      transcriptHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      segmentCount: 0,
+      storedWindows: 0,
+      storedForModel: 0,
+    })
+  })
+
+  it('counts the windows stored under the model asked about, and under any', async () => {
+    const repo = createLocalTranscriptIndexRepository({ dataDir })
+    await repo.upsertWindows('m-count', [window(0, axis(0)), window(1, axis(1), { model: 'another-model' })])
+    expect(await repo.readState('m-count', 'another-model')).toMatchObject({ storedWindows: 2, storedForModel: 1 })
+    expect(await repo.readState('m-count', 'a-third-model')).toMatchObject({ storedWindows: 2, storedForModel: 0 })
   })
 
   it('returns the nearest windows first, with their similarity and no embedding', async () => {
@@ -198,8 +219,7 @@ describe('local transcript index repository', () => {
       createStorage({ driver: fsDriver({ base: join(freshDataDir, 'db') }) }).getKeys('windows')
 
     it('leaves no key behind', async () => {
-      // Why this is not deleteExcept(id, []): that rewrites the file as an
-      // empty array, which is still a key, for a meeting that no longer exists.
+      // An empty array would still be a key, for a meeting that no longer exists.
       const repo = createLocalTranscriptIndexRepository({ dataDir: freshDataDir })
       await repo.upsertWindows('xd-gone', [window(0, axis(1))])
       await repo.upsertWindows('xd-kept', [window(0, axis(1))])
@@ -279,16 +299,49 @@ describe('supabase transcript index repository', () => {
     }
   })
 
-  it('deletes only the windows not kept, and all of them when nothing is', async () => {
-    const calls = stub()
-    await repo.deleteExcept('m1', [0, 2])
-    await repo.deleteExcept('m1', [])
-    expect(calls.map(c => c.method)).toEqual(['DELETE', 'DELETE'])
+  it('narrows the key list to a range when given one', async () => {
+    const calls = stub(() => [{ idx: 3, content_hash: hash('a'), model: 'm' }])
+    expect(await repo.listKeys('m1', { from: 3, to: 18 })).toEqual([{ idx: 3, contentHash: hash('a'), model: 'm' }])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url.searchParams.get('select')).toBe('idx,content_hash,model')
     expect(calls[0]!.url.searchParams.get('meeting_id')).toBe('eq.m1')
-    expect(calls[0]!.url.searchParams.get('idx')).toBe('not.in.(0,2)')
-    // PostgREST rejects `not.in.()`, so an empty keep-list sends no idx filter.
-    expect(calls[1]!.url.searchParams.has('idx')).toBe(false)
-    expect(calls[1]!.url.searchParams.get('meeting_id')).toBe('eq.m1')
+    expect(calls[0]!.url.searchParams.getAll('idx')).toEqual(['gte.3', 'lte.18'])
+  })
+
+  it('has no way left to remove a meeting\'s windows but all of them, with the meeting', () => {
+    // The one call that could empty an index in a single request (ADR-0012, step 8).
+    expect(repo).not.toHaveProperty('deleteExcept')
+  })
+
+  describe('readState', () => {
+    const row = {
+      text_hash: hash('a'), model: 'm', window_count: 7, complete: true,
+      current_hash: hash('b'), segment_count: 70, stored_windows: 7, stored_for_model: 6,
+    }
+
+    it('asks the SQL function, for this meeting and model, and reads every column', async () => {
+      const calls = stub(() => [row])
+      expect(await repo.readState('m1', 'm')).toEqual({
+        marker: { textHash: hash('a'), model: 'm', windowCount: 7, complete: true },
+        transcriptHash: hash('b'),
+        segmentCount: 70,
+        storedWindows: 7,
+        storedForModel: 6,
+      })
+      expect(calls).toHaveLength(1)
+      expect(calls[0]!.url.pathname).toBe('/rest/v1/rpc/read_index_state')
+      expect(calls[0]!.body).toEqual({ p_meeting: 'm1', p_model: 'm' })
+    })
+
+    it('reads a meeting with no marker as having none, not an incomplete one', async () => {
+      stub(() => [{ ...row, text_hash: null, model: null, window_count: null, complete: null }])
+      expect((await repo.readState('m1', 'm')).marker).toBeNull()
+    })
+
+    it('refuses an unusable answer rather than reading it as a state', async () => {
+      stub(() => [])
+      await expect(repo.readState('m1', 'm')).rejects.toThrow(/unusable row/)
+    })
   })
 
   it('deletes every window of the meeting with one DELETE filtered only by meeting', async () => {
@@ -328,7 +381,7 @@ describe('supabase transcript index repository', () => {
   it.each([
     ['listKeys', () => repo.listKeys('m1')],
     ['upsertWindows', () => repo.upsertWindows('m1', [window(0, axis(0))])],
-    ['deleteExcept', () => repo.deleteExcept('m1', [0])],
+    ['readState', () => repo.readState('m1', 'm')],
     ['deleteForMeeting', () => repo.deleteForMeeting('m1')],
     ['search', () => repo.search('m1', axis(0), { model: 'm', limit: 1 })],
   ])('surfaces a database error from %s', async (_name, run) => {
@@ -337,5 +390,44 @@ describe('supabase transcript index repository', () => {
       { status: 403, headers: { 'content-type': 'application/json' } },
     ))
     await expect(run()).rejects.toThrow(/42501/)
+  })
+})
+
+/** The one definition of "ready" a question and the status route both go by. */
+describe('readyWindowCount', () => {
+  const finished: IndexState = {
+    marker: { textHash: 'current', model: 'm', windowCount: 5, complete: true },
+    transcriptHash: 'current',
+    segmentCount: 40,
+    storedWindows: 5,
+    storedForModel: 5,
+  }
+
+  it('is the marker\'s count when the marker holds for this transcript, this model and what is stored', () => {
+    expect(readyWindowCount(finished, 'm')).toBe(5)
+  })
+
+  it.each<[string, IndexState]>([
+    ['there is no marker: a meeting indexed by older code, however many windows it has', { ...finished, marker: null }],
+    ['the marker is incomplete: a run in progress, every window stored or not', { ...finished, marker: { ...finished.marker!, complete: false } }],
+    ['the transcript has changed', { ...finished, transcriptHash: 'replaced' }],
+    ['a window has gone', { ...finished, storedWindows: 4, storedForModel: 4 }],
+    ['a window has appeared past the plan', { ...finished, storedWindows: 6, storedForModel: 6 }],
+    ['another model\'s window is stored', { ...finished, storedWindows: 6 }],
+  ])('is null when %s', (_name, state) => {
+    expect(readyWindowCount(state, 'm')).toBeNull()
+  })
+
+  it('is null for a model the marker is not for, however complete', () => {
+    expect(readyWindowCount(finished, 'another-model')).toBeNull()
+  })
+
+  it('is 0 for a transcript with no lines and nothing stored, with or without a marker', () => {
+    const silent = { marker: null, transcriptHash: 'empty', segmentCount: 0, storedWindows: 0, storedForModel: 0 }
+    expect(readyWindowCount(silent, 'm')).toBe(0)
+  })
+
+  it('is null for a transcript with no lines while windows are still stored for it', () => {
+    expect(readyWindowCount({ marker: null, transcriptHash: 'empty', segmentCount: 0, storedWindows: 3, storedForModel: 3 }, 'm')).toBeNull()
   })
 })

@@ -1,5 +1,7 @@
 import type { MeetingStatus, MeetingSummary, TranscriptSegment } from '#shared/types/meeting'
 import { attestedChunkSchema, type AttestedChunk } from '../summary/reconcile'
+import { EMBEDDING_DIMENSIONS } from '../qa/embedder'
+import type { EmbeddedWindow } from './windows'
 
 /**
  * The run ledger (ADR-0012 §3): how far each stage of a meeting's pipeline has
@@ -106,6 +108,26 @@ export interface SegmentPage {
   cursor: Record<string, unknown>
 }
 
+/** One step's write to the search index. */
+export interface IndexBatch {
+  /** What this step embedded. Empty when it found everything it planned already stored. */
+  windows: readonly EmbeddedWindow[]
+  /** The run's cursor after this batch. */
+  cursor: Record<string, unknown>
+  /** Which transcript and model this run indexes, for the marker. */
+  textHash: string
+  model: string
+}
+
+/** How `finishIndex` went. */
+export type IndexFinish
+  /** The marker says complete, and the step has ended. */
+  = | 'complete'
+    /** What is stored is not what this run planned. Nothing was written, and the step is still live. */
+    | 'changed'
+    /** The token is not live. Nothing was written. */
+    | 'lost'
+
 export interface PipelineRepository {
   readonly kind: 'supabase' | 'local'
   /**
@@ -158,7 +180,20 @@ export interface PipelineRepository {
    * not live or the meeting is no longer `transcribing`.
    */
   finishTranscription(meetingId: string, token: string, outcome: { chunks: readonly ChunkPlan[], refusal: string | null }): Promise<boolean>
-  /** Remove the meeting's runs and chunks. Idempotent; a cascade on Supabase. */
+  /**
+   * Store one batch of embedded windows and the cursor after it, mark the index
+   * incomplete, and end the step, all or nothing. Windows are replaced by index, each
+   * under this batch's model; nothing else stored changes. False when `token` is not live.
+   */
+  upsertWindows(meetingId: string, token: string, batch: IndexBatch): Promise<boolean>
+  /**
+   * Mark the index complete and end the step, removing windows past the plan's end.
+   * Only if the transcript still hashes to `textHash`, every one of the plan's
+   * `windowCount` windows is stored under `model`, and the last reaches the transcript's
+   * last line. See {@link IndexFinish}.
+   */
+  finishIndex(meetingId: string, token: string, plan: { textHash: string, model: string, windowCount: number }): Promise<IndexFinish>
+  /** Remove the meeting's runs, chunks and index marker. Idempotent; a cascade on Supabase. */
   deleteForMeeting(meetingId: string): Promise<void>
 }
 
@@ -232,6 +267,17 @@ export function assertValidPage({ fromIdx, segments, cursor }: SegmentPage): voi
     }
   })
   if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) throw new Error('The cursor must be a JSON object')
+}
+
+/** Refuse a batch the columns could not hold; the SQL refuses alike. */
+export function assertValidIndexBatch({ windows, cursor, model }: IndexBatch): void {
+  if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) throw new Error('The cursor must be a JSON object')
+  for (const window of windows) {
+    if (window.embedding.length !== EMBEDDING_DIMENSIONS) {
+      throw new Error(`Window ${window.idx} has a ${window.embedding.length}-dimension vector, expected ${EMBEDDING_DIMENSIONS}`)
+    }
+    if (window.model !== model) throw new Error(`Window ${window.idx} is ${window.model}'s, in a batch of ${model}'s`)
+  }
 }
 
 export function assertValidPlan(chunks: readonly ChunkPlan[]): void {

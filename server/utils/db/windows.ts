@@ -13,6 +13,41 @@ export interface StoredWindowKey {
   model: string
 }
 
+/** What `meeting_index_state` holds: which transcript and model an index run was for, and whether it finished. */
+export interface IndexMarker {
+  textHash: string
+  model: string
+  /** 0 until the run finishes, when the plan's length is first known. */
+  windowCount: number
+  complete: boolean
+}
+
+/** Everything deciding "can this meeting be asked questions" takes, in one read. */
+export interface IndexState {
+  /** Null when no run of the current code has ever written: a meeting indexed before step 8, or never. */
+  marker: IndexMarker | null
+  /** The hash of the transcript as it is now. */
+  transcriptHash: string
+  segmentCount: number
+  /** Windows stored for this meeting, under any model. */
+  storedWindows: number
+  /** Of those, under the model asked about. */
+  storedForModel: number
+}
+
+/**
+ * The windows a meeting's finished index holds for `model`, or null when it is not
+ * finished: no marker or an incomplete one, another model's, another transcript's, or
+ * windows that do not add up to what the marker says. A transcript with no lines and
+ * nothing stored has nothing to finish, so it is ready with none.
+ */
+export function readyWindowCount(state: IndexState, model: string): number | null {
+  if (state.segmentCount === 0 && state.storedWindows === 0) return 0
+  const { marker } = state
+  if (!marker?.complete || marker.model !== model || marker.textHash !== state.transcriptHash) return null
+  return state.storedWindows === marker.windowCount && state.storedForModel === marker.windowCount ? marker.windowCount : null
+}
+
 /** A search hit. Cosine similarity: 1 is identical, 0 unrelated. */
 export interface WindowMatch extends TranscriptWindow {
   similarity: number
@@ -23,16 +58,23 @@ export const MAX_MATCHES = 20
 
 export interface TranscriptIndexRepository {
   readonly kind: 'supabase' | 'local'
-  /** Every stored window's key, for resuming indexing and detecting staleness. */
-  listKeys(meetingId: string): Promise<StoredWindowKey[]>
-  /** Insert or replace windows by index. */
-  upsertWindows(meetingId: string, windows: EmbeddedWindow[]): Promise<void>
-  /** Remove every stored window whose index is not in `keep`. */
-  deleteExcept(meetingId: string, keep: number[]): Promise<void>
   /**
-   * Remove every window of the meeting, leaving nothing behind. Idempotent. Not
-   * `deleteExcept(id, [])`: on the local driver that leaves an empty file.
+   * The marker and the counts around it, in one read. The transcript is hashed where
+   * it is stored, so noticing a replaced one costs no lines read here.
    */
+  readState(meetingId: string, model: string): Promise<IndexState>
+  /**
+   * Stored windows' keys, for detecting staleness: all of them, or only those with
+   * `from <= idx <= to`, which is what keeps a step's read the size of its batch.
+   */
+  listKeys(meetingId: string, range?: { from: number, to: number }): Promise<StoredWindowKey[]>
+  /**
+   * Insert or replace windows by index, unfenced and with no marker. Nothing in
+   * production writes this way: a step goes through `PipelineRepository.upsertWindows`.
+   * Specs and `test:services` seed an index with it.
+   */
+  upsertWindows(meetingId: string, windows: EmbeddedWindow[]): Promise<void>
+  /** Remove every window of the meeting, leaving nothing behind. Idempotent. */
   deleteForMeeting(meetingId: string): Promise<void>
   /**
    * The nearest windows to `query` within one meeting and one model, nearest
