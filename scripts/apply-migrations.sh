@@ -197,4 +197,4 @@ if [ -n "$unprotected" ]; then
   exit 1
 fi
 
-echo "  all 9 tables and 11 functions present; RLS enabled on every public table."
+echo "  every expected table and function present; RLS enabled on every public table."
