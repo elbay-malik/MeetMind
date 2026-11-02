@@ -6,11 +6,12 @@
 
 > **Note, 2026-11-02:** embeddings moved to Cloudflare Workers AI
 > ([ADR-0014](0014-workers-ai-embeddings.md)). Where this ADR says Gemini or `gemini-embed`,
-> read Workers AI and a slot of its own. Step 8 is not built, and it inherits three things: a
-> block at the daily limit lasts until 00:00 UTC, not 1 h; an index batch must also stay
-> within `MAX_BATCH_TOKENS`, which 16 windows at the full budget would not; and a 1024-dimension
+> read Workers AI and a slot of its own. Step 8 inherited three things: a block at the daily
+> limit lasts until 00:00 UTC, not 1 h; an index batch must also stay within
+> `MAX_BATCH_TOKENS`, which 16 windows at the full budget would not; and a 1024-dimension
 > reply is a third larger, with the upsert's `JSON.stringify` costing more CPU than the parse,
-> so `INDEX_BATCH` of 16 still has to be measured on real Workers CPU.
+> so `INDEX_BATCH` of 16 still has to be measured on real Workers CPU. Its addendum, at the
+> end, says what became of each. The third is still open.
 
 ## Context
 
@@ -456,3 +457,58 @@ Step 5 (`20261026120000_pipeline_runs.sql`) differs from §3 in these ways:
 - **`TranscriptRepository.replaceForMeeting` still exists**, with no caller left in production code. Specs and `test:services` seed with it, and removing it was left out of this step.
 - **A transcript is partly visible while it is written.** `GET .../transcript` returns the rows so far during `transcribing`, and after a failed attempt until the retry's Whisper step clears them. The meeting page says so above the lines, and sends the reader to the progress page, the only thing that moves the run. The "Transcribed" tick still waits for the status.
 
+## Addendum: step-wise indexing as built (step 8, 2026-11-02)
+
+`POST /api/meetings/:id/search-index` now does one step per request (`server/utils/qa/steps.ts`, `advanceIndexing`): one batch of windows, or the last step that marks the index complete. It answers 200 with `{ index }` once it is complete, and 202 with `{ progress: { done, total, lastError }, next, retryAt, retryAfterMs }` otherwise. `done` is windows of the plan dealt with, embedded or found stored; `total` is null until the run reaches the plan's end, which is the first it is known. The progress page loops on it the way it loops on the other two, showing the count the status route read before it started; step 9's `/advance` can call the same library.
+
+**One more migration** (`20261103120000_search_index_steps.sql`, safe to run twice, which `verify-migrations.sh` does):
+- `meeting_index_state`, as §3 has it. `window_count` is 0 until the run finishes.
+- `transcript_hash` is a SHA-256 over every line's index, times and text, in Postgres, using the core `sha256`. This is what `text_hash` holds. A Worker noticing a replaced transcript reads one short string, not the lines.
+- `read_index_state(p_meeting, p_model)` answers the marker, the hash now, and how many lines and windows there are, in one row, marker or not.
+- `upsert_windows` stores a batch and the cursor after it, marks the index incomplete and ends the step, in one transaction under the token, in the order that means a question is refused before any window of an old index is replaced.
+- `finish_index` marks it complete. It answers `complete`, `lost` (the token is not live) or `changed`, and writes nothing unless the transcript still hashes to what this run planned, every planned window is stored under this model, and the last one reaches the transcript's last line. A plan cut short, or a hole, cannot be called complete. It is also the only thing that removes windows during a run, and only those past the plan's end.
+
+The whole-transcript hash runs in Postgres on every status read and question. That is a few hundred kilobytes at most (`MAX_AUDIO_BYTES` bounds the transcript), one subrequest, and no Worker CPU; it was chosen over a chain of window hashes in the cursor, which could not notice a replaced transcript without planning it again.
+
+**A slice is the same plan.** `planWindows` and `planWindowSlice` are one forward scan, `scanWindows`. A window that reaches the last row read is not settled unless the page is known to end the transcript, even when its span has already closed it, because whether another window follows depends on that row being the last. The next page starts over at that window's first line. `listFrom` takes "is there more" from the store's own count, not from a short page, since a server row cap shortens a page without saying so. `tests/unit/qa-windows.spec.ts` drives this loop over 60 seeded transcripts holding what a transcript awkwardly can (over-budget lines, zero-length lines, overlaps, gaps in the numbering, no-space scripts), each cut seven ways, and 20 more under other targets and budgets, and requires the result to equal `planWindows`, hash for hash. Every page size around one transcript's own length is tried too, since a page ending exactly where the transcript does is the case a slice cannot see from inside.
+
+**One step, first match wins, and at most one provider request:**
+1. A finished index for this transcript and model: done, with no claim.
+2. A live lease: `wait`, at the earlier of the lease's end and 2 s.
+3. Parked until the daily limit resets: the same 429 again, with no claim. Parked for anything shorter: `wait`.
+4. Otherwise claim, in whatever status the meeting is in, and do what the cursor says. A cursor for another transcript or model starts the plan over, which re-embeds only what no longer matches.
+
+A batch reads a page of `INDEX_PAGE_SEGMENTS` (256) lines, hashes at most `INDEX_BATCH` (16) windows and reads their keys by range. The ones not stored go through `planEmbeddingBatches`, the same split the driver applies, so the batch is within both 16 windows and `MAX_BATCH_TOKENS` and is one request; a window that did not fit is where the next step starts. A window too long for the page doubles the page for one step, up to `MAX_INDEX_PAGE_SEGMENTS` (1,000), and past that the run stops with a 422: every line with text costs at least 5 tokens, so a window closes within about 300 lines.
+
+The step's embedder makes one attempt (`useStepEmbedder`), as extraction's summarizer does. **Subrequests:** 9 for a batch (the table says ~6, not counting the reads either side of a step, as step 7 also found), 5 for the last step, 2 to answer for a finished index, the same on any length of meeting. Questions rise to at most 10 from ~7, since up to four retrieved stretches are read separately.
+
+**The marker decides, not what happens to be stored:**
+- **Ready** means a complete marker for this model, the transcript hashing as the marker says, and exactly `window_count` windows stored, all under this model (`readyWindowCount`). The status route and a question both go by this. A transcript with no lines and nothing stored is ready with none, as before.
+- **A meeting indexed by older code** has windows and no marker. It reads `incomplete`, whatever is stored. A question is refused, and the next run finds every window stored, spends nothing, and writes the marker.
+- **Another model's windows** read as not this model's: `none` or `incomplete`, as before.
+- **A question** reads the marker, then its slot, the embedding and the search, then only the lines of what it retrieved, and hashes each window from those lines. That replaces both whole-transcript reads ask used to make, including the check that a window retrieved after a replacement is refused.
+- **`GET .../search-index`** answers a finished index from the marker. Any other state still plans the whole transcript and reads every key, to say "8 of 12" and `none` from `incomplete`, as it did on every read before. That is the one read here that still grows with the meeting. It is not a step, and it happens when a page asks about a meeting that is not ready.
+
+**The other-model hazard is narrower, and not gone.** `indexMeeting` deleted all of a meeting's windows in one request when the model differed, and `deleteExcept` is removed with it. Windows are now replaced in place, up to 16 per request, and nothing else is removed until the plan's end. So one request under the wrong model overwrites at most 16 windows, not all of them, and restoring the right model re-embeds only those. But the first such write still takes the marker to incomplete, so questions stop at that moment until someone indexes again, and a driver that keeps going still replaces every window. A deployment that has lost its Workers AI settings falls back to the stub, which is exactly such a model, and that guard is not part of this step. Nothing here starts indexing without a click. **Step 10's client driver must not change that before the guard exists:** a page that indexes when it opens would make simply viewing a meeting enough to reach this.
+
+**Quota:**
+- **A slot of its own,** `workers-ai-embed`, at `NUXT_EMBED_INTERVAL_MS` (1 s) with no wait. It is only read for a step that has something to embed, so a run finishing stored windows passes through a block.
+- **At the daily limit** the provider's refusal notes a block until 00:00 UTC on the slot, and parks the run on `retry_at` until then with the attempt refunded, keeping what is stored. The visitor gets the existing 429 and its sentence, and gets it again for free for as long as they ask: no claim, no write, no request. Waiting hours is not something for a page to sit through, so unlike a parked extraction this does not answer `wait`. Another meeting finding the block parks the same way without sending anything.
+- **The block is the whole account's, and rests on a classification nobody has seen.** ADR-0014 reads any 429 as the daily limit, since telling them apart takes spending the allowance. Until now a wrong guess cost one refused click. Now it stops indexing for every meeting until 00:00 UTC. Clearing `provider_slots.blocked_until` and the run's `retry_at` undoes it by hand.
+- **Questions do not read that block**, and do not set it. The provider's own refusal is the authority for each question, and a wrong guess above should not also take questions away for a day. The cost: while the allowance really is gone, each question spends a Groq slot before it is refused, since ADR-0015 takes the slot before the embedding.
+
+**Failures never touch the meeting**, in every status it can be indexed from:
+- A **retryable failure,** a provider 5xx or a database blip, parks for 5 s on attempt 1 (`RETRYABLE_PARK_MS`). On attempt 2 the run parks for 60 s (`RETRY_COOLDOWN_MS`) and the caller is told. There is no `failed` to go to, so that park and the count from it (`parkedAtAttempt` in the cursor) are what stop a step that keeps dying from spending quota: at most `MAX_INDEX_ATTEMPTS` (2) requests, then a minute.
+- A **refusal** (over capacity, rejected credentials, a passage over the limit) goes back to the caller with the attempt refunded and nothing parked. Only a passage over the limit is said not to help by trying again.
+- A **last step that finds things do not add up** starts the plan over, at most `MAX_INDEX_RESTARTS` (2) times in a row, then parks.
+
+**Deletion:** `indexingInFlight` is gone, with its wait after the row's removal. `deletionBlocker` reads the lease like any other stage's; a parked run is deletable at once however long its park, and the cascade takes the marker, windows and run. On the local driver, which has no foreign key, the fence reads the row as well as the token, and that is what now keeps a straggler from writing windows back.
+
+**Not done, or unverified:**
+- **CPU is unmeasured, and this is the step most likely to need its setting changed.** `INDEX_BATCH` of 16 has to be measured on real Workers CPU, which nobody can do until Phase 13. Locally (Node 24.18, Apple M5), through the real Supabase and Workers AI drivers with `fetch` stubbed, a whole step of 256 lines and 16 windows took a median of 4.6 ms of CPU, 5.6 ms at most once warm, and 23 ms as the first call in a fresh process, with a 360,804-byte upsert. The stubs' own building of a reply is included, so that overstates it some. ADR-0014 notes a Worker may be several times slower, which on those numbers does not leave 10 ms clear. If it measures over, `INDEX_BATCH` shrinks and nothing else changes.
+- **Nothing here has run against the real project.** `test:services` has two new cases for the SQL through the real drivers, which **cannot pass until `20261103120000_search_index_steps.sql` is applied.** They were run against the migrations on a throwaway Postgres with PostgREST in front, where they pass, along with step 7's. That is not Supabase: its grants and its row cap were stood in for by hand.
+- **A real 429 at the daily limit** has still not been seen, as in ADR-0014.
+- **Indexing moves `meetings.updated_at`,** since every claim does (§3). On a meeting whose extraction failed, that restarts the 60 s before extraction may be retried, for as long as indexing runs.
+- **`event.waitUntil` around the step** is still not done.
+- **`TranscriptIndexRepository.upsertWindows` still exists,** unfenced, with no caller left in production code. Specs and `test:services` seed with it, as with step 7's `replaceForMeeting`.
+- **A batch with an oversize window is refused whole,** so the other windows in it wait too. That was already so, and the meeting stays without questions either way.
