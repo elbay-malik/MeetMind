@@ -115,6 +115,18 @@ describe('indexMeeting', () => {
     expect(embeddedTexts()).toEqual(plan.map(w => w.text))
   })
 
+  it('stores each window with its own vector, not a neighbour\'s', async () => {
+    const { embedder } = recordingEmbedder()
+    const store = repo()
+    await indexMeeting({ meetingId: 'i-pairing', segments: transcript(30), embedder, repo: store })
+    const plan = await planWindows(transcript(30))
+    expect(plan.length).toBeGreaterThan(1)
+    for (const window of plan) {
+      const [nearest] = await store.search('i-pairing', hashedTokenVector(window.text), { model: 'model-a', limit: 1 })
+      expect(nearest!.idx).toBe(window.idx)
+    }
+  })
+
   it('spends nothing on a second run over an unchanged transcript', async () => {
     const first = recordingEmbedder()
     await indexMeeting({ meetingId: 'i2', segments: transcript(30), embedder: first.embedder, repo: repo() })

@@ -68,6 +68,10 @@ describe('request', () => {
     expect(calls[0]!.headers.get('content-type')).toBe('application/json')
   })
 
+  it('names the model and size that stored windows are filed under', () => {
+    expect(embedder).toMatchObject({ kind: 'workers-ai', model: '@cf/baai/bge-m3', dimensions: EMBEDDING_DIMENSIONS })
+  })
+
   it('sends a window as it is, in `text` and nothing else', async () => {
     // `query` and `contexts` would ask this model for reranking instead.
     const calls = stubWorkersAi(sent => embeddingsFor(sent))
@@ -122,6 +126,21 @@ describe('request', () => {
     }
     expect(calls.flatMap(c => c.body.text)).toEqual(texts)
   })
+
+  it('stops at the first refused batch, so the ones after it spend nothing', async () => {
+    const calls = stubWorkersAi(() => refusal(429, 3036, 'Account limited'))
+    const texts = Array.from({ length: MAX_BATCH * 2 }, (_, i) => `text ${i}`)
+    await expect(embedder.embedDocuments(texts)).rejects.toMatchObject({ statusCode: 429 })
+    expect(calls).toHaveLength(1)
+  })
+
+  it('gives up on a provider that never answers, as a failure worth retrying', async () => {
+    vi.stubGlobal('fetch', (_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(init.signal!.reason))
+    }))
+    const impatient = createWorkersAiEmbedder({ accountId: ACCOUNT, apiToken: TOKEN, timeoutMs: 10, maxAttempts: 1 })
+    await expect(impatient.embedQuery('x')).rejects.toMatchObject({ statusCode: 502, retryable: true })
+  })
 })
 
 describe('planEmbeddingBatches', () => {
@@ -148,6 +167,15 @@ describe('planEmbeddingBatches', () => {
     expect(batches.length).toBeGreaterThan(1)
     for (const batch of batches) {
       expect(batch.reduce((sum, t) => sum + estimateTokens(t), 0)).toBeLessThanOrEqual(MAX_BATCH_TOKENS)
+    }
+  })
+
+  it('fills every batch, not only the first, so closing one does not shrink the rest', () => {
+    const batches = plan(Array.from({ length: 30 }, (_, i) => words(1_000, `t${i}x`)))
+    expect(batches.length).toBeGreaterThan(2)
+    for (const [i, batch] of batches.slice(0, -1).entries()) {
+      const tokens = batch.reduce((sum, t) => sum + estimateTokens(t), 0)
+      expect(tokens + estimateTokens(batches[i + 1]![0]!)).toBeGreaterThan(MAX_BATCH_TOKENS)
     }
   })
 
@@ -182,6 +210,11 @@ describe('response validation', () => {
     const calls = stubWorkersAi(() => replyWith([vector(0)]))
     await expect(embedder.embedDocuments(['a', 'b'])).rejects.toThrow(/Expected 2 embeddings, got 1/)
     expect(calls).toHaveLength(1)
+  })
+
+  it('takes a reply that states no shape, since the vectors themselves are checked', async () => {
+    stubWorkersAi(() => Response.json({ success: true, result: { data: [vector(0)] } }))
+    expect(await embedder.embedQuery('x')).toHaveLength(EMBEDDING_DIMENSIONS)
   })
 
   it('refuses a vector containing a non-finite value', async () => {
@@ -345,10 +378,16 @@ describe('failures', () => {
     expect(calls).toHaveLength(2)
   })
 
-  it('retries a server error once, then succeeds', async () => {
-    const calls = stubWorkersAi((sent, call) => call === 1 ? new Response('down', { status: 503 }) : embeddingsFor(sent))
+  it.each([500, 503])('retries a server error once, then succeeds (HTTP %i)', async (status) => {
+    const calls = stubWorkersAi((sent, call) => call === 1 ? new Response('down', { status }) : embeddingsFor(sent))
     expect(await embedder.embedQuery('x')).toHaveLength(EMBEDDING_DIMENSIONS)
     expect(calls).toHaveLength(2)
+  })
+
+  it('retries a batch of documents the same way, and keeps its place', async () => {
+    const calls = stubWorkersAi((sent, call) => call === 1 ? new Response('down', { status: 503 }) : embeddingsFor(sent))
+    expect(await embedder.embedDocuments(['a', 'b'])).toHaveLength(2)
+    expect(calls.map(c => c.body.text)).toEqual([['a', 'b'], ['a', 'b']])
   })
 
   it('gives up after the configured attempts on a persistent server error', async () => {
@@ -383,6 +422,7 @@ describe('no error carries a credential', () => {
     ['the daily limit', () => refusal(429, 4006, echoed)],
     ['an over-long input', () => refusal(400, 8007, `Sequence too long: 9613 > 8192 ${echoed}`)],
     ['a body that is not JSON', () => new Response(echoed, { status: 400 })],
+    ['a body that is not JSON on a 200', () => new Response(echoed)],
     ['success: false on a 200', () => refusal(200, 7000, echoed)],
   ])('%s', async (_name, reply) => {
     stubWorkersAi(() => reply())
@@ -398,6 +438,19 @@ describe('no error carries a credential', () => {
     const failure = await embedder.embedQuery('x').catch(e => e)
     expect(failure.message).toMatch(/Could not reach the embedding service: connect failed/)
     expect(leaks(failure.message)).toBe(false)
+  })
+
+  it('a secret where the reason is cut short leaves no part of itself behind', async () => {
+    // Scrubbed after the cut, the first half of the token no longer matches and goes out.
+    stubWorkersAi(() => refusal(400, 7000, `${'x'.repeat(190)} ${TOKEN}`))
+    const failure = await embedder.embedQuery('x').catch(e => e)
+    expect(failure.message).not.toContain(TOKEN.slice(0, 9))
+  })
+
+  it('a long reason is cut short, because a visitor reads it', async () => {
+    stubWorkersAi(() => refusal(400, 7000, 'y'.repeat(5_000)))
+    const failure = await embedder.embedQuery('x').catch(e => e)
+    expect(failure.message.length).toBeLessThan(300)
   })
 
   it('a refusal keeps the part of the reason that is not secret', async () => {

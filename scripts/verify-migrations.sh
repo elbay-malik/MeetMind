@@ -80,6 +80,10 @@ prepare_legacy_windows() {
   # Supabase has these roles and a plain Postgres does not, so without them the
   # migration's revokes and its grant to service_role never run here.
   psql -q -c "create role anon nologin; create role authenticated nologin; create role service_role nologin;"
+  # Supabase hands every new function to its API roles by default privileges. Without
+  # this the migration's revokes from those two have nothing to take away, and
+  # removing them would still pass here. Not service_role, so its grant is tested too.
+  psql -q -c "alter default privileges in schema public grant execute on functions to anon, authenticated;"
   psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
               values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','legacy window','ready','a.mp4',1,'legacy_window',10);"
   psql -q -c "insert into public.transcript_windows
