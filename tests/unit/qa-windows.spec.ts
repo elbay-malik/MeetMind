@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { planWindows } from '../../server/utils/qa/windows'
+import { planWindows, planWindowSlice, windowOver, WINDOW_TARGET_MS, WINDOW_TOKEN_BUDGET } from '../../server/utils/qa/windows'
 import type { TranscriptSegment } from '../../shared/types/meeting'
 
 /** `count` five-second segments of `words` words each, back to back. */
@@ -120,5 +120,210 @@ describe('planWindows', () => {
   it('refuses a nonsensical target or budget instead of looping', async () => {
     await expect(planWindows(transcript(3), { targetMs: 0 })).rejects.toThrow(/positive/)
     await expect(planWindows(transcript(3), { tokenBudget: Number.NaN })).rejects.toThrow(/positive/)
+  })
+})
+
+/**
+ * ADR-0012 §2 and step 8's first acceptance criterion: reading a transcript a page at
+ * a time, from wherever the last step stopped, gives the plan reading it whole gives.
+ * This is the loop `advanceIndexing` runs, without the ledger around it.
+ */
+describe('planWindowSlice', () => {
+  interface Reading {
+    /** Rows a page starts with. */
+    page: number
+    /** Windows a slice may hold. */
+    maxWindows: number
+    /** Of those, how many this step keeps, as a batch that hit its token cap does. */
+    keep?: (windows: number) => number
+    targetMs?: number
+    tokenBudget?: number
+  }
+
+  async function readInSlices(segments: TranscriptSegment[], reading: Reading) {
+    const ordered = [...segments].sort((a, b) => a.idx - b.idx)
+    const windows = []
+    let from = ordered[0]?.idx ?? 0
+    let width = reading.page
+    let guard = 0
+    for (;;) {
+      if (guard++ > 100_000) throw new Error('the slices never finished')
+      const rest = ordered.filter(s => s.idx >= from)
+      const rows = rest.slice(0, width)
+      const slice = await planWindowSlice(rows, {
+        firstWindowIdx: windows.length,
+        atEnd: rows.length === rest.length,
+        maxWindows: reading.maxWindows,
+        targetMs: reading.targetMs,
+        tokenBudget: reading.tokenBudget,
+      })
+      if (slice.windows.length === 0 && !slice.finished) {
+        width *= 2
+        continue
+      }
+      width = reading.page
+      const kept = reading.keep ? Math.max(1, Math.min(reading.keep(slice.windows.length), slice.windows.length)) : slice.windows.length
+      windows.push(...slice.windows.slice(0, kept))
+      if (kept < slice.windows.length) {
+        from = slice.windows[kept]!.firstSegmentIdx
+        continue
+      }
+      if (slice.finished) return windows
+      from = slice.nextSegmentIdx!
+    }
+  }
+
+  /** A small deterministic generator, so a failure names a seed that reproduces it. */
+  function random(seed: number) {
+    let state = seed >>> 0 || 1
+    return (below: number) => {
+      state ^= state << 13
+      state >>>= 0
+      state ^= state >>> 17
+      state ^= state << 5
+      state >>>= 0
+      return state % below
+    }
+  }
+
+  /** What a stored transcript can hold, weighted towards the awkward. */
+  function wildTranscript(seed: number): TranscriptSegment[] {
+    const pick = random(seed * 7919 + 13)
+    const count = pick(180)
+    const segments: TranscriptSegment[] = []
+    let at = pick(5_000)
+    let idx = 0
+    for (let i = 0; i < count; i++) {
+      const length = [0, 200, 1_500, 5_000, 12_000, 47_000, 90_000][pick(7)]!
+      const text = [
+        `line ${i} about ${pick(1000)}`,
+        Array.from({ length: pick(80) + 1 }, (_, w) => `word${w}`).join(' '),
+        // Over the budget alone, which is never split.
+        Array.from({ length: 1_400 }, (_, w) => `w${w}`).join(' '),
+        // No spaces: priced per character.
+        '会議の内容'.repeat(pick(60) + 1),
+        // The smallest thing a line can cost.
+        '字',
+      ][pick(10) < 6 ? pick(2) : pick(5)]!
+      segments.push({ idx, startMs: at, endMs: at + length, text })
+      at += pick(4) === 0 ? 0 : length
+      // Old transcripts are gapless, but nothing about the plan may rely on it.
+      idx += pick(25) === 0 ? 3 : 1
+    }
+    return segments
+  }
+
+  it('gives the whole plan, hash for hash, however a wild transcript is cut', async () => {
+    const readings: Array<Reading & { name: string }> = [
+      { name: 'one row at a time', page: 1, maxWindows: 1 },
+      { name: 'two rows, one window', page: 2, maxWindows: 1 },
+      { name: 'the real step', page: 256, maxWindows: 16 },
+      { name: 'a page holding the whole of most transcripts', page: 400, maxWindows: 400 },
+      { name: 'the size of a short window', page: 7, maxWindows: 3 },
+      { name: 'a batch that stops part-way through every slice', page: 40, maxWindows: 16, keep: n => Math.ceil(n / 2) },
+      { name: 'a batch that keeps one window at a time', page: 23, maxWindows: 16, keep: () => 1 },
+    ]
+    let checked = 0
+    for (let seed = 1; seed <= 60; seed++) {
+      const segments = wildTranscript(seed)
+      const whole = await planWindows(segments)
+      for (const { name, ...reading } of readings) {
+        expect(await readInSlices(segments, reading), `seed ${seed}, ${name}`).toEqual(whole)
+        checked += whole.length
+      }
+    }
+    // A run that planned nothing would pass all of the above.
+    expect(checked).toBeGreaterThan(5_000)
+  })
+
+  it('gives the whole plan under other targets and budgets, which move every boundary', async () => {
+    for (let seed = 61; seed <= 80; seed++) {
+      const segments = wildTranscript(seed)
+      for (const options of [{ targetMs: 1_000 }, { tokenBudget: 200 }, { targetMs: 300_000, tokenBudget: 5_000 }]) {
+        expect(await readInSlices(segments, { page: 11, maxWindows: 4, ...options }), `seed ${seed}`)
+          .toEqual(await planWindows(segments, options))
+      }
+    }
+  })
+
+  // The case a slice cannot see from inside: a page that ends exactly where the
+  // transcript does looks like one with more to come. Taking its last window as settled
+  // would then read that window's last line alone and plan a window the whole plan
+  // does not have, so every page size around the transcript's own length is tried.
+  it('plans no extra window when a page ends exactly where the transcript does', async () => {
+    const segments = transcript(40)
+    const whole = await planWindows(segments)
+    expect(whole.length).toBeGreaterThan(2)
+    for (let page = 1; page <= 45; page++) {
+      expect(await readInSlices(segments, { page, maxWindows: 16 }), `a page of ${page}`).toEqual(whole)
+    }
+  })
+
+  it('settles a window its span has closed only once it knows whether a line follows', async () => {
+    // One 50 s line closes on its span alone. Whether another window comes after it
+    // depends on whether it is the transcript's last line.
+    const line: TranscriptSegment = { idx: 0, startMs: 0, endMs: 50_000, text: 'a long line' }
+    const open = await planWindowSlice([line], { firstWindowIdx: 0, atEnd: false, maxWindows: 16 })
+    expect(open).toEqual({ windows: [], nextSegmentIdx: 0, finished: false })
+    const closed = await planWindowSlice([line], { firstWindowIdx: 0, atEnd: true, maxWindows: 16 })
+    expect(closed.finished).toBe(true)
+    expect(closed.windows).toHaveLength(1)
+  })
+
+  it('numbers its windows as the whole plan does, and says where the next slice starts', async () => {
+    const segments = transcript(40)
+    const whole = await planWindows(segments)
+    const slice = await planWindowSlice(segments, { firstWindowIdx: 0, atEnd: true, maxWindows: 2 })
+    expect(slice.windows).toEqual(whole.slice(0, 2))
+    expect(slice.nextSegmentIdx).toBe(whole[2]!.firstSegmentIdx)
+    expect(slice.finished).toBe(false)
+
+    const later = await planWindowSlice(segments.filter(s => s.idx >= slice.nextSegmentIdx!), {
+      firstWindowIdx: 2, atEnd: true, maxWindows: 1,
+    })
+    expect(later.windows).toEqual([whole[2]])
+  })
+
+  it('stops at the number of windows it is allowed, so a step hashes a bounded number', async () => {
+    const digest = crypto.subtle.digest.bind(crypto.subtle)
+    let hashes = 0
+    crypto.subtle.digest = async (...args: Parameters<typeof digest>) => {
+      hashes++
+      return digest(...args)
+    }
+    try {
+      const slice = await planWindowSlice(transcript(2_000), { firstWindowIdx: 0, atEnd: false, maxWindows: 16 })
+      expect(slice.windows).toHaveLength(16)
+      expect(hashes).toBe(16)
+    }
+    finally {
+      crypto.subtle.digest = digest
+    }
+  })
+
+  it('finishes an empty transcript only when it knows the transcript is empty', async () => {
+    expect(await planWindowSlice([], { firstWindowIdx: 0, atEnd: true, maxWindows: 16 }))
+      .toEqual({ windows: [], nextSegmentIdx: null, finished: true })
+  })
+
+  it('refuses options that would never finish, as the whole plan does', async () => {
+    await expect(planWindowSlice(transcript(3), { firstWindowIdx: 0, atEnd: true, maxWindows: 0 })).rejects.toThrow(/at least one window/)
+    await expect(planWindowSlice(transcript(3), { firstWindowIdx: 0, atEnd: true, maxWindows: 1, targetMs: 0 })).rejects.toThrow(/positive/)
+  })
+
+  it('works from the defaults the whole plan uses', async () => {
+    const segments = transcript(40)
+    expect((await planWindows(segments))).toEqual(await planWindows(segments, { targetMs: WINDOW_TARGET_MS, tokenBudget: WINDOW_TOKEN_BUDGET }))
+    expect((await planWindowSlice(segments, { firstWindowIdx: 0, atEnd: true, maxWindows: 1000 })).windows).toEqual(await planWindows(segments))
+  })
+})
+
+describe('windowOver', () => {
+  it('gives the plan\'s own window back from just its lines, so a retrieved window can be checked without the plan', async () => {
+    const segments = transcript(40)
+    for (const window of await planWindows(segments)) {
+      const run = segments.filter(s => s.idx >= window.firstSegmentIdx && s.idx <= window.lastSegmentIdx)
+      expect(await windowOver(run, window.idx)).toEqual(window)
+    }
   })
 })

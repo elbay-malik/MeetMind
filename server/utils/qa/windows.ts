@@ -48,6 +48,75 @@ export interface WindowOptions {
   tokenBudget?: number
 }
 
+/** Where one scan over ordered segments got to. Positions are array positions, not indexes. */
+interface WindowScan {
+  /** Inclusive position ranges of the windows that are settled. */
+  ranges: Array<[from: number, to: number]>
+  /** Where the next window starts. Meaningless once `finished`. */
+  next: number
+  /** The plan ends with the last of `ranges`: nothing follows it in the transcript. */
+  finished: boolean
+}
+
+/**
+ * The one definition of where windows fall, greedy and forward only: everything a
+ * window's end depends on comes after its start. Over a whole transcript this is the
+ * whole plan; over a slice it stops where the slice stops deciding anything.
+ *
+ * A window that reaches the last row held is not settled unless `atEnd`, even when its
+ * span has closed it. Whether another window follows it depends on whether that row is
+ * the transcript's last, and the next slice starts over at this window's first segment
+ * to find out. That is the whole of why a sliced plan is the same plan.
+ */
+function scanWindows(
+  ordered: readonly TranscriptSegment[],
+  { targetMs, tokenBudget, atEnd, maxWindows }: { targetMs: number, tokenBudget: number, atEnd: boolean, maxWindows: number },
+): WindowScan {
+  const ranges: WindowScan['ranges'] = []
+  let start = 0
+  while (start < ordered.length && ranges.length < maxWindows) {
+    let end = start
+    let tokens = estimateTokens(ordered[start]!.text)
+    while (end + 1 < ordered.length) {
+      const spanMs = ordered[end]!.endMs - ordered[start]!.startMs
+      if (spanMs >= targetMs) break
+      const nextTokens = estimateTokens(ordered[end + 1]!.text)
+      if (tokens + nextTokens > tokenBudget) break
+      end++
+      tokens += nextTokens
+    }
+    if (end === ordered.length - 1) {
+      if (!atEnd) return { ranges, next: start, finished: false }
+      ranges.push([start, end])
+      return { ranges, next: ordered.length, finished: true }
+    }
+    ranges.push([start, end])
+    // Overlap by one segment — but a one-segment window has nothing to
+    // overlap with, and restarting at itself would never advance.
+    start = end > start ? end : end + 1
+  }
+  return { ranges, next: start, finished: atEnd && ordered.length === 0 }
+}
+
+function assertValidOptions(targetMs: number, tokenBudget: number): void {
+  if (!(targetMs > 0) || !(tokenBudget > 0)) {
+    throw new Error('Window target and token budget must be positive')
+  }
+}
+
+/** The window over a contiguous run of segments, with its hash. */
+export async function windowOver(run: readonly TranscriptSegment[], idx: number): Promise<TranscriptWindow> {
+  const window = {
+    idx,
+    firstSegmentIdx: run[0]!.idx,
+    lastSegmentIdx: run.at(-1)!.idx,
+    startMs: run[0]!.startMs,
+    endMs: run.at(-1)!.endMs,
+    text: run.map(s => s.text).join('\n'),
+  }
+  return { ...window, contentHash: await hashWindow(window) }
+}
+
 /**
  * Split a transcript into overlapping windows.
  *
@@ -67,44 +136,56 @@ export async function planWindows(
 ): Promise<TranscriptWindow[]> {
   const targetMs = options.targetMs ?? WINDOW_TARGET_MS
   const tokenBudget = options.tokenBudget ?? WINDOW_TOKEN_BUDGET
-  if (!(targetMs > 0) || !(tokenBudget > 0)) {
-    throw new Error('Window target and token budget must be positive')
-  }
+  assertValidOptions(targetMs, tokenBudget)
 
   const ordered = [...segments].sort((a, b) => a.idx - b.idx)
-  const ranges: Array<[number, number]> = []
+  const { ranges } = scanWindows(ordered, { targetMs, tokenBudget, atEnd: true, maxWindows: Number.POSITIVE_INFINITY })
+  return Promise.all(ranges.map(([from, to], idx) => windowOver(ordered.slice(from, to + 1), idx)))
+}
 
-  let start = 0
-  while (start < ordered.length) {
-    let end = start
-    let tokens = estimateTokens(ordered[start]!.text)
-    while (end + 1 < ordered.length) {
-      const spanMs = ordered[end]!.endMs - ordered[start]!.startMs
-      if (spanMs >= targetMs) break
-      const nextTokens = estimateTokens(ordered[end + 1]!.text)
-      if (tokens + nextTokens > tokenBudget) break
-      end++
-      tokens += nextTokens
-    }
-    ranges.push([start, end])
-    if (end === ordered.length - 1) break
-    // Overlap by one segment — but a one-segment window has nothing to
-    // overlap with, and restarting at itself would never advance.
-    start = end > start ? end : end + 1
+export interface WindowSliceOptions extends WindowOptions {
+  /** The index the first window of this slice gets in the whole plan. */
+  firstWindowIdx: number
+  /** The slice runs to the end of the transcript. */
+  atEnd: boolean
+  /** Stop after this many windows, so one step hashes a bounded number. */
+  maxWindows: number
+}
+
+export interface WindowSlice {
+  /** Windows of the whole plan, with the hashes and indexes they have there. */
+  windows: TranscriptWindow[]
+  /** The segment index the next slice must start at. Null once `finished`. */
+  nextSegmentIdx: number | null
+  /** The plan ends with the last of `windows`. */
+  finished: boolean
+}
+
+/**
+ * The next windows of the plan, from segments in `idx` order that start at a window's
+ * first segment (ADR-0012 §2). No window here depends on anything before the slice or
+ * after what it settles, so a transcript read a page at a time gives the windows
+ * {@link planWindows} gives it read whole, and only as many hashes as asked for.
+ *
+ * No windows and not `finished` means the slice ended inside its first window: read
+ * more from the same place.
+ */
+export async function planWindowSlice(
+  ordered: readonly TranscriptSegment[],
+  options: WindowSliceOptions,
+): Promise<WindowSlice> {
+  const targetMs = options.targetMs ?? WINDOW_TARGET_MS
+  const tokenBudget = options.tokenBudget ?? WINDOW_TOKEN_BUDGET
+  assertValidOptions(targetMs, tokenBudget)
+  if (!(options.maxWindows > 0)) throw new Error('A slice must be allowed at least one window')
+
+  const scan = scanWindows(ordered, { targetMs, tokenBudget, atEnd: options.atEnd, maxWindows: options.maxWindows })
+  return {
+    windows: await Promise.all(scan.ranges.map(([from, to], i) =>
+      windowOver(ordered.slice(from, to + 1), options.firstWindowIdx + i))),
+    nextSegmentIdx: scan.finished ? null : ordered[scan.next]?.idx ?? null,
+    finished: scan.finished,
   }
-
-  return Promise.all(ranges.map(async ([from, to], idx) => {
-    const run = ordered.slice(from, to + 1)
-    const window = {
-      idx,
-      firstSegmentIdx: run[0]!.idx,
-      lastSegmentIdx: run.at(-1)!.idx,
-      startMs: run[0]!.startMs,
-      endMs: run.at(-1)!.endMs,
-      text: run.map(s => s.text).join('\n'),
-    }
-    return { ...window, contentHash: await hashWindow(window) }
-  }))
 }
 
 async function hashWindow(window: Omit<TranscriptWindow, 'contentHash'>): Promise<string> {
