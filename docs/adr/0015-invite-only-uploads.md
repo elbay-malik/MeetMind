@@ -66,6 +66,7 @@ rotated, the page asks again and keeps the extracted audio.
 ADR-0012 lets anyone holding a meeting's id drive its pipeline, and ADR-0013 makes that id the
 capability. The demo's id is on the home page, so for this one meeting that capability is
 held by everyone. `refuseOnPublicDemo` answers 403 on the four routes that could move it along,
+and on `POST .../advance` (ADR-0012's step 9), which takes whichever of their steps comes next,
 before they read anything. Asking stays open, because asking is the showcase.
 
 This was tested against the routes before the guard was added, with an anonymous `POST`:
@@ -111,6 +112,7 @@ answers every method. No `GET` route writes anything.
 | `POST /api/meetings/:id/transcribe` | Meeting id, a transcribable status, a claim per step | Whisper quota, the raw reply, the transcript, the row | **Refused, 403** |
 | `POST /api/meetings/:id/summarize` | Meeting id, a finished transcript, a claim per step | Groq quota, the chunk ledger, the summary, the row | **Refused, 403** |
 | `POST /api/meetings/:id/search-index` | Meeting id, a finished transcript | Workers AI quota; writes windows, deletes stale ones | **Refused, 403** |
+| `POST /api/meetings/:id/advance` | Meeting id, whatever the step it takes needs, a claim per step. Never replaces an index holding another model's or transcript's work, and never repairs a `ready` meeting with no summary | Whatever its one step spends: Whisper, Groq or Workers AI quota, or nothing | **Refused, 403** |
 | `POST /api/meetings/:id/ask` | Meeting id, a finished transcript, a complete index, a 4 KB body | Workers AI and Groq quota, and the shared Groq slot. Nothing about the meeting | **Open, on purpose** |
 | `DELETE /api/meetings/:id` | `NUXT_ADMIN_TOKEN` (ADR-0011) | Removes everything stored for the meeting | Same. This is how an operator removes it |
 

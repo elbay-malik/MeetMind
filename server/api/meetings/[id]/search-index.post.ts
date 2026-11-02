@@ -1,8 +1,7 @@
 import type { IndexingStepResponse, SearchIndexStatus } from '#shared/types/meeting'
-import { useMeetingRepository, usePipelineRepository, useSlotRepository, useTranscriptIndexRepository, useTranscriptRepository } from '../../../utils/db'
 import { refuseOnPublicDemo } from '../../../utils/demo-meeting'
 import { conflict, notFound, requireMeetingId, retryLater } from '../../../utils/http'
-import { useStepEmbedder } from '../../../utils/qa'
+import { useIndexingStepDeps } from '../../../utils/pipeline/deps'
 import { advanceIndexing } from '../../../utils/qa/steps'
 
 /**
@@ -21,15 +20,7 @@ import { advanceIndexing } from '../../../utils/qa/steps'
 export default defineEventHandler(async (event): Promise<{ index: SearchIndexStatus } | IndexingStepResponse> => {
   const id = requireMeetingId(event)
   refuseOnPublicDemo(event, id)
-  const outcome = await advanceIndexing(id, {
-    meetings: useMeetingRepository(event),
-    pipeline: usePipelineRepository(event),
-    transcripts: useTranscriptRepository(event),
-    index: useTranscriptIndexRepository(event),
-    slots: useSlotRepository(event),
-    embedder: useStepEmbedder(event),
-    embedIntervalMs: Number(useRuntimeConfig(event).embedIntervalMs),
-  })
+  const outcome = await advanceIndexing(id, useIndexingStepDeps(event))
 
   switch (outcome.kind) {
     case 'done':
