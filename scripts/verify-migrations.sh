@@ -1106,6 +1106,8 @@ same_hash "a line's text" "update public.transcript_segments set text = 'other' 
   "update public.transcript_segments set text = 'line 5' where meeting_id = '$I1' and idx = 5;"
 same_hash "a line's time" "update public.transcript_segments set start_ms = 5001 where meeting_id = '$I1' and idx = 5;" \
   "update public.transcript_segments set start_ms = 5000 where meeting_id = '$I1' and idx = 5;"
+same_hash "a line's end" "update public.transcript_segments set end_ms = 5901 where meeting_id = '$I1' and idx = 5;" \
+  "update public.transcript_segments set end_ms = 5900 where meeting_id = '$I1' and idx = 5;"
 same_hash "a line's position" "update public.transcript_segments set idx = 90 where meeting_id = '$I1' and idx = 9;" \
   "update public.transcript_segments set idx = 9 where meeting_id = '$I1' and idx = 90;"
 check "transcript_hash of no lines is the hash of nothing, the same as the local driver's" \
@@ -1197,6 +1199,51 @@ done
 check "step 8's functions pin their search_path" \
   "select bool_and('search_path=public' = any(proconfig)) and count(*) = 4 from pg_proc
    where proname in ('transcript_hash', 'read_index_state', 'upsert_windows', 'finish_index')"
+
+# What a batch and a last step write reaches this meeting's indexing run and no other
+# run: not the same meeting's other stage, and not another meeting.
+I6=a0000000-0000-0000-0000-000000000026   # the meeting being indexed
+I7=a0000000-0000-0000-0000-000000000027   # another meeting, with its own index and a live step
+ledger_meeting "$I6" ready
+ledger_meeting "$I7" ready
+claim i7 "$I7" search_index ready 60000
+upsert i7a "$I7" "$(tok i7)" "[$(win 0 0 4),$(win 1 4 7),$(win 2 7 9)]" '{}'
+claim i7b "$I7" search_index ready 60000
+finish_idx i7c "$I7" "$(tok i7b)" 3
+claim i7d "$I7" search_index ready 60000
+claim i6s "$I6" summarization ready 60000
+psql -q -c "update public.pipeline_runs set cursor = '{\"mine\":1}'
+            where (meeting_id = '$I7' and stage = 'search_index') or (meeting_id = '$I6' and stage = 'summarization');"
+untouched() { # untouched <what just ran>
+  check "$1 leaves the meeting's other stage and another meeting's run, windows and marker as they were" \
+    "select $(run_of "$I6" step_token) = $(tok i6s) and $(run_of "$I6" cursor) = '{\"mine\":1}'::jsonb
+            and $(ix_run "$I7" step_token) = $(tok i7d) and $(ix_run "$I7" cursor) = '{\"mine\":1}'::jsonb
+            and $(windows_of "$I7") = 3 and $(marker "$I7" complete) and $(marker "$I7" window_count) = 3"
+}
+claim i6 "$I6" search_index ready 60000
+upsert i6a "$I6" "$(tok i6)" "[$(win 0 0 4),$(win 1 4 9)]" '{}'
+untouched "upsert_windows"
+claim i6b "$I6" search_index ready 60000
+finish_idx i6c "$I6" "$(tok i6b)" 2
+check "the meeting's own index finished" "select $(result i6c) = 'complete'"
+# Its plan is shorter than the other meeting's: past its end is index 2 there.
+untouched "finish_index"
+
+# A shorter plan under the same model, and every column of a window it replaces.
+VEC2="[$(printf '0.2,%.0s' $(seq 1 1023))0.2]"
+HASH2=$(printf 'b%.0s' $(seq 1 64))
+claim i6d "$I6" search_index ready 60000
+upsert i6e "$I6" "$(tok i6d)" "[{\"idx\":0,\"first_segment_idx\":1,\"last_segment_idx\":9,\"start_ms\":1234,\"end_ms\":9876,\"content\":\"replaced\",\"content_hash\":\"$HASH2\",\"embedding\":$VEC2}]" '{}'
+check "a batch replaces every column of a stored window, its vector included" \
+  "select first_segment_idx = 1 and last_segment_idx = 9 and start_ms = 1234 and end_ms = 9876 and content = 'replaced'
+          and content_hash = '$HASH2' and model = 'model-a' and embedding::text = '$VEC2'
+     from public.transcript_windows where meeting_id = '$I6' and idx = 0"
+claim i6f "$I6" search_index ready 60000
+finish_idx i6g "$I6" "$(tok i6f)" 1
+check "a shorter plan under the same model finishes, removing what is past its end" \
+  "select $(result i6g) = 'complete' and $(windows_of "$I6") = 1 and $(marker "$I6" window_count) = 1"
+psql -q -At -c "select public.release_step('$I6', 'summarization', $(tok i6s), null, null);" >/dev/null
+psql -q -c "delete from public.meetings where id in ('$I6', '$I7');"
 
 # Repeatable: a second apply fails on nothing and changes no row.
 psql -q -c "create table vl_s as select * from public.meeting_index_state;"
