@@ -62,6 +62,22 @@ export const RETRY_COOLDOWN_MS = 60_000
  */
 export const MAX_CHUNKS = 40
 
+/** Why a transcript was refused for needing more than {@link MAX_CHUNKS}. */
+export function tooManyChunksMessage(count: number): string {
+  return `This transcript would need ${count} sequential requests, over the ${MAX_CHUNKS} limit.`
+}
+
+/**
+ * The failure that no retry can get past: the transcript does not change, so planning
+ * it again refuses it again. Read from the stored message, since that is all a meeting
+ * refused at the end of transcription has.
+ */
+export function refusedAsTooLong(meeting: Pick<Meeting, 'status' | 'failedStage' | 'errorMessage'>): boolean {
+  return meeting.status === 'failed'
+    && meeting.failedStage === 'summarization'
+    && /^This transcript would need \d+ sequential requests, over the \d+ limit\.$/.test(meeting.errorMessage ?? '')
+}
+
 /**
  * How soon a caller refused by a live step asks again. A step usually ends long
  * before its lease does; the lease is only the bound for a step that died.
@@ -139,8 +155,9 @@ export async function advanceExtraction(meetingId: string, deps: ExtractionDeps)
     const waitMs = cooldownEnds(meeting, run) - now()
     if (waitMs > 0) return { kind: 'refused', statusCode: 409, message: cooldownMessage(waitMs) }
     // Resumes where the run failed: finished chunks are kept, and the failed
-    // chunk starts its attempts over.
-    return steps.next({ status: 'failed', moveTo: 'indexing', resetAttempts: true }, run)
+    // chunk starts its attempts over. Only from the failure checked above: indexing
+    // or another caller may have moved the row since, restarting the cooldown.
+    return steps.next({ status: 'failed', moveTo: 'indexing', resetAttempts: true, expectedUpdatedAt: meeting.updatedAt }, run)
   }
 
   // `indexing`: the run is in progress, or parked between steps.
@@ -229,7 +246,7 @@ function stepsFor(meetingId: string, deps: ExtractionDeps, now: () => number) {
   }
 
   /** The step the current plan calls for: plan it, extract its first unfinished chunk, or finalize. */
-  async function next(base: { status: MeetingStatus, moveTo?: MeetingStatus, resetAttempts?: boolean }, run: PipelineRun | undefined) {
+  async function next(base: { status: MeetingStatus, moveTo?: MeetingStatus, resetAttempts?: boolean, expectedUpdatedAt?: string }, run: PipelineRun | undefined) {
     const chunks = await pipeline.listChunks(meetingId)
     const unfinished = chunks.find(c => !c.result)
     if (unfinished) {
@@ -262,8 +279,7 @@ function stepsFor(meetingId: string, deps: ExtractionDeps, now: () => number) {
       // does not change between attempts, and without a persisted `failed`
       // every later call would refuse the same way with nothing to show for it.
       if (planned.length > MAX_CHUNKS) {
-        const message = `This transcript would need ${planned.length} sequential requests, over the ${MAX_CHUNKS} limit.`
-        return fail(claimed, 413, 'Transcript too long', message)
+        return fail(claimed, 413, 'Transcript too long', tooManyChunksMessage(planned.length))
       }
       const written = await pipeline.planChunks(meetingId, claimed.token, planned.map((c, chunkNo) => ({
         chunkNo,
