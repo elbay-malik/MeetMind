@@ -71,6 +71,17 @@ describe('the step priority, first match wins', () => {
       expect(assess({ meeting: failed('summarization', { updatedAt: COOLED }), chunks: SOME_CHUNKS, index: index.none }).step).toBe('extraction')
     })
 
+    // With no step taken these fall through to `failed` with no time, which ends a driver for good.
+    it.each<[string, Partial<PipelineSnapshot>]>([
+      ['parked until the daily limit resets', { runs: [parked('search_index', 8 * 3_600_000)], index: index.partial }],
+      ['stopped by a refusal', { runs: [run('search_index', { lastError: 'too long' })], index: index.partial }],
+      ['holding another model\'s work', { index: index.otherModel }],
+    ])('is not held up by an index %s', (_name, rest) => {
+      const { step, answer } = assess({ meeting: failed('summarization', { updatedAt: COOLED }), chunks: SOME_CHUNKS, ...rest })
+      expect(step).toBe('extraction')
+      expect(answer).toMatchObject({ next: 'continue', status: 'failed' })
+    })
+
     it('is not there the moment before the cooldown ends, and is the moment it does', () => {
       const cooldown = (offsetMs: number) => failed('transcription', { updatedAt: at(-RETRY_COOLDOWN_MS + offsetMs).toISOString() })
       expect(assess({ meeting: cooldown(1) }).step).toBeNull()
@@ -121,6 +132,16 @@ describe('the step priority, first match wins', () => {
       ['in flight', live('search_index')],
     ])('is not held up by an index %s', (_name, r) => {
       expect(assess({ meeting: meeting('indexing'), runs: [r], chunks: SOME_CHUNKS, index: index.partial }).step).toBe('extraction')
+    })
+
+    // Neither has a time to come back, so a chunk they held up would wait on nothing, for ever.
+    it.each<[string, Partial<PipelineSnapshot>]>([
+      ['stopped by a refusal', { runs: [run('search_index', { lastError: 'too long' })], index: index.partial }],
+      ['holding another model\'s work', { index: index.otherModel }],
+    ])('is not held up by an index %s', (_name, rest) => {
+      const { step, answer } = assess({ meeting: meeting('indexing'), chunks: SOME_CHUNKS, ...rest })
+      expect(step).toBe('extraction')
+      expect(answer.next).toBe('continue')
     })
 
     it('plans before any chunk, and that needs no slot', () => {
