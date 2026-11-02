@@ -3,9 +3,12 @@ import { join } from 'node:path'
 import { createStorage, type Storage } from 'unstorage'
 import type { Meeting, MeetingSummary, TranscriptSegment } from '#shared/types/meeting'
 import { serialize } from './local'
+import { hashTranscript } from './windows-local'
+import type { EmbeddedWindow, IndexMarker } from './windows'
 import {
   assertReleasable,
   assertStorableResult,
+  assertValidIndexBatch,
   assertValidPage,
   assertValidLease,
   assertValidPlan,
@@ -51,6 +54,8 @@ interface LocalChunk {
 interface LedgerState {
   runs: Partial<Record<PipelineStage, LocalRun>>
   chunks: LocalChunk[]
+  /** `meeting_index_state`, in the ledger so one write carries it and the cursor. */
+  indexMarker?: IndexMarker
 }
 
 const ledgerKey = (meetingId: string) => `pipeline/${meetingId}`
@@ -60,6 +65,7 @@ const ledgerKey = (meetingId: string) => `pipeline/${meetingId}`
 const meetingKey = (meetingId: string) => `meetings/${meetingId}`
 const summaryKey = (meetingId: string) => `summaries/${meetingId}`
 const transcriptKey = (meetingId: string) => `transcripts/${meetingId}`
+const windowsKey = (meetingId: string) => `windows/${meetingId}`
 
 /**
  * A timestamp strictly after `previous`. A delete is fenced on `updatedAt`
@@ -73,7 +79,7 @@ function laterThan(previous: string): string {
 /**
  * The run ledger as one JSON file per meeting under `<dataDir>/db/`, for
  * development and tests. A deliberate mirror of the SQL functions in
- * supabase/migrations/20261026120000_pipeline_runs.sql and the three migrations
+ * supabase/migrations/20261026120000_pipeline_runs.sql and the migrations
  * after it; tests/unit/pipeline-ledger.spec.ts asserts this against the cases
  * scripts/verify-migrations.sh asserts the SQL against.
  */
@@ -317,6 +323,58 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
           updatedAt: laterThan(meeting.updatedAt),
         })
         return true
+      })
+    },
+
+    async upsertWindows(meetingId, token, batch) {
+      assertValidIndexBatch(batch)
+      return withLedger(meetingId, async (s, state) => {
+        const run = liveRun(state, 'search_index', token)
+        if (!run) return false
+        // What the foreign key does on Supabase: a run outliving its meeting's delete
+        // must not write the windows back.
+        if (!await s.getItem<Meeting>(meetingKey(meetingId))) return false
+
+        if (batch.windows.length > 0) {
+          const byIdx = new Map(((await s.getItem<EmbeddedWindow[]>(windowsKey(meetingId))) ?? []).map(w => [w.idx, w]))
+          for (const window of batch.windows) byIdx.set(window.idx, window)
+          await s.setItem(windowsKey(meetingId), [...byIdx.values()].sort((a, b) => a.idx - b.idx))
+        }
+        state.indexMarker = { textHash: batch.textHash, model: batch.model, windowCount: 0, complete: false }
+        endStep(run)
+        run.attempts = 0
+        run.cursor = structuredClone(batch.cursor)
+        await s.setItem<LedgerState>(ledgerKey(meetingId), state)
+        return true
+      })
+    },
+
+    async finishIndex(meetingId, token, { textHash, model, windowCount }) {
+      if (!Number.isInteger(windowCount) || windowCount < 0) {
+        throw new Error(`The window count must not be negative, got ${windowCount}`)
+      }
+      return withLedger(meetingId, async (s, state) => {
+        const run = liveRun(state, 'search_index', token)
+        if (!run) return 'lost'
+        if (!await s.getItem<Meeting>(meetingKey(meetingId))) return 'lost'
+
+        const segments = (await s.getItem<TranscriptSegment[]>(transcriptKey(meetingId))) ?? []
+        if (await hashTranscript(segments) !== textHash) return 'changed'
+
+        const windows = (await s.getItem<EmbeddedWindow[]>(windowsKey(meetingId))) ?? []
+        const planned = windows.filter(w => w.model === model && w.idx < windowCount)
+        const reaches = planned.find(w => w.idx === windowCount - 1)?.lastSegmentIdx ?? null
+        const lastLine = segments.length === 0 ? null : Math.max(...segments.map(line => line.idx))
+        if (planned.length !== windowCount || reaches !== lastLine) return 'changed'
+
+        const kept = windows.filter(w => w.idx < windowCount)
+        if (kept.length !== windows.length) await s.setItem(windowsKey(meetingId), kept)
+        state.indexMarker = { textHash, model, windowCount, complete: true }
+        endStep(run)
+        run.attempts = 0
+        run.cursor = {}
+        await s.setItem<LedgerState>(ledgerKey(meetingId), state)
+        return 'complete'
       })
     },
 

@@ -4,12 +4,14 @@ import type { SupabaseOptions } from './supabase'
 import { actionItemToRow, decisionToRow } from './summaries'
 import {
   assertStorableResult,
+  assertValidIndexBatch,
   assertValidLease,
   assertReleasable,
   assertValidPage,
   assertValidPlan,
   parseStoredResult,
   rowToRun,
+  type IndexFinish,
   type PipelineRepository,
   type StepClaim,
   type SummaryChunk,
@@ -174,6 +176,45 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
       return granted('finish transcription', data)
     },
 
+    async upsertWindows(meetingId, token, batch) {
+      assertValidIndexBatch(batch)
+      const { data, error } = await db().rpc('upsert_windows', {
+        p_meeting: meetingId,
+        p_token: token,
+        p_windows: batch.windows.map(w => ({
+          idx: w.idx,
+          first_segment_idx: w.firstSegmentIdx,
+          last_segment_idx: w.lastSegmentIdx,
+          start_ms: w.startMs,
+          end_ms: w.endMs,
+          content: w.text,
+          content_hash: w.contentHash,
+          embedding: w.embedding,
+        })),
+        p_cursor: batch.cursor,
+        p_text_hash: batch.textHash,
+        p_model: batch.model,
+      })
+      if (error) fail('upsert windows', error)
+      return granted('upsert windows', data)
+    },
+
+    async finishIndex(meetingId, token, { textHash, model, windowCount }) {
+      const { data, error } = await db().rpc('finish_index', {
+        p_meeting: meetingId,
+        p_token: token,
+        p_text_hash: textHash,
+        p_model: model,
+        p_window_count: windowCount,
+      })
+      if (error) fail('finish index', error)
+      // Anything else must not read as complete.
+      if (data !== 'complete' && data !== 'changed' && data !== 'lost') {
+        throw new Error(`Supabase finish index returned an unusable answer: ${JSON.stringify(data)}`)
+      }
+      return data satisfies IndexFinish
+    },
+
     async deleteForMeeting(meetingId) {
       // Normally a no-op by the time it runs -- deleting the meeting cascades
       // -- but stated rather than assumed, so it means the same on both drivers.
@@ -181,6 +222,8 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
       if (chunks.error) fail('summary chunks delete', chunks.error)
       const runs = await db().from('pipeline_runs').delete().eq('meeting_id', meetingId)
       if (runs.error) fail('pipeline runs delete', runs.error)
+      const marker = await db().from('meeting_index_state').delete().eq('meeting_id', meetingId)
+      if (marker.error) fail('index marker delete', marker.error)
     },
   }
 }

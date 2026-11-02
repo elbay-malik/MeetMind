@@ -1,10 +1,12 @@
 import { join } from 'node:path'
 import { createStorage, type Storage } from 'unstorage'
+import type { TranscriptSegment } from '#shared/types/meeting'
 import { serialize } from './local'
 import {
   clampLimit,
   cosineSimilarity,
   type EmbeddedWindow,
+  type IndexMarker,
   type TranscriptIndexRepository,
 } from './windows'
 
@@ -21,6 +23,22 @@ function storageFor(base: string): Promise<Storage> {
 }
 
 const windowsKey = (meetingId: string) => `windows/${meetingId}`
+// The ledger holds the marker, as one write with the cursor beside it, and the
+// transcript repository holds the lines. Under the same base, read in this meeting's
+// one queue.
+const ledgerKey = (meetingId: string) => `pipeline/${meetingId}`
+const transcriptKey = (meetingId: string) => `transcripts/${meetingId}`
+
+/**
+ * A transcript's fingerprint: not the same bytes `public.transcript_hash` hashes, since
+ * each driver only ever compares its own, but the same thing noticed, and the hash of
+ * nothing for a transcript with no lines.
+ */
+export async function hashTranscript(segments: readonly TranscriptSegment[]): Promise<string> {
+  const lines = [...segments].sort((a, b) => a.idx - b.idx).map(s => JSON.stringify([s.idx, s.startMs, s.endMs, s.text]))
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(lines.join('\n')))
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('')
+}
 
 /** A similarity as an ordering key: NaN sorts as the worst possible value, matching pgvector. */
 const rank = (similarity: number): number => (Number.isNaN(similarity) ? Number.NEGATIVE_INFINITY : similarity)
@@ -46,9 +64,27 @@ export function createLocalTranscriptIndexRepository(options: { dataDir: string 
   return {
     kind: 'local',
 
-    async listKeys(meetingId) {
+    async readState(meetingId, model) {
+      return serialize(meetingId, async () => {
+        const s = await storageFor(base)
+        const windows = await read(meetingId)
+        const segments = (await s.getItem<TranscriptSegment[]>(transcriptKey(meetingId))) ?? []
+        const ledger = await s.getItem<{ indexMarker?: IndexMarker }>(ledgerKey(meetingId))
+        return {
+          marker: ledger?.indexMarker ?? null,
+          transcriptHash: await hashTranscript(segments),
+          segmentCount: segments.length,
+          storedWindows: windows.length,
+          storedForModel: windows.filter(w => w.model === model).length,
+        }
+      })
+    },
+
+    async listKeys(meetingId, range) {
       return serialize(meetingId, async () =>
-        (await read(meetingId)).map(w => ({ idx: w.idx, contentHash: w.contentHash, model: w.model })))
+        (await read(meetingId))
+          .filter(w => !range || (w.idx >= range.from && w.idx <= range.to))
+          .map(w => ({ idx: w.idx, contentHash: w.contentHash, model: w.model })))
     },
 
     async upsertWindows(meetingId, windows) {
@@ -60,15 +96,6 @@ export function createLocalTranscriptIndexRepository(options: { dataDir: string 
         const byIdx = new Map((await read(meetingId)).map(w => [w.idx, w]))
         for (const window of windows) byIdx.set(window.idx, window)
         await write(meetingId, [...byIdx.values()].sort((a, b) => a.idx - b.idx))
-      })
-    },
-
-    async deleteExcept(meetingId, keep) {
-      await serialize(meetingId, async () => {
-        const kept = new Set(keep)
-        const current = await read(meetingId)
-        const remaining = current.filter(w => kept.has(w.idx))
-        if (remaining.length !== current.length) await write(meetingId, remaining)
       })
     },
 

@@ -30,6 +30,12 @@ export interface Database {
         Update: Partial<SummaryChunkRow>
         Relationships: []
       }
+      meeting_index_state: {
+        Row: { meeting_id: string, text_hash: string, model: string, window_count: number, complete: boolean, updated_at: string }
+        Insert: { meeting_id: string, text_hash: string, model: string, window_count?: number, complete?: boolean, updated_at?: string }
+        Update: Partial<{ meeting_id: string, text_hash: string, model: string, window_count: number, complete: boolean, updated_at: string }>
+        Relationships: []
+      }
       meetings: {
         Row: MeetingRow
         Insert: Omit<MeetingRow, 'created_at' | 'updated_at' | 'audio_mime'>
@@ -153,6 +159,34 @@ export interface Database {
         /** p_chunks: rows of { chunk_no, seg_from, seg_to, est_tokens }. */
         Args: { p_meeting: string, p_token: string, p_chunks: unknown, p_refusal: string | null }
         Returns: boolean
+      }
+      transcript_hash: {
+        Args: { p_meeting: string }
+        Returns: string
+      }
+      read_index_state: {
+        Args: { p_meeting: string, p_model: string }
+        /** One row always; the marker's columns are null when the meeting has none. */
+        Returns: {
+          text_hash: string | null
+          model: string | null
+          window_count: number | null
+          complete: boolean | null
+          current_hash: string
+          segment_count: number
+          stored_windows: number
+          stored_for_model: number
+        }[]
+      }
+      upsert_windows: {
+        /** p_windows: rows of { idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, embedding }. */
+        Args: { p_meeting: string, p_token: string, p_windows: unknown, p_cursor: Record<string, unknown>, p_text_hash: string, p_model: string }
+        Returns: boolean
+      }
+      finish_index: {
+        Args: { p_meeting: string, p_token: string, p_text_hash: string, p_model: string, p_window_count: number }
+        /** 'complete', 'changed' or 'lost'. */
+        Returns: string
       }
       finalize_summary: {
         /** p_decisions and p_action_items: rows in the tables' own column names. */

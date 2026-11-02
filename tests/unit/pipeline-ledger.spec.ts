@@ -10,7 +10,9 @@ import { createLocalMeetingRepository } from '../../server/utils/db/local'
 import { createLocalPipelineRepository } from '../../server/utils/db/pipeline-local'
 import { createLocalSummaryRepository } from '../../server/utils/db/summaries-local'
 import { createLocalTranscriptRepository } from '../../server/utils/db/transcripts-local'
-import type { ChunkPlan } from '../../server/utils/db/pipeline'
+import { createLocalTranscriptIndexRepository } from '../../server/utils/db/windows-local'
+import type { ChunkPlan, IndexBatch } from '../../server/utils/db/pipeline'
+import type { EmbeddedWindow } from '../../server/utils/db/windows'
 import { deleteMeeting } from '../../server/utils/meeting-deletion'
 import type { AttestedChunk } from '../../server/utils/summary/reconcile'
 
@@ -507,7 +509,6 @@ describe('deleting a meeting with a run ledger (ADR-0012 amends ADR-0011)', () =
       meetings,
       pipeline,
       removeData: async (meetingId: string) => pipeline.deleteForMeeting(meetingId),
-      indexingRuns: new Map(),
     }
   }
 
@@ -706,5 +707,236 @@ describe('appendSegments and finishTranscription (step 7)', () => {
     const before = (await meetings.get(m.id))!.updatedAt
     await pipeline.finishTranscription(m.id, claim.token, { chunks: [], refusal: null })
     expect(Date.parse((await meetings.get(m.id))!.updatedAt)).toBeGreaterThan(Date.parse(before))
+  })
+})
+
+describe('upsertWindows and finishIndex (step 8)', () => {
+  const VECTOR = new Array(1024).fill(0.1)
+  const lines = Array.from({ length: 10 }, (_, i) => ({ idx: i, startMs: i * 1000, endMs: i * 1000 + 900, text: `line ${i}` }))
+  const index = () => createLocalTranscriptIndexRepository({ dataDir })
+  const transcripts = () => createLocalTranscriptRepository({ dataDir })
+
+  const win = (idx: number, first: number, last: number, model = 'model-a', hash = 'a'): EmbeddedWindow => ({
+    idx, firstSegmentIdx: first, lastSegmentIdx: last, startMs: first * 1000, endMs: last * 1000 + 900,
+    text: `window ${idx}`, contentHash: hash.repeat(64), model, embedding: VECTOR,
+  })
+
+  /** A meeting with a transcript, and a step claimed on its index. */
+  async function indexing(segments = lines) {
+    const m = await newMeeting('ready')
+    await transcripts().replaceForMeeting(m.id, segments)
+    const claim = (await repos().pipeline.claimStep(m.id, 'search_index', { status: 'ready', leaseMs: LEASE }))!
+    const { transcriptHash } = await index().readState(m.id, 'model-a')
+    return { m, claim, textHash: transcriptHash, pipeline: repos().pipeline }
+  }
+  const batch = (textHash: string, windows: EmbeddedWindow[], cursor: Record<string, unknown> = { at: 1 }, model = 'model-a'): IndexBatch =>
+    ({ windows, cursor, textHash, model })
+  const claimAgain = async (id: string) => (await repos().pipeline.claimStep(id, 'search_index', { status: 'ready', leaseMs: LEASE }))!
+  const runOf = async (id: string) => (await repos().pipeline.listRuns(id)).find(r => r.stage === 'search_index')!
+  const markerOf = async (id: string) => (await index().readState(id, 'model-a')).marker
+
+  it('stores the batch and its cursor, marks the index incomplete, and ends the step with its count started afresh', async () => {
+    const { m, claim, textHash, pipeline } = await indexing()
+    expect(await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 4)]))).toBe(true)
+    expect(await index().listKeys(m.id)).toEqual([{ idx: 0, contentHash: 'a'.repeat(64), model: 'model-a' }])
+    expect(await runOf(m.id)).toMatchObject({ cursor: { at: 1 }, stepLeaseUntil: null, attempts: 0, lastError: null, retryAt: null })
+    expect(await markerOf(m.id)).toEqual({ textHash, model: 'model-a', windowCount: 0, complete: false })
+    expect((await claimAgain(m.id)).attempts).toBe(1)
+  })
+
+  it('writes nothing under a token that is not the live one', async () => {
+    const { m, claim, textHash, pipeline } = await indexing()
+    await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 4)]))
+    await claimAgain(m.id)
+    expect(await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(1, 4, 9)], { at: 9 }))).toBe(false)
+    expect((await index().listKeys(m.id)).map(k => k.idx)).toEqual([0])
+    expect((await runOf(m.id)).cursor).toEqual({ at: 1 })
+    expect((await runOf(m.id)).stepLeaseUntil).not.toBeNull()
+  })
+
+  it('does not take another stage\'s token', async () => {
+    const { m, textHash, pipeline } = await indexing()
+    const other = (await pipeline.claimStep(m.id, 'summarization', { status: 'ready', leaseMs: LEASE }))!
+    expect(await pipeline.upsertWindows(m.id, other.token, batch(textHash, [win(0, 0, 4)]))).toBe(false)
+    expect(await pipeline.finishIndex(m.id, other.token, { textHash, model: 'model-a', windowCount: 0 })).toBe('lost')
+    expect(await index().listKeys(m.id)).toEqual([])
+  })
+
+  it('refuses a cursor that is not an object, a vector of another size, and a window of another model', async () => {
+    const { m, claim, textHash, pipeline } = await indexing()
+    await expect(pipeline.upsertWindows(m.id, claim.token, batch(textHash, [], [1] as unknown as Record<string, unknown>))).rejects.toThrow(/must be a JSON object/)
+    await expect(pipeline.upsertWindows(m.id, claim.token, batch(textHash, [{ ...win(0, 0, 4), embedding: [1, 2] }]))).rejects.toThrow(/2-dimension/)
+    await expect(pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 4, 'model-b')]))).rejects.toThrow(/model-b/)
+    expect(await index().listKeys(m.id)).toEqual([])
+    expect((await runOf(m.id)).stepLeaseUntil).not.toBeNull()
+  })
+
+  it('takes an empty batch: only the cursor, for a step that found everything stored', async () => {
+    const { m, claim, textHash, pipeline } = await indexing()
+    expect(await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [], { at: 3 }))).toBe(true)
+    expect(await index().listKeys(m.id)).toEqual([])
+    expect(await runOf(m.id)).toMatchObject({ cursor: { at: 3 }, stepLeaseUntil: null })
+  })
+
+  it('refuses a plan with a hole in it, and the step stays live', async () => {
+    const { m, claim, textHash, pipeline } = await indexing()
+    await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 4)]))
+    const next = await claimAgain(m.id)
+    expect(await pipeline.finishIndex(m.id, next.token, { textHash, model: 'model-a', windowCount: 2 })).toBe('changed')
+    expect((await markerOf(m.id))!.complete).toBe(false)
+    expect((await runOf(m.id)).stepLeaseUntil).not.toBeNull()
+  })
+
+  it('refuses a hole in the middle of a plan whose last window does reach the end', async () => {
+    const { m, claim, textHash, pipeline } = await indexing()
+    await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 4), win(2, 7, 9)]))
+    const next = await claimAgain(m.id)
+    expect(await pipeline.finishIndex(m.id, next.token, { textHash, model: 'model-a', windowCount: 3 })).toBe('changed')
+    expect((await markerOf(m.id))!.complete).toBe(false)
+  })
+
+  it('refuses a transcript that is not the one this run planned, windows that do not reach its last line, and another model\'s', async () => {
+    const { m, claim, textHash, pipeline } = await indexing()
+    await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 4), win(1, 4, 9)]))
+    const next = await claimAgain(m.id)
+    expect(await pipeline.finishIndex(m.id, next.token, { textHash: 'b'.repeat(64), model: 'model-a', windowCount: 2 })).toBe('changed')
+    expect(await pipeline.finishIndex(m.id, next.token, { textHash, model: 'model-a', windowCount: 1 })).toBe('changed')
+    expect(await pipeline.finishIndex(m.id, next.token, { textHash, model: 'model-b', windowCount: 2 })).toBe('changed')
+    expect((await markerOf(m.id))!.complete).toBe(false)
+    expect(await index().listKeys(m.id)).toHaveLength(2)
+  })
+
+  it('refuses a negative count', async () => {
+    const { m, claim, textHash, pipeline } = await indexing()
+    await expect(pipeline.finishIndex(m.id, claim.token, { textHash, model: 'model-a', windowCount: -1 })).rejects.toThrow(/must not be negative/)
+  })
+
+  it('marks the index complete and ends the step, clearing the cursor', async () => {
+    const { m, claim, textHash, pipeline } = await indexing()
+    await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 4), win(1, 4, 9)]))
+    const next = await claimAgain(m.id)
+    expect(await pipeline.finishIndex(m.id, next.token, { textHash, model: 'model-a', windowCount: 2 })).toBe('complete')
+    expect(await markerOf(m.id)).toEqual({ textHash, model: 'model-a', windowCount: 2, complete: true })
+    expect(await runOf(m.id)).toMatchObject({ cursor: {}, stepLeaseUntil: null, attempts: 0 })
+    expect(await pipeline.finishIndex(m.id, next.token, { textHash, model: 'model-a', windowCount: 2 })).toBe('lost')
+  })
+
+  it('takes the marker back to incomplete with the first write of a new run, before anything has changed', async () => {
+    const { m, claim, textHash, pipeline } = await indexing()
+    await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 9)]))
+    await pipeline.finishIndex(m.id, (await claimAgain(m.id)).token, { textHash, model: 'model-a', windowCount: 1 })
+    await pipeline.upsertWindows(m.id, (await claimAgain(m.id)).token, batch(textHash, []))
+    expect(await markerOf(m.id)).toEqual({ textHash, model: 'model-a', windowCount: 0, complete: false })
+    expect(await index().listKeys(m.id)).toHaveLength(1)
+  })
+
+  it('notices a line\'s text, time and position in the transcript hash', async () => {
+    const { m, textHash } = await indexing()
+    const same = async (segments: typeof lines) => {
+      await transcripts().replaceForMeeting(m.id, segments)
+      return (await index().readState(m.id, 'model-a')).transcriptHash === textHash
+    }
+    expect(await same(lines.map(s => s.idx === 5 ? { ...s, text: 'other' } : s))).toBe(false)
+    expect(await same(lines.map(s => s.idx === 5 ? { ...s, startMs: 5001 } : s))).toBe(false)
+    expect(await same(lines.map(s => s.idx === 9 ? { ...s, idx: 90 } : s))).toBe(false)
+    expect(await same(lines)).toBe(true)
+    expect(await same([...lines].reverse())).toBe(true)
+  })
+
+  it('replaces only its own windows under another model, leaving the rest of the old index stored', async () => {
+    const { m, claim, textHash, pipeline } = await indexing()
+    await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 4, 'model-old'), win(1, 4, 7, 'model-old'), win(2, 7, 9, 'model-old')], {}, 'model-old'))
+    expect(await pipeline.finishIndex(m.id, (await claimAgain(m.id)).token, { textHash, model: 'model-old', windowCount: 3 })).toBe('complete')
+
+    await pipeline.upsertWindows(m.id, (await claimAgain(m.id)).token, batch(textHash, [win(0, 0, 9, 'model-a', 'b')]))
+    expect((await index().listKeys(m.id)).map(k => k.model)).toEqual(['model-a', 'model-old', 'model-old'])
+    expect(await markerOf(m.id)).toMatchObject({ model: 'model-a', complete: false })
+
+    expect(await pipeline.finishIndex(m.id, (await claimAgain(m.id)).token, { textHash, model: 'model-a', windowCount: 1 })).toBe('complete')
+    expect(await index().listKeys(m.id)).toEqual([{ idx: 0, contentHash: 'b'.repeat(64), model: 'model-a' }])
+    expect(await markerOf(m.id)).toMatchObject({ windowCount: 1, complete: true })
+  })
+
+  it('finishes a transcript with no lines with no windows, and refuses a plan of none for one that has lines', async () => {
+    const { m: silent, claim, textHash, pipeline } = await indexing([])
+    expect(await pipeline.finishIndex(silent.id, claim.token, { textHash, model: 'model-a', windowCount: 0 })).toBe('complete')
+    expect(await markerOf(silent.id)).toMatchObject({ windowCount: 0, complete: true })
+
+    const spoken = await indexing()
+    expect(await pipeline.finishIndex(spoken.m.id, spoken.claim.token, { textHash: spoken.textHash, model: 'model-a', windowCount: 0 })).toBe('changed')
+  })
+
+  describe('deleting the meeting under a step', () => {
+    const storage = () => createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+
+    async function oldIndexing() {
+      const started = await indexing()
+      await storage().setItem(`meetings/${started.m.id}`, { ...(await repos().meetings.get(started.m.id))!, createdAt: '2026-01-01T00:00:00.000Z' })
+      return started
+    }
+    const expireIndexLease = async (id: string) => {
+      const ledger = await storage().getItem<{ runs: { search_index: { stepLeaseUntil: number } } }>(`pipeline/${id}`)
+      ledger!.runs.search_index.stepLeaseUntil = Date.now() - 1_000
+      await storage().setItem(`pipeline/${id}`, ledger)
+    }
+    const deps = () => {
+      const { meetings, pipeline } = repos()
+      return {
+        meetings,
+        pipeline,
+        removeData: async (meetingId: string) => {
+          await pipeline.deleteForMeeting(meetingId)
+          await index().deleteForMeeting(meetingId)
+        },
+      }
+    }
+
+    it('is refused while its step is live, on the lease alone', async () => {
+      const { m } = await oldIndexing()
+      expect(await deleteMeeting(m.id, deps())).toMatchObject({ kind: 'blocked', reason: expect.stringMatching(/pipeline step/) })
+      expect(await repos().meetings.get(m.id)).not.toBeNull()
+    })
+
+    it('leaves a straggler that outlived its lease nothing to write back into', async () => {
+      const { m, claim, textHash, pipeline } = await oldIndexing()
+      await expireIndexLease(m.id)
+      expect(await deleteMeeting(m.id, deps())).toEqual({ kind: 'deleted' })
+
+      expect(await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 9)]))).toBe(false)
+      expect(await pipeline.finishIndex(m.id, claim.token, { textHash, model: 'model-a', windowCount: 1 })).toBe('lost')
+      // This driver has no foreign key to refuse a write: only the fence stopped it.
+      expect(await storage().hasItem(`windows/${m.id}`)).toBe(false)
+      expect(await storage().hasItem(`pipeline/${m.id}`)).toBe(false)
+    })
+
+    it('refuses a straggler in the gap after the row went and before its ledger did', async () => {
+      // The delete removes the row first. Waiting out a run in this gap is what the
+      // in-process map used to do; here the fence reads the row as well as the token.
+      const { m, claim, textHash, pipeline } = await oldIndexing()
+      await repos().meetings.delete(m.id, (await repos().meetings.get(m.id))!)
+      expect(await storage().hasItem(`pipeline/${m.id}`)).toBe(true)
+      expect(await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 9)]))).toBe(false)
+      expect(await pipeline.finishIndex(m.id, claim.token, { textHash, model: 'model-a', windowCount: 1 })).toBe('lost')
+      expect(await storage().hasItem(`windows/${m.id}`)).toBe(false)
+    })
+
+    it('removes the marker and the windows with it', async () => {
+      const { m, claim, textHash, pipeline } = await oldIndexing()
+      await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 9)]))
+      await pipeline.finishIndex(m.id, (await claimAgain(m.id)).token, { textHash, model: 'model-a', windowCount: 1 })
+      expect(await deleteMeeting(m.id, deps())).toEqual({ kind: 'deleted' })
+      expect(await storage().hasItem(`pipeline/${m.id}`)).toBe(false)
+      expect(await storage().hasItem(`windows/${m.id}`)).toBe(false)
+      expect(await markerOf(m.id)).toBeNull()
+    })
+
+    it('finishes a half-finished delete with the row gone, and nothing comes back after it', async () => {
+      const { m, claim, textHash, pipeline } = await oldIndexing()
+      await expireIndexLease(m.id)
+      await repos().meetings.delete(m.id, (await repos().meetings.get(m.id))!)
+      expect(await deleteMeeting(m.id, deps())).toEqual({ kind: 'not-found' })
+      expect(await pipeline.upsertWindows(m.id, claim.token, batch(textHash, [win(0, 0, 9)]))).toBe(false)
+      expect(await storage().hasItem(`windows/${m.id}`)).toBe(false)
+    })
   })
 })

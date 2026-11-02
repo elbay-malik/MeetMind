@@ -9,9 +9,10 @@ import { createSupabasePipelineRepository } from '../../server/utils/db/pipeline
  */
 
 const MIGRATION = readFileSync('supabase/migrations/20261101120000_transcription_steps.sql', 'utf8')
+  + readFileSync('supabase/migrations/20261103120000_search_index_steps.sql', 'utf8')
 
 function sqlParameters(fn: string): string[] {
-  const signature = new RegExp(`create function public\\.${fn}\\(([\\s\\S]*?)\\n\\)`).exec(MIGRATION)
+  const signature = new RegExp(`create (?:or replace )?function public\\.${fn}\\(([\\s\\S]*?)\\n\\)`).exec(MIGRATION)
   if (!signature) throw new Error(`${fn} is not in the migration`)
   return [...signature[1]!.matchAll(/\bp_\w+/g)].map(found => found[0]).sort()
 }
@@ -103,5 +104,87 @@ describe('claimStep', () => {
     const calls = stubRpc([])
     await repo.claimStep(MEETING, 'transcription', options)
     expect(calls[0]!.body.p_expected_updated_at).toBeNull()
+  })
+})
+
+describe('upsertWindows', () => {
+  const embedding = new Array(1024).fill(0.5)
+  const window = {
+    idx: 3, firstSegmentIdx: 20, lastSegmentIdx: 29, startMs: 1000, endMs: 2000, text: 'passage', contentHash: 'c'.repeat(64),
+    model: 'model-a', embedding,
+  }
+  const batch = { windows: [window], cursor: { pass: { nextWindow: 4 } }, textHash: 'a'.repeat(64), model: 'model-a' }
+
+  it('sends exactly the function\'s parameters, in the columns its recordset reads', async () => {
+    const calls = stubRpc(true)
+    await expect(repo.upsertWindows(MEETING, TOKEN, batch)).resolves.toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.fn).toBe('upsert_windows')
+    expect(Object.keys(calls[0]!.body).sort()).toEqual(sqlParameters('upsert_windows'))
+    expect(calls[0]!.body).toEqual({
+      p_meeting: MEETING,
+      p_token: TOKEN,
+      p_windows: [{
+        idx: 3, first_segment_idx: 20, last_segment_idx: 29, start_ms: 1000, end_ms: 2000,
+        content: 'passage', content_hash: 'c'.repeat(64), embedding,
+      }],
+      p_cursor: batch.cursor,
+      p_text_hash: batch.textHash,
+      p_model: 'model-a',
+    })
+  })
+
+  it('reads a refusal as false, and anything else as a failure', async () => {
+    stubRpc(false)
+    await expect(repo.upsertWindows(MEETING, TOKEN, batch)).resolves.toBe(false)
+    vi.unstubAllGlobals()
+    stubRpc('sure')
+    await expect(repo.upsertWindows(MEETING, TOKEN, batch)).rejects.toThrow(/unusable answer/)
+  })
+
+  it('refuses a batch it can see is wrong before the database does, as the local driver would', async () => {
+    const calls = stubRpc(true)
+    await expect(repo.upsertWindows(MEETING, TOKEN, { ...batch, windows: [{ ...window, embedding: [1, 2] }] })).rejects.toThrow(/2-dimension/)
+    await expect(repo.upsertWindows(MEETING, TOKEN, { ...batch, windows: [{ ...window, model: 'other' }] })).rejects.toThrow(/other's/)
+    expect(calls).toEqual([])
+  })
+})
+
+describe('finishIndex', () => {
+  const plan = { textHash: 'a'.repeat(64), model: 'model-a', windowCount: 12 }
+
+  it('sends exactly the function\'s parameters', async () => {
+    const calls = stubRpc('complete')
+    await expect(repo.finishIndex(MEETING, TOKEN, plan)).resolves.toBe('complete')
+    expect(calls[0]!.fn).toBe('finish_index')
+    expect(Object.keys(calls[0]!.body).sort()).toEqual(sqlParameters('finish_index'))
+    expect(calls[0]!.body).toEqual({
+      p_meeting: MEETING, p_token: TOKEN, p_text_hash: plan.textHash, p_model: 'model-a', p_window_count: 12,
+    })
+  })
+
+  it.each(['changed', 'lost'] as const)('passes %s on', async (answer) => {
+    stubRpc(answer)
+    await expect(repo.finishIndex(MEETING, TOKEN, plan)).resolves.toBe(answer)
+  })
+
+  it('never reads an answer it does not know as complete', async () => {
+    stubRpc(true)
+    await expect(repo.finishIndex(MEETING, TOKEN, plan)).rejects.toThrow(/unusable answer/)
+  })
+})
+
+describe('deleteForMeeting', () => {
+  it('removes the marker with the runs and chunks, each filtered to the meeting', async () => {
+    const calls: URL[] = []
+    vi.stubGlobal('fetch', async (input: string | Request, options?: RequestInit) => {
+      const request = typeof input === 'string' ? new Request(input, options) : input
+      expect(request.method).toBe('DELETE')
+      calls.push(new URL(request.url))
+      return new Response(null, { status: 204 })
+    })
+    await repo.deleteForMeeting(MEETING)
+    expect(calls.map(url => url.pathname.split('/').pop()).sort()).toEqual(['meeting_index_state', 'pipeline_runs', 'summary_chunks'])
+    for (const url of calls) expect(url.searchParams.get('meeting_id')).toBe(`eq.${MEETING}`)
   })
 })
