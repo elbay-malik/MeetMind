@@ -195,7 +195,7 @@ describe('MeetingLinkNotice', () => {
     }
     afterEach(() => setDemo(''))
 
-    it.each([ID, ID.toUpperCase()])('does not claim the link is the only way back (%s)', async (demoId) => {
+    it.each([ID, ID.toUpperCase(), `${ID}\n`])('does not claim the link is the only way back (%j)', async (demoId) => {
       setDemo(demoId)
       const page = await mount()
       expect(page.text()).toContain('public demo meeting')
