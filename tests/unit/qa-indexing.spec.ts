@@ -1,21 +1,21 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createLocalTranscriptIndexRepository } from '../../server/utils/db/windows-local'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   dailyLimitReached,
   EMBEDDING_DIMENSIONS,
-  MAX_BATCH,
   MAX_BATCH_TOKENS,
   planEmbeddingBatches,
   type Embedder,
 } from '../../server/utils/qa/embedder'
-import { indexMeeting, indexStatus } from '../../server/utils/qa/indexing'
+import { indexStatus } from '../../server/utils/qa/indexing'
+import { INDEX_BATCH, type IndexingOutcome } from '../../server/utils/qa/steps'
 import { hashedTokenVector, STUB_EMBEDDING_MODEL } from '../../server/utils/qa/stub'
 import { planWindows } from '../../server/utils/qa/windows'
 import { estimateTokens } from '../../server/utils/summary/plan'
-import type { TranscriptSegment } from '../../shared/types/meeting'
+import type { SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
+import { indexingHarness } from './helpers/indexing'
 
 /** `count` five-second segments with distinct words, so windows differ. */
 const transcript = (count: number, tag = 't'): TranscriptSegment[] =>
@@ -51,7 +51,23 @@ beforeAll(async () => {
 })
 afterAll(() => rm(dataDir, { recursive: true, force: true }))
 
-const repo = () => createLocalTranscriptIndexRepository({ dataDir })
+const harness = indexingHarness(() => dataDir)
+const repo = () => harness.repos().index
+beforeEach(() => harness.resetClock())
+
+/**
+ * The whole index, step by step: a transcript the meeting holds, driven until it stops.
+ * A refusal rejects with its status, as the route's would. What `indexMeeting` used to
+ * do in one call, and these specs are its specs, moved onto the steps.
+ */
+async function indexTranscript(meetingId: string, segments: TranscriptSegment[], embedder: Embedder): Promise<SearchIndexStatus> {
+  const { meetings, transcripts } = harness.repos()
+  if (await meetings.get(meetingId)) await transcripts.replaceForMeeting(meetingId, segments)
+  else await harness.meetingWith(meetingId, segments)
+  const outcome = (await harness.drive(meetingId, harness.depsWith(embedder))).at(-1) as IndexingOutcome
+  if (outcome.kind !== 'done') throw Object.assign(new Error(JSON.stringify(outcome)), outcome)
+  return outcome.index
+}
 
 describe('indexStatus', () => {
   it('is none when nothing is stored', async () => {
@@ -106,10 +122,10 @@ describe('indexStatus', () => {
   })
 })
 
-describe('indexMeeting', () => {
+describe('indexing a meeting, step by step', () => {
   it('embeds every planned window once and reports the index ready', async () => {
     const { embedder, embeddedTexts } = recordingEmbedder()
-    const status = await indexMeeting({ meetingId: 'i1', segments: transcript(30), embedder, repo: repo() })
+    const status = await indexTranscript('i1', transcript(30), embedder)
     const plan = await planWindows(transcript(30))
     expect(status).toEqual({ state: 'ready', windowCount: plan.length, indexedCount: plan.length, model: 'model-a' })
     expect(embeddedTexts()).toEqual(plan.map(w => w.text))
@@ -118,7 +134,7 @@ describe('indexMeeting', () => {
   it('stores each window with its own vector, not a neighbour\'s', async () => {
     const { embedder } = recordingEmbedder()
     const store = repo()
-    await indexMeeting({ meetingId: 'i-pairing', segments: transcript(30), embedder, repo: store })
+    await indexTranscript('i-pairing', transcript(30), embedder)
     const plan = await planWindows(transcript(30))
     expect(plan.length).toBeGreaterThan(1)
     for (const window of plan) {
@@ -129,31 +145,33 @@ describe('indexMeeting', () => {
 
   it('spends nothing on a second run over an unchanged transcript', async () => {
     const first = recordingEmbedder()
-    await indexMeeting({ meetingId: 'i2', segments: transcript(30), embedder: first.embedder, repo: repo() })
+    await indexTranscript('i2', transcript(30), first.embedder)
     const second = recordingEmbedder()
-    const status = await indexMeeting({ meetingId: 'i2', segments: transcript(30), embedder: second.embedder, repo: repo() })
+    const status = await indexTranscript('i2', transcript(30), second.embedder)
     expect(second.calls).toHaveLength(0)
     expect(status.state).toBe('ready')
   })
 
   it('keeps what a quota failure interrupted, and resumes without re-embedding it', async () => {
     // Enough windows for three batches; the quota runs out on the second.
-    const segments = transcript(MAX_BATCH * 3 * 8, 'long')
+    const segments = transcript(INDEX_BATCH * 3 * 8, 'long')
     const plan = await planWindows(segments)
-    expect(plan.length).toBeGreaterThan(MAX_BATCH * 2)
+    expect(plan.length).toBeGreaterThan(INDEX_BATCH * 2)
 
     const interrupted = recordingEmbedder({ failOnCall: 2 })
-    await expect(indexMeeting({ meetingId: 'i3', segments, embedder: interrupted.embedder, repo: repo() }))
+    await expect(indexTranscript('i3', segments, interrupted.embedder))
       .rejects.toMatchObject({ statusCode: 429 })
 
     // The first batch was stored before the failure, not rolled back.
     const keys = await repo().listKeys('i3')
-    expect(keys.map(k => k.idx)).toEqual(plan.slice(0, MAX_BATCH).map(w => w.idx))
+    expect(keys.map(k => k.idx)).toEqual(plan.slice(0, INDEX_BATCH).map(w => w.idx))
 
+    harness.advanceClock(25 * 60 * 60 * 1000)
+    await harness.db().removeItem('slots/workers-ai-embed')
     const resumed = recordingEmbedder()
-    const status = await indexMeeting({ meetingId: 'i3', segments, embedder: resumed.embedder, repo: repo() })
+    const status = await indexTranscript('i3', segments, resumed.embedder)
     // Only what was not already paid for.
-    expect(resumed.embeddedTexts()).toEqual(plan.slice(MAX_BATCH).map(w => w.text))
+    expect(resumed.embeddedTexts()).toEqual(plan.slice(INDEX_BATCH).map(w => w.text))
     expect(status).toMatchObject({ state: 'ready', indexedCount: plan.length })
   })
 
@@ -166,10 +184,10 @@ describe('indexMeeting', () => {
     const plan = await planWindows(segments)
     const batches = planEmbeddingBatches(plan, w => w.text)
     expect(batches.length).toBeGreaterThan(2)
-    expect(batches[0]!.length).toBeLessThan(MAX_BATCH)
+    expect(batches[0]!.length).toBeLessThan(INDEX_BATCH)
 
     const interrupted = recordingEmbedder({ failOnCall: 3 })
-    await expect(indexMeeting({ meetingId: 'i9', segments, embedder: interrupted.embedder, repo: repo() }))
+    await expect(indexTranscript('i9', segments, interrupted.embedder))
       .rejects.toMatchObject({ statusCode: 429 })
 
     // One embedder call per request, each within the cap.
@@ -180,15 +198,17 @@ describe('indexMeeting', () => {
     const stored = batches.slice(0, 2).flat().map(w => w.idx)
     expect((await repo().listKeys('i9')).map(k => k.idx)).toEqual(stored)
 
+    harness.advanceClock(25 * 60 * 60 * 1000)
+    await harness.db().removeItem('slots/workers-ai-embed')
     const resumed = recordingEmbedder()
-    const status = await indexMeeting({ meetingId: 'i9', segments, embedder: resumed.embedder, repo: repo() })
+    const status = await indexTranscript('i9', segments, resumed.embedder)
     expect(resumed.embeddedTexts()).toEqual(batches.slice(2).flat().map(w => w.text))
     expect(status).toMatchObject({ state: 'ready', indexedCount: plan.length })
   })
 
   it('re-embeds only the windows a replaced transcript changed', async () => {
     const original = transcript(40)
-    await indexMeeting({ meetingId: 'i4', segments: original, embedder: recordingEmbedder().embedder, repo: repo() })
+    await indexTranscript('i4', original, recordingEmbedder().embedder)
 
     const edited = original.map(s => s.idx === 35 ? { ...s, text: 'a completely different sentence was said here' } : s)
     const before = await planWindows(original)
@@ -198,24 +218,24 @@ describe('indexMeeting', () => {
     expect(changed.length).toBeLessThan(after.length)
 
     const rerun = recordingEmbedder()
-    const status = await indexMeeting({ meetingId: 'i4', segments: edited, embedder: rerun.embedder, repo: repo() })
+    const status = await indexTranscript('i4', edited, rerun.embedder)
     expect(rerun.embeddedTexts()).toEqual(changed.map(w => w.text))
     expect(status.state).toBe('ready')
   })
 
   it('removes windows a shorter transcript no longer has', async () => {
-    await indexMeeting({ meetingId: 'i5', segments: transcript(40), embedder: recordingEmbedder().embedder, repo: repo() })
+    await indexTranscript('i5', transcript(40), recordingEmbedder().embedder)
     const shorter = transcript(5)
-    const status = await indexMeeting({ meetingId: 'i5', segments: shorter, embedder: recordingEmbedder().embedder, repo: repo() })
+    const status = await indexTranscript('i5', shorter, recordingEmbedder().embedder)
     const plan = await planWindows(shorter)
     expect((await repo().listKeys('i5')).map(k => k.idx)).toEqual(plan.map(w => w.idx))
     expect(status.state).toBe('ready')
   })
 
   it('replaces an index built with a different model rather than mixing the two', async () => {
-    await indexMeeting({ meetingId: 'i6', segments: transcript(30), embedder: recordingEmbedder({ model: 'model-old' }).embedder, repo: repo() })
+    await indexTranscript('i6', transcript(30), recordingEmbedder({ model: 'model-old' }).embedder)
     const newer = recordingEmbedder({ model: 'model-a' })
-    const status = await indexMeeting({ meetingId: 'i6', segments: transcript(30), embedder: newer.embedder, repo: repo() })
+    const status = await indexTranscript('i6', transcript(30), newer.embedder)
     const plan = await planWindows(transcript(30))
     expect(newer.embeddedTexts()).toHaveLength(plan.length)
     expect(new Set((await repo().listKeys('i6')).map(k => k.model))).toEqual(new Set(['model-a']))
@@ -223,9 +243,9 @@ describe('indexMeeting', () => {
   })
 
   it('clears the index for a transcript with nothing in it', async () => {
-    await indexMeeting({ meetingId: 'i7', segments: transcript(10), embedder: recordingEmbedder().embedder, repo: repo() })
+    await indexTranscript('i7', transcript(10), recordingEmbedder().embedder)
     const empty = recordingEmbedder()
-    const status = await indexMeeting({ meetingId: 'i7', segments: [], embedder: empty.embedder, repo: repo() })
+    const status = await indexTranscript('i7', [], empty.embedder)
     expect(empty.calls).toHaveLength(0)
     expect(await repo().listKeys('i7')).toEqual([])
     expect(status).toMatchObject({ state: 'ready', windowCount: 0 })

@@ -1,62 +1,63 @@
-import type { SearchIndexStatus } from '#shared/types/meeting'
-import { transcriptionFinished } from '#shared/utils/meeting'
-import { useMeetingRepository, useTranscriptIndexRepository, useTranscriptRepository } from '../../../utils/db'
+import type { IndexingStepResponse, SearchIndexStatus } from '#shared/types/meeting'
+import { useMeetingRepository, usePipelineRepository, useSlotRepository, useTranscriptIndexRepository, useTranscriptRepository } from '../../../utils/db'
 import { refuseOnPublicDemo } from '../../../utils/demo-meeting'
 import { conflict, notFound, requireMeetingId, retryLater } from '../../../utils/http'
-import { useEmbedder } from '../../../utils/qa'
-import { EmbeddingError, EmbeddingInputTooLongError } from '../../../utils/qa/embedder'
-import { indexMeeting } from '../../../utils/qa/indexing'
-import { indexingInFlight } from '../../../utils/qa/in-flight'
+import { useStepEmbedder } from '../../../utils/qa'
+import { advanceIndexing } from '../../../utils/qa/steps'
 
 /**
- * Index a meeting's transcript for questions (ADR-0007). Idempotent and
- * resumable: windows already stored for this transcript and model are skipped,
- * and a run the provider's daily limit stops partway keeps what it stored.
+ * Index a meeting's transcript for questions, one step per request (ADR-0012): the next
+ * batch of windows, or the last step that marks the index complete.
+ *
+ * 200 with `{ index }` once it is complete. 202 with progress while it is not:
+ * `next: 'continue'` means call again now, `wait` means call again at `retryAt`. Windows
+ * already stored for this transcript and model are skipped, so a run the provider's
+ * daily limit stopped keeps what it stored and carries on from there, and a failure
+ * here never touches the meeting's status.
+ *
+ * Safe to call from any number of tabs at once: each step is claimed under a token, so
+ * concurrent callers take turns rather than each spend the provider's quota.
  */
-export default defineEventHandler(async (event): Promise<{ index: SearchIndexStatus }> => {
+export default defineEventHandler(async (event): Promise<{ index: SearchIndexStatus } | IndexingStepResponse> => {
   const id = requireMeetingId(event)
   refuseOnPublicDemo(event, id)
+  const outcome = await advanceIndexing(id, {
+    meetings: useMeetingRepository(event),
+    pipeline: usePipelineRepository(event),
+    transcripts: useTranscriptRepository(event),
+    index: useTranscriptIndexRepository(event),
+    slots: useSlotRepository(event),
+    embedder: useStepEmbedder(event),
+    embedIntervalMs: Number(useRuntimeConfig(event).embedIntervalMs),
+  })
 
-  let run = indexingInFlight.get(id)
-  if (!run) {
-    const meetings = useMeetingRepository(event)
-    const transcripts = useTranscriptRepository(event)
-    const embedder = useEmbedder(event)
-    const repo = useTranscriptIndexRepository(event)
-    // Registered BEFORE the meeting is read, not after. The delete route
-    // relies on it: once it has deleted the row it waits for whatever run is
-    // registered here, and only a run registered before its own read is
-    // guaranteed to be visible by then. A request that joins this run shares
-    // its checks and its outcome, 404 and 409 included.
-    run = (async () => {
-      const meeting = await meetings.get(id)
-      if (!meeting) throw notFound('Meeting not found')
-      if (!transcriptionFinished(meeting)) {
-        throw conflict(`Meeting is ${meeting.status}; it has no finished transcript to index yet`)
+  switch (outcome.kind) {
+    case 'done':
+      return { index: outcome.index }
+    case 'progress': {
+      setResponseStatus(event, 202)
+      const retryAfterMs = outcome.retryAt ? Math.max(0, outcome.retryAt.getTime() - Date.now()) : null
+      if (retryAfterMs !== null) setResponseHeader(event, 'retry-after', Math.ceil(retryAfterMs / 1000))
+      return {
+        progress: outcome.progress,
+        next: outcome.next,
+        retryAt: outcome.retryAt?.toISOString() ?? null,
+        retryAfterMs,
       }
-      const segments = await transcripts.listForMeeting(id)
-      return indexMeeting({ meetingId: id, segments, embedder, repo })
-    })().finally(() => indexingInFlight.delete(id))
-    indexingInFlight.set(id, run)
-  }
-
-  try {
-    return { index: await run }
-  }
-  catch (err) {
-    if (err instanceof EmbeddingError) {
-      throw createError({
-        statusCode: err.statusCode,
-        statusMessage: 'Indexing failed',
-        // Said explicitly, because the difference matters to whoever retries:
-        // what was already embedded is kept, so trying again later resumes. Not
-        // for a passage over the limit, which stops the next run at the same place.
-        message: err instanceof EmbeddingInputTooLongError
-          ? err.message
-          : `${err.message} Passages indexed so far are kept; indexing again resumes from there.`,
-        data: err.retryAt ? retryLater(event, err.retryAt) : undefined,
-      })
     }
-    throw err
+    case 'failed':
+      throw createError({
+        statusCode: outcome.statusCode,
+        statusMessage: 'Indexing failed',
+        // Said explicitly, because the difference matters to whoever retries: what was
+        // already embedded is kept, so trying again later resumes. Not for a passage
+        // over the limit, which stops the next run at the same place.
+        message: outcome.resumes
+          ? `${outcome.message} Passages indexed so far are kept; indexing again resumes from there.`
+          : outcome.message,
+        data: outcome.retryAt ? retryLater(event, outcome.retryAt) : undefined,
+      })
+    case 'refused':
+      throw outcome.statusCode === 404 ? notFound(outcome.message) : conflict(outcome.message)
   }
 })
