@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Meeting, MeetingStatus, TranscriptSegment } from '../../shared/types/meeting'
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
 import { createLocalPipelineRepository } from '../../server/utils/db/pipeline-local'
@@ -375,6 +375,28 @@ describe('advanceExtraction: failures and retries', () => {
     time.advance(RETRY_COOLDOWN_MS + 1000)
     expect((await drive(m.id, deps)).at(-1)).toMatchObject({ kind: 'done', meeting: { status: 'ready', errorMessage: null } })
     expect(s.calls).toEqual([0, 1, 1, 2])
+  })
+
+  it('retries only from the failure it read: a row moved since then refuses the claim', async () => {
+    const m = await newMeeting('summarizing')
+    const s = scripted()
+    const time = clock()
+    const deps = depsWith(s.summarizer, time)
+    s.queue(1, permanent())
+    expect((await drive(m.id, deps)).at(-1)).toMatchObject({ kind: 'failed' })
+    time.advance(RETRY_COOLDOWN_MS + 1000)
+
+    // This caller reads a failure long enough ago, then an index step's claim moves the row,
+    // which restarts the cooldown (ADR-0012, step 8), before this one's own claim arrives.
+    const stale = await repos().meetings.get(m.id)
+    await repos().pipeline.claimStep(m.id, 'search_index', { status: 'failed', leaseMs: 1_000 })
+    const get = vi.fn(repos().meetings.get).mockResolvedValueOnce(stale)
+    const calls = s.calls.length
+
+    const outcome = await advanceExtraction(m.id, { ...deps, meetings: { ...deps.meetings, get } })
+    expect(outcome).toMatchObject({ kind: 'refused', statusCode: 409 })
+    expect(s.calls.length).toBe(calls)
+    expect(await repos().meetings.get(m.id)).toMatchObject({ status: 'failed', failedStage: 'summarization' })
   })
 
   it('starts the failed chunk\'s attempts over on a retry, so one more transient failure parks it', async () => {
