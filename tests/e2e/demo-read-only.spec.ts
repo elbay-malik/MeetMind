@@ -207,18 +207,19 @@ describe('the demo meeting', () => {
     expect(await slotsStored()).toEqual(slots)
   })
 
-  // A read on a demo that is not finished is still only a read: saying that the next step
-  // could go is not taking it.
-  it('reads the same for the id in capitals, and is not moved by being read while it has work to do', async () => {
+  // A read on a demo that is not finished is still only a read. And it does not say
+  // `continue`, because the one route that would take the step answers 403 here.
+  it('reads the same for the id in capitals, and is neither moved by being read nor told to go on while it has work to do', async () => {
     const row = await db.getItem<Meeting>(`meetings/${demoId}`)
     await db.setItem(`meetings/${demoId}`, { ...row!, status: 'uploaded' })
     const before = await everythingStored()
     const slots = await slotsStored()
     const res = await fetch(`/api/meetings/${demoId.toUpperCase()}/pipeline`)
     expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({ status: 'uploaded', next: 'continue' })
+    expect(await res.json()).toMatchObject({ status: 'uploaded', next: 'wait', retryAt: null, retryAfterMs: null })
     expect(await everythingStored()).toEqual(before)
     expect(await slotsStored()).toEqual(slots)
+    expect((await post(demoId, 'advance')).status).toBe(403)
     await db.setItem(`meetings/${demoId}`, row as never)
   })
 
