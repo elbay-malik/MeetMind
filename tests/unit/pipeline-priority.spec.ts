@@ -4,7 +4,8 @@ import type { PipelineRun, PipelineStage } from '../../server/utils/db/pipeline'
 import type { IndexState } from '../../server/utils/db/windows'
 import { DAILY_RESET_MARGIN_MS } from '../../server/utils/qa/embedder'
 import { assessPipeline, LONGEST_INDEX_WAIT_MS, toPipelineResponse, type PipelineSnapshot } from '../../server/utils/pipeline/assess'
-import { RETRY_COOLDOWN_MS, tooManyChunksMessage } from '../../server/utils/summary/steps'
+import { refusedAsTooLong, RETRY_COOLDOWN_MS, tooManyChunksMessage } from '../../server/utils/summary/steps'
+import { audioIsGone } from '../../server/utils/transcription/steps'
 
 /**
  * ADR-0012's step priority, row by row, ties included, as what stored state decides. The
@@ -318,9 +319,22 @@ describe('when no step is left', () => {
       expect(answer).toMatchObject({ next: 'failed', retryAt: null })
     })
 
-    it('answers the same for a message that only looks like a permanent one', () => {
-      const looksLike = failed('summarization', { updatedAt: COOLED, errorMessage: `Provider said: ${tooManyChunksMessage(41)}` })
+    it.each<[string, string]>([
+      ['before', `Provider said: ${tooManyChunksMessage(41)}`],
+      ['after', `${tooManyChunksMessage(41)} Or so a provider said.`],
+    ])('is not permanent for a message with other words %s what only looks like the refusal', (_where, errorMessage) => {
+      const looksLike = failed('summarization', { updatedAt: COOLED, errorMessage })
       expect(assess({ meeting: looksLike, chunks: SOME_CHUNKS, index: index.complete }).step).toBe('extraction')
+    })
+
+    it('reads each stage\'s permanent failure only for that stage', () => {
+      const audio = 'The meeting audio is missing from storage'
+      expect(audioIsGone(failed('transcription', { errorMessage: audio }))).toBe(true)
+      expect(audioIsGone(failed('summarization', { errorMessage: audio }))).toBe(false)
+      expect(audioIsGone(meeting('transcribing', { errorMessage: audio }))).toBe(false)
+      expect(refusedAsTooLong(failed('summarization', { errorMessage: tooManyChunksMessage(41) }))).toBe(true)
+      expect(refusedAsTooLong(failed('transcription', { errorMessage: tooManyChunksMessage(41) }))).toBe(false)
+      expect(refusedAsTooLong(meeting('indexing', { errorMessage: tooManyChunksMessage(41) }))).toBe(false)
     })
   })
 
