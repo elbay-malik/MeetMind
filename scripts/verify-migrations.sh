@@ -72,12 +72,33 @@ insert_legacy_failed_rows() {
               select id, 0, 0, 1000, 'hello' from public.meetings where audio_key='legacy_failed_has_transcript';"
 }
 
+# Applied with a stored window and indexes on the old column in place, to prove it
+# clears what a cast could not convert rather than only working on an empty table.
+EMBEDDING_MIGRATION=supabase/migrations/20261102120000_workers_ai_embeddings.sql
+
+prepare_legacy_windows() {
+  # Supabase has these roles and a plain Postgres does not, so without them the
+  # migration's revokes and its grant to service_role never run here.
+  psql -q -c "create role anon nologin; create role authenticated nologin; create role service_role nologin;"
+  psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+              values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','legacy window','ready','a.mp4',1,'legacy_window',10);"
+  psql -q -c "insert into public.transcript_windows
+      (meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, model, embedding)
+    values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 0, 0, 1, 0, 999, 'old window', '$(printf 'c%.0s' $(seq 1 64))', 'an-old-768-model',
+            array_fill(0.1::real, array[768])::extensions.vector);"
+  psql -q -c "create index legacy_embedding_hnsw on public.transcript_windows
+                using hnsw (embedding extensions.vector_cosine_ops);
+              create index legacy_embedding_expression on public.transcript_windows ((extensions.vector_norm(embedding)));"
+}
+
 # In timestamp order, exactly as production applies them. The failed_stage
 # migration used to be skipped here and applied LAST, so any later migration
 # would have been verified in an order production never uses.
 [ -f "$FAILED_STAGE_MIGRATION" ] || { echo "FAIL: $FAILED_STAGE_MIGRATION is missing"; exit 1; }
+[ -f "$EMBEDDING_MIGRATION" ] || { echo "FAIL: $EMBEDDING_MIGRATION is missing"; exit 1; }
 for f in supabase/migrations/*.sql; do
   [ "$f" = "$FAILED_STAGE_MIGRATION" ] && insert_legacy_failed_rows
+  [ "$f" = "$EMBEDDING_MIGRATION" ] && prepare_legacy_windows
   echo "applying $(basename "$f")"
   psql -q < "$f"
 done
@@ -307,11 +328,17 @@ check "deleting a meeting removes its summary, decisions and action items" \
       and (select count(*) from public.meeting_action_items)=0"
 
 # --- transcript_windows (ADR-0007) ------------------------------------------
-# Vectors are built from arrays in SQL: a unit vector along axis N is 767 zeros
-# and a single 1 at position N, which makes nearest-first ordering exact to
+# Read from the constant itself, like MAX_AUDIO_BYTES above: the column and the
+# code have to agree, and a copy of the number here would agree with neither.
+DIMENSIONS=$(grep -E "^export const EMBEDDING_DIMENSIONS = " server/utils/qa/embedder.ts | sed -E 's/.*= *([0-9_]+).*/\1/' | tr -d _)
+[[ "$DIMENSIONS" =~ ^[0-9]+$ ]] || fail "EMBEDDING_DIMENSIONS did not parse as a plain integer (got '$DIMENSIONS')"
+echo "  (EMBEDDING_DIMENSIONS in server/utils/qa/embedder.ts: ${DIMENSIONS})"
+
+# Vectors are built from arrays in SQL: a unit vector along axis N is all zeros
+# but for a single 1 at position N, which makes nearest-first ordering exact to
 # reason about.
 unit_vector() { # unit_vector <1-based axis>
-  echo "(select array_agg(case when i = $1 then 1 else 0 end order by i)::real[]::extensions.vector from generate_series(1,768) i)"
+  echo "(select array_agg(case when i = $1 then 1 else 0 end order by i)::real[]::extensions.vector from generate_series(1,$DIMENSIONS) i)"
 }
 HASH_A=$(printf 'a%.0s' $(seq 1 64))
 HASH_B=$(printf 'b%.0s' $(seq 1 64))
@@ -320,9 +347,37 @@ check "transcript_windows exists, has row-level security on, and has no policies
   "select exists (select 1 from pg_class where oid = to_regclass('public.transcript_windows') and relrowsecurity)
      and (select count(*) from pg_policies where schemaname='public' and tablename='transcript_windows') = 0"
 
-check "transcript_windows.embedding is a 768-dimension vector" \
-  "select format_type(atttypid, atttypmod) = 'extensions.vector(768)'
+check "transcript_windows.embedding has the size the code produces" \
+  "select format_type(atttypid, atttypmod) = 'extensions.vector($DIMENSIONS)'
    from pg_attribute where attrelid='public.transcript_windows'::regclass and attname='embedding'"
+
+# --- the move to 1024 dimensions (ADR-0014) ---------------------------------
+LEGACY_MEETING=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+check "the window stored at the old size is gone, and its meeting is not" \
+  "select (select count(*) from public.transcript_windows where meeting_id='$LEGACY_MEETING') = 0
+      and (select count(*) from public.meetings where id='$LEGACY_MEETING') = 1"
+check "no index on the old column is left, hand-built or over an expression" \
+  "select not exists (
+     select 1 from pg_depend d
+     join pg_class c on c.oid = d.objid and c.relkind = 'i'
+     join pg_attribute a on a.attrelid = d.refobjid and a.attnum = d.refobjsubid
+     where d.refobjid = 'public.transcript_windows'::regclass and a.attname = 'embedding')"
+check "the primary key survived the indexes being dropped" \
+  "select exists (select 1 from pg_constraint
+     where conrelid='public.transcript_windows'::regclass and contype='p')"
+check "match_transcript_windows_across_meetings is gone" \
+  "select not exists (select 1 from pg_proc where proname = 'match_transcript_windows_across_meetings')"
+check "match_transcript_windows exists exactly once" \
+  "select count(*) = 1 from pg_proc where proname = 'match_transcript_windows'"
+MATCH_FN='public.match_transcript_windows(uuid, extensions.vector, text, integer)'
+check_match_privileges() {
+  check "$1" \
+    "select not has_function_privilege('anon', '$MATCH_FN', 'execute')
+        and not has_function_privilege('authenticated', '$MATCH_FN', 'execute')
+        and not exists (select 1 from aclexplode((select proacl from pg_proc where proname = 'match_transcript_windows')) a where a.grantee = 0)
+        and has_function_privilege('service_role', '$MATCH_FN', 'execute')"
+}
+check_match_privileges "match_transcript_windows is executable by the service role and not by anon, authenticated or PUBLIC"
 
 check "a transcript window is keyed by (meeting_id, idx), in that order" \
   "select array_agg(att.attname::text order by k.ord) = array['meeting_id','idx']
@@ -340,32 +395,32 @@ insert_window() { # insert_window <meeting uuid> <idx> <axis> <model> <hash>
     values ('$1', $2, $2, $2 + 1, $2 * 1000, $2 * 1000 + 999, 'window $2', '$5', '$4', $(unit_vector "$3"));"
 }
 # Meeting A: windows along axes 1, 2 and 3, one of them from a different model.
-insert_window 33333333-3333-3333-3333-333333333333 0 1 gemini-embedding-2 "$HASH_A"
-insert_window 33333333-3333-3333-3333-333333333333 1 2 gemini-embedding-2 "$HASH_A"
+insert_window 33333333-3333-3333-3333-333333333333 0 1 @cf/baai/bge-m3 "$HASH_A"
+insert_window 33333333-3333-3333-3333-333333333333 1 2 @cf/baai/bge-m3 "$HASH_A"
 insert_window 33333333-3333-3333-3333-333333333333 2 3 some-other-model "$HASH_A"
 # Meeting B holds the single best match for the query — it must never leak into A's results.
-insert_window 44444444-4444-4444-4444-444444444444 0 2 gemini-embedding-2 "$HASH_B"
+insert_window 44444444-4444-4444-4444-444444444444 0 2 @cf/baai/bge-m3 "$HASH_B"
 
 # A query leaning towards axis 2, then axis 1.
-QUERY="(select array_agg(case when i = 2 then 0.9 when i = 1 then 0.4 else 0 end order by i)::real[]::extensions.vector from generate_series(1,768) i)"
+QUERY="(select array_agg(case when i = 2 then 0.9 when i = 1 then 0.4 else 0 end order by i)::real[]::extensions.vector from generate_series(1,$DIMENSIONS) i)"
 check "match_transcript_windows returns the nearest window first, within one meeting" \
   "select array_agg(idx order by ord) = array[1, 0]
-   from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, 'gemini-embedding-2', 5)
+   from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, '@cf/baai/bge-m3', 5)
         with ordinality as m(idx, a, b, c, d, e, f, g, ord)"
 check "match_transcript_windows never returns another meeting's windows" \
   "select not exists (select 1
-     from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, 'gemini-embedding-2', 5) m
+     from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, '@cf/baai/bge-m3', 5) m
      where m.content_hash = '$HASH_B')"
 check "match_transcript_windows ignores windows embedded by a different model" \
   "select not exists (select 1
-     from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, 'gemini-embedding-2', 5) m
+     from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, '@cf/baai/bge-m3', 5) m
      where m.idx = 2)"
 check "match_transcript_windows reports cosine similarity (1 for an identical vector)" \
   "select abs(similarity - 1) < 1e-6
-   from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $(unit_vector 1), 'gemini-embedding-2', 1)"
+   from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $(unit_vector 1), '@cf/baai/bge-m3', 1)"
 check "match_transcript_windows clamps a zero or negative limit up to one row" \
-  "select (select count(*) from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, 'gemini-embedding-2', 0)) = 1
-      and (select count(*) from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, 'gemini-embedding-2', -5)) = 1"
+  "select (select count(*) from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, '@cf/baai/bge-m3', 0)) = 1
+      and (select count(*) from public.match_transcript_windows('33333333-3333-3333-3333-333333333333', $QUERY, '@cf/baai/bge-m3', -5)) = 1"
 check "match_transcript_windows pins its search_path" \
   "select exists (select 1 from pg_proc
      where proname = 'match_transcript_windows'
@@ -374,18 +429,24 @@ check "match_transcript_windows pins its search_path" \
 reject "a window with a vector of the wrong dimension is refused" \
   "insert into public.transcript_windows
      (meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, model, embedding)
-   values ('33333333-3333-3333-3333-333333333333', 9, 0, 1, 0, 1, 'x', '$HASH_A', 'gemini-embedding-2',
-           array_fill(0.1::real, array[767])::extensions.vector);" \
-  "expected 768 dimensions, not 767"
+   values ('33333333-3333-3333-3333-333333333333', 9, 0, 1, 0, 1, 'x', '$HASH_A', '@cf/baai/bge-m3',
+           array_fill(0.1::real, array[$((DIMENSIONS - 1))])::extensions.vector);" \
+  "expected $DIMENSIONS dimensions, not $((DIMENSIONS - 1))"
+reject "a window at the old 768 dimensions is refused" \
+  "insert into public.transcript_windows
+     (meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, model, embedding)
+   values ('33333333-3333-3333-3333-333333333333', 9, 0, 1, 0, 1, 'x', '$HASH_A', '@cf/baai/bge-m3',
+           array_fill(0.1::real, array[768])::extensions.vector);" \
+  "expected $DIMENSIONS dimensions, not 768"
 reject "a window whose content hash is not SHA-256 hex is refused" \
   "insert into public.transcript_windows
      (meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, model, embedding)
-   values ('33333333-3333-3333-3333-333333333333', 9, 0, 1, 0, 1, 'x', 'not-a-hash', 'gemini-embedding-2', $(unit_vector 1));" \
+   values ('33333333-3333-3333-3333-333333333333', 9, 0, 1, 0, 1, 'x', 'not-a-hash', '@cf/baai/bge-m3', $(unit_vector 1));" \
   "violates check constraint \"transcript_windows_content_hash_check\""
 reject "a window whose range ends before it starts is refused" \
   "insert into public.transcript_windows
      (meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, model, embedding)
-   values ('33333333-3333-3333-3333-333333333333', 9, 5, 4, 0, 1, 'x', '$HASH_A', 'gemini-embedding-2', $(unit_vector 1));" \
+   values ('33333333-3333-3333-3333-333333333333', 9, 5, 4, 0, 1, 'x', '$HASH_A', '@cf/baai/bge-m3', $(unit_vector 1));" \
   "violates check constraint \"transcript_windows_check\""
 
 
@@ -395,87 +456,15 @@ check "deleting a meeting removes its windows, and only its windows" \
            where meeting_id='33333333-3333-3333-3333-333333333333') = 0
       and (select count(*) from public.transcript_windows
            where meeting_id='44444444-4444-4444-4444-444444444444') = 1"
-psql -q -c "delete from public.meetings where audio_key='windows_b';"
-
-# --- match_transcript_windows_across_meetings (ADR-0008) --------------------
-# Meeting Y holds the query's dominant axis exactly (best possible match) plus
-# a second, weaker window, to check the per-meeting cap. Meeting X holds a
-# weaker real match AND a wrong-model window at the query's BEST axis — if the
-# wrong-model window counted, X would incorrectly outrank Y. Meeting Z is
-# orthogonal to the query entirely, to check the meeting cap excludes it once
-# two better meetings exist.
-psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
-            values ('55555555-5555-5555-5555-555555555555','y','ready','a.mp4',1,'windows_y',10),
-                   ('66666666-6666-6666-6666-666666666666','x','ready','a.mp4',1,'windows_x',10),
-                   ('77777777-7777-7777-7777-777777777777','z','ready','a.mp4',1,'windows_z',10);"
-insert_window 55555555-5555-5555-5555-555555555555 0 2 gemini-embedding-2 "$HASH_A"
-insert_window 55555555-5555-5555-5555-555555555555 1 1 gemini-embedding-2 "$HASH_A"
-insert_window 66666666-6666-6666-6666-666666666666 0 1 gemini-embedding-2 "$HASH_A"
-insert_window 66666666-6666-6666-6666-666666666666 1 2 some-other-model "$HASH_A"
-insert_window 77777777-7777-7777-7777-777777777777 0 6 gemini-embedding-2 "$HASH_A"
-
-check "match_transcript_windows_across_meetings ranks meetings by their own best match, meeting Y first" \
-  "select array_agg(meeting_id order by first_ord) = array['55555555-5555-5555-5555-555555555555'::uuid, '66666666-6666-6666-6666-666666666666'::uuid]
-   from (
-     select meeting_id, min(ord) as first_ord
-     from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 2, 5)
-          with ordinality as m(meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, similarity, ord)
-     group by meeting_id
-   ) ranked"
-check "match_transcript_windows_across_meetings tags every row with the meeting it actually belongs to" \
-  "select bool_and(
-     (meeting_id = '55555555-5555-5555-5555-555555555555' and idx in (0,1))
-     or (meeting_id = '66666666-6666-6666-6666-666666666666' and idx = 0))
-   from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 3, 5)
-   where meeting_id in ('55555555-5555-5555-5555-555555555555', '66666666-6666-6666-6666-666666666666')"
-check "match_transcript_windows_across_meetings ignores a window embedded by a different model, even at the best axis" \
-  "select not exists (select 1
-     from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 5, 5) m
-     where m.meeting_id = '66666666-6666-6666-6666-666666666666' and m.idx = 1)"
-check "match_transcript_windows_across_meetings caps how many meetings are returned" \
-  "select count(distinct meeting_id) = 2
-   from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 2, 5) m
-   where m.meeting_id in ('55555555-5555-5555-5555-555555555555','66666666-6666-6666-6666-666666666666','77777777-7777-7777-7777-777777777777')"
-check "match_transcript_windows_across_meetings caps how many windows one meeting contributes" \
-  "select count(*) = 1
-   from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 5, 1) m
-   where m.meeting_id = '55555555-5555-5555-5555-555555555555'"
-check "match_transcript_windows_across_meetings clamps a zero or negative meeting limit up to one meeting" \
-  "select (select count(distinct meeting_id) from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 0, 5)) = 1
-      and (select count(distinct meeting_id) from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', -5, 5)) = 1"
-check "match_transcript_windows_across_meetings clamps a zero or negative per-meeting limit up to one row" \
-  "select (select count(*) from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 1, 0)) = 1
-      and (select count(*) from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 1, -5)) = 1"
-check "match_transcript_windows_across_meetings pins its search_path" \
-  "select exists (select 1 from pg_proc
-     where proname = 'match_transcript_windows_across_meetings'
-       and proconfig @> array['search_path=public, extensions'])"
-
-psql -q -c "delete from public.meetings where audio_key in ('windows_y','windows_x','windows_z');"
-
-# Grouping under a TIE. Nothing else in this file creates one, which is how the
-# defect this catches survived: two meetings with identical content embed
-# identically and tie exactly on best_distance, and the local driver groups by
-# construction (it sorts per-meeting arrays and flattens), so only real
-# Postgres could ever show the rows interleaving.
-psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
-            values ('88888888-8888-8888-8888-888888888888','dup a','ready','a.mp4',1,'windows_dup_a',10),
-                   ('99999999-9999-9999-9999-999999999999','dup b','ready','a.mp4',1,'windows_dup_b',10);"
-insert_window 88888888-8888-8888-8888-888888888888 0 2 gemini-embedding-2 "$HASH_A"
-insert_window 88888888-8888-8888-8888-888888888888 1 1 gemini-embedding-2 "$HASH_A"
-insert_window 99999999-9999-9999-9999-999999999999 0 2 gemini-embedding-2 "$HASH_A"
-insert_window 99999999-9999-9999-9999-999999999999 1 1 gemini-embedding-2 "$HASH_A"
-# Counts contiguous blocks: a row starts a new block when its meeting differs
-# from the row before it. Grouped => exactly 2 blocks for 2 meetings;
-# interleaved (a,b,a,b) => 4.
-check "match_transcript_windows_across_meetings keeps each meeting's rows contiguous when two meetings tie" \
-  "select count(*) filter (where meeting_id is distinct from prev) = 2
-   from (
-     select meeting_id, lag(meeting_id) over (order by ord) as prev
-     from public.match_transcript_windows_across_meetings($QUERY, 'gemini-embedding-2', 5, 5)
-          with ordinality as m(meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, similarity, ord)
-   ) ordered"
-psql -q -c "delete from public.meetings where audio_key in ('windows_dup_a','windows_dup_b');"
+# Applied a second time: a re-run must not lose windows stored at the new size, and
+# must leave the function callable, and callable only by whom it was.
+psql -q < "$EMBEDDING_MIGRATION"
+check "applying the embedding migration again keeps windows at the new size" \
+  "select count(*) = 1 from public.transcript_windows where meeting_id='44444444-4444-4444-4444-444444444444'"
+check "match_transcript_windows still answers after a second run" \
+  "select count(*) = 1 from public.match_transcript_windows('44444444-4444-4444-4444-444444444444', $QUERY, '@cf/baai/bge-m3', 5)"
+check_match_privileges "match_transcript_windows keeps its privileges after a second run"
+psql -q -c "delete from public.meetings where audio_key in ('windows_b', 'legacy_window');"
 
 
 # updated_at must advance on update. now() is transaction-scoped, so the insert
