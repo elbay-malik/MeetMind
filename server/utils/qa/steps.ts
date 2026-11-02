@@ -361,7 +361,16 @@ function stepsFor(meetingId: string, deps: IndexingDeps, now: () => number) {
       // Over as soon as it is known to be for something else: indexing goes on from the
       // start, and the stored windows that still match cost nothing.
       const { pass: stored } = cursorOf(claimed)
-      const pass = stored?.textHash === state.transcriptHash && stored.model === model ? stored : newPass(state, model)
+      // No pass is also what a finished run leaves, and the caller's state was read
+      // before the claim, maybe before that finish. Starting a pass from it would take
+      // the finished index back to incomplete. Under the lease nothing can finish now.
+      const current = stored ? state : await deps.index.readState(meetingId, model)
+      const ready = stored ? null : readyWindowCount(current, model)
+      if (ready !== null) {
+        await release(claimed, { error: null, retryAt: null, refundAttempt: true })
+        return done(ready)
+      }
+      const pass = stored?.textHash === current.transcriptHash && stored.model === model ? stored : newPass(current, model)
       return await (pass.planned ? finish(claimed, pass) : batch(claimed, pass, lastError))
     }
     catch (err) {
