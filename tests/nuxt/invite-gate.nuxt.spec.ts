@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { reactive } from 'vue'
+import { nextTick, reactive } from 'vue'
 import { flushPromises } from '@vue/test-utils'
 import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import UploadPage from '~/pages/index.vue'
@@ -362,6 +362,60 @@ describe('uploading', () => {
     expect(page.text()).toContain('Audio ready to upload')
     expect((codeField(page).element as HTMLInputElement).value).toBe('')
     expect(uploadButton(page).attributes('disabled')).toBeDefined()
+  })
+
+  describe('after the code stopped being accepted', () => {
+    async function refusedOnce() {
+      const page = await readyToUpload()
+      await uploadButton(page).trigger('click')
+      await vi.waitFor(() => expect(codeField(page).exists()).toBe(true))
+      await flushPromises()
+      await nextTick()
+      return page
+    }
+
+    it('moves focus to the field, since the button pressed is now disabled', async () => {
+      const page = await refusedOnce()
+      expect(document.activeElement).toBe(codeField(page).element)
+    })
+
+    it('says why on the field, and only there', async () => {
+      const page = await refusedOnce()
+      expect(codeField(page).attributes('aria-invalid')).toBe('true')
+      expect(alerts(page)).toEqual([REFUSED])
+      expect(page.text()).not.toContain('Upload failed')
+    })
+
+    it('shows no trace of the failure once a new code is accepted', async () => {
+      const page = await refusedOnce()
+      await submitCode(page, 'the-new-code-the-new-code-the-new-code')
+      expect(alerts(page)).toEqual([])
+      expect(page.text()).toContain('Invite code accepted.')
+      expect(page.text()).not.toContain('Upload failed')
+    })
+
+    it('then puts focus on the upload button, which is the next step', async () => {
+      const page = await refusedOnce()
+      await submitCode(page, 'the-new-code-the-new-code-the-new-code')
+      expect(uploadButton(page).attributes('disabled')).toBeUndefined()
+      expect(document.activeElement).toBe(uploadButton(page).element)
+    })
+
+    it('sends the new code when the upload is tried again', async () => {
+      const page = await refusedOnce()
+      await submitCode(page, 'the-new-code-the-new-code-the-new-code')
+      await uploadButton(page).trigger('click')
+      await vi.waitFor(() => expect(registerHeaders).toHaveLength(2))
+      expect(registerHeaders[1]).toBe('Bearer the-new-code-the-new-code-the-new-code')
+    })
+
+    it('falls back to the recording step when the upload cannot be pressed yet', async () => {
+      const page = await refusedOnce()
+      await page.find('input[type="text"]').setValue('')
+      await submitCode(page, 'the-new-code-the-new-code-the-new-code')
+      expect(uploadButton(page).attributes('disabled')).toBeDefined()
+      expect(document.activeElement).toBe(fileInput(page).element)
+    })
   })
 
   it('does not ask for the code again over a failure that is not about the code', async () => {

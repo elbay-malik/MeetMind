@@ -37,6 +37,7 @@ export function useInviteCode() {
   function forget() {
     code.value = ''
     status.value = 'needed'
+    error.value = INVITE_REFUSED_MESSAGE
   }
 
   return { code, status, error, check, forget }
