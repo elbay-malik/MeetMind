@@ -25,7 +25,7 @@ const extraction = reactive({ ...IDLE })
 const extract = vi.fn()
 mockNuxtImport('useAudioExtract', () => () => ({ state: extraction, extract, cancel: () => {}, reset: () => {} }))
 
-type Handler = { node: { res: { statusCode: number } }, headers: Headers }
+type Handler = { node: { res: { statusCode: number } }, headers: Headers, path: string }
 type Reply = { statusCode: number, message?: string }
 
 /** What each route answers, and the Authorization header each was sent. */
@@ -33,6 +33,10 @@ let checkReply: Reply
 let registerReply: Reply
 let checkHeaders: (string | null)[]
 let registerHeaders: (string | null)[]
+/** Every URL the page asked for, query string included. */
+let requestPaths: string[]
+/** Until this settles the check gives no answer, for what the page does in the meantime. */
+let checkHold: Promise<void>
 
 function answer(event: Handler, reply: Reply) {
   event.node.res.statusCode = reply.statusCode
@@ -41,8 +45,10 @@ function answer(event: Handler, reply: Reply) {
 
 registerEndpoint('/api/invite-check', {
   method: 'POST',
-  handler: (event: Handler) => {
+  handler: async (event: Handler) => {
     checkHeaders.push(event.headers.get('authorization'))
+    requestPaths.push(event.path)
+    await checkHold
     return answer(event, checkReply)
   },
 })
@@ -51,6 +57,7 @@ registerEndpoint('/api/meetings', {
   method: 'POST',
   handler: (event: Handler) => {
     registerHeaders.push(event.headers.get('authorization'))
+    requestPaths.push(event.path)
     return answer(event, registerReply)
   },
 })
@@ -79,6 +86,8 @@ beforeEach(() => {
   registerReply = { statusCode: 401, message: REFUSED }
   checkHeaders = []
   registerHeaders = []
+  requestPaths = []
+  checkHold = Promise.resolve()
   localStorage.clear()
   sessionStorage.clear()
 })
@@ -271,6 +280,22 @@ describe('the right code', () => {
     expect(document.activeElement).toBe(fileInput(page).element)
   })
 
+  it('opens nothing while the answer is on its way', async () => {
+    let release!: () => void
+    checkHold = new Promise((resolve) => {
+      release = resolve
+    })
+    const page = await mount()
+    await codeField(page).setValue(CODE)
+    await page.find('form').trigger('submit')
+    await vi.waitFor(() => expect(checkHeaders).toHaveLength(1))
+    await flushPromises()
+    expect(page.text()).toContain('Checking the code')
+    expect(fileInput(page).exists()).toBe(false)
+    release()
+    await vi.waitFor(() => expect(fileInput(page).exists()).toBe(true))
+  })
+
   it('still does not extract anything until asked', async () => {
     const page = await mount()
     await submitCode(page, CODE)
@@ -346,6 +371,14 @@ describe('uploading', () => {
     await vi.waitFor(() => expect(registerHeaders).toEqual([`Bearer ${CODE}`]))
   })
 
+  it('never puts the code in a request URL, where logs would keep it', async () => {
+    const page = await readyToUpload()
+    await uploadButton(page).trigger('click')
+    await vi.waitFor(() => expect(registerHeaders).toHaveLength(1))
+    // The last segment, since the test server mounts these under a prefix of its own.
+    expect(requestPaths.map(path => path.split('/').pop())).toEqual(['invite-check', 'meetings'])
+  })
+
   it('offers no upload without an accepted code', async () => {
     Object.assign(extraction, READY)
     const page = await mount()
@@ -392,6 +425,15 @@ describe('uploading', () => {
       expect(alerts(page)).toEqual([])
       expect(page.text()).toContain('Invite code accepted.')
       expect(page.text()).not.toContain('Upload failed')
+    })
+
+    it('extracts nothing when a code is submitted, refused or accepted, since the audio is kept', async () => {
+      const page = await refusedOnce()
+      checkReply = { statusCode: 401, message: REFUSED }
+      await submitCode(page, 'still-a-wrong-code-still-a-wrong-code')
+      checkReply = { statusCode: 204 }
+      await submitCode(page, 'the-new-code-the-new-code-the-new-code')
+      expect(extract).not.toHaveBeenCalled()
     })
 
     it('then puts focus on the upload button, which is the next step', async () => {
