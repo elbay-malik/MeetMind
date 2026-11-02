@@ -136,8 +136,9 @@ async function uploadAndContinue() {
         MeetMind
       </h1>
       <p class="mt-1 text-muted">
-        Timestamped transcripts, summaries with decisions and action items, and answers to
-        questions about a meeting recording, each citing the lines it came from.
+        Turns a meeting recording into a timestamped transcript, a summary of decisions and
+        action items, and answers to your questions. Summaries and answers cite the lines
+        they came from.
       </p>
       <p
         v-if="demoMeetingId"
