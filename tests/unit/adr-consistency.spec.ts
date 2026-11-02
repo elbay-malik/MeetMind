@@ -129,6 +129,15 @@ describe('ADRs changed by ADR-0015', () => {
       expect(section).toMatch(/audio expires/)
     })
 
+    // A dashboard variable is deleted by the next `wrangler deploy`, since wrangler.jsonc does
+    // not list it, and that would take away the demo link and the read-only guard together.
+    it('is told how to set the demo\'s id, so an ordinary deploy cannot delete it', async () => {
+      const text = await procedure()
+      expect(text).toContain('`wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID`')
+      expect(text).toMatch(/not as a dashboard variable/i)
+      expect(text).toContain('`wrangler secret delete NUXT_PUBLIC_DEMO_MEETING_ID`')
+    })
+
     it('lists it among the limits this decision accepts', async () => {
       expect(flat((await adr('0015')).split('## Consequences')[1]!)).toContain('**The demo\'s audio expires like any other.**')
     })

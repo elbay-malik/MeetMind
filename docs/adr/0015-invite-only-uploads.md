@@ -122,7 +122,10 @@ that is not a `GET` is missing here. No `GET` route writes anything.
 3. Open the home page, enter the code and extract the audio. Use **Download audio** to keep a copy
    before uploading (see below), then upload. On the progress page start transcription, then
    extraction, then indexing, until it says it is ready for questions.
-4. Take the id from the meeting's link, set `NUXT_PUBLIC_DEMO_MEETING_ID` to it, and redeploy.
+4. Take the id from the meeting's link and set it with `wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID`,
+   as for the code in step 2, and not as a dashboard variable. `wrangler deploy` deletes a plain
+   variable that `wrangler.jsonc` does not list, and with it would go the home page's link and the
+   read-only guard, with nothing logged. A secret stays across deploys, and its value is still public.
 5. Open it from the home page in a private window and ask it something.
 
 The demo's audio expires like any other. README step 3's `expire-meeting-audio-30d` rule covers all
@@ -136,10 +139,10 @@ fetches a copy while the object still exists. This has not yet been run against 
 alternative is to create a new demo and change the id. The storage budget's estimate stops counting
 the object after `NUXT_R2_RETENTION_DAYS`, which for one recording is small enough to ignore.
 
-To repair or replace it, clear the variable, redeploy, finish the work and set it again. A change
-of embedding model needs this, since questions are refused until the index is rebuilt. To remove
-it, use the admin delete (ADR-0011, refused for 30 minutes after registration), and clear the
-variable, or the home page goes on linking to a 404.
+To repair or replace it, clear the variable with `wrangler secret delete NUXT_PUBLIC_DEMO_MEETING_ID`,
+finish the work and set it again. A change of embedding model needs this, since questions are
+refused until the index is rebuilt. To remove it, use the admin delete (ADR-0011, refused for 30
+minutes after registration), and clear the variable, or the home page goes on linking to a 404.
 
 ## Consequences
 
