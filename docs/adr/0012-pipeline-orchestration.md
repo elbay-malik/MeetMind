@@ -499,6 +499,7 @@ The step's embedder makes one attempt (`useStepEmbedder`), as extraction's summa
 
 **Failures never touch the meeting**, in every status it can be indexed from:
 - A **retryable failure,** a provider 5xx or a database blip, parks for 5 s on attempt 1 (`RETRYABLE_PARK_MS`). On attempt 2 the run parks for 60 s (`RETRY_COOLDOWN_MS`) and the caller is told. There is no `failed` to go to, so that park and the count from it (`parkedAtAttempt` in the cursor) are what stop a step that keeps dying from spending quota: at most `MAX_INDEX_ATTEMPTS` (2) requests, then a minute.
+  A failure that is not the provider's reaches the caller and the run as one plain sentence, and the error itself goes to the log, since a database's can name its tables. Steps 6 and 7 still pass theirs on as they are.
 - A **refusal** (over capacity, rejected credentials, a passage over the limit) goes back to the caller with the attempt refunded and nothing parked. Only a passage over the limit is said not to help by trying again.
 - A **last step that finds things do not add up** starts the plan over, at most `MAX_INDEX_RESTARTS` (2) times in a row, then parks.
 
