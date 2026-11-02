@@ -109,15 +109,30 @@ export class EmbeddingInputTooLongError extends EmbeddingError {
 export const DAILY_LIMIT_MESSAGE = 'The free daily limit for indexing and questions has been reached. It resets at 00:00 UTC.'
 
 /**
+ * How long after 00:00 UTC a refusal is taken to be about the day before: a reply that
+ * crossed midnight on its way back (the request timeout is 30 s), or a clock a little
+ * off the provider's. Neither has been measured, since a real refusal has not been seen.
+ */
+export const DAILY_RESET_MARGIN_MS = 5 * 60_000
+
+/**
  * The provider's free daily allocation is spent. It comes back at 00:00 UTC, so
  * that is when asking again can succeed, and nothing sooner will (ADR-0014).
+ *
+ * Just past that moment the allowance is back or about to be, and the date this returns
+ * can block the whole account (ADR-0012), so it must not be the next day's: asking again
+ * at the end of the margin decides it.
  */
 export function dailyLimitReached(now = new Date()): EmbeddingError {
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  const justReset = now.getTime() - today < DAILY_RESET_MARGIN_MS
   return new EmbeddingError(
     DAILY_LIMIT_MESSAGE,
     429,
     false,
-    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)),
+    new Date(justReset
+      ? today + DAILY_RESET_MARGIN_MS
+      : Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)),
   )
 }
 

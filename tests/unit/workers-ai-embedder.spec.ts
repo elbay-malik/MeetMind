@@ -289,11 +289,19 @@ describe('the daily limit', () => {
   it.each([
     ['the middle of a day', '2026-11-02T13:45:00Z', '2026-11-03T00:00:00.000Z'],
     ['one second before the reset', '2026-11-02T23:59:59Z', '2026-11-03T00:00:00.000Z'],
-    ['the reset itself', '2026-11-03T00:00:00Z', '2026-11-04T00:00:00.000Z'],
+    ['the end of the margin after a reset', '2026-11-03T00:05:00Z', '2026-11-04T00:00:00.000Z'],
     ['the last day of a month', '2026-11-30T10:00:00Z', '2026-12-01T00:00:00.000Z'],
     ['the last day of a year', '2026-12-31T10:00:00Z', '2027-01-01T00:00:00.000Z'],
   ])('gives the next 00:00 UTC from %s', (_name, now, reset) => {
     expect(dailyLimitReached(new Date(now)).retryAt?.toISOString()).toBe(reset)
+  })
+
+  it.each([
+    ['the reset itself', '2026-11-03T00:00:00Z'],
+    ['half a second after it, a reply that crossed midnight', '2026-11-03T00:00:00.500Z'],
+    ['the last moment of the margin', '2026-11-03T00:04:59.999Z'],
+  ])('asks again at the end of the margin, not a day later, from %s', (_name, now) => {
+    expect(dailyLimitReached(new Date(now)).retryAt?.toISOString()).toBe('2026-11-03T00:05:00.000Z')
   })
 
   it('does not call a short capacity shortage the daily limit', async () => {

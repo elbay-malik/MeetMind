@@ -7,6 +7,7 @@ import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting, QuestionAnswer, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
+import { DAILY_RESET_MARGIN_MS } from '../../server/utils/qa/embedder'
 import { indexUntilStopped } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
@@ -84,10 +85,13 @@ const ask = (id: string, question: string) => fetch(`/api/meetings/${id}/ask`, {
 
 interface Refusal { statusCode: number, message: string, data?: { retryAt: string, retryAfterSec: number } }
 
-/** The next 00:00 UTC, the same way a visitor would work it out. */
+/** The next 00:00 UTC, the same way a visitor would work it out, unless this runs just after one. */
 const nextReset = () => {
   const now = new Date()
-  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  return now.getTime() - today < DAILY_RESET_MARGIN_MS
+    ? today + DAILY_RESET_MARGIN_MS
+    : Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
 }
 
 function expectTheDailyLimit(response: Response, body: Refusal) {
