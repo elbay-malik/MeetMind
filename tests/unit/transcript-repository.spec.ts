@@ -72,6 +72,27 @@ describe('local transcript repository', () => {
     expect(await repo.listForMeeting('m5')).toEqual([])
   })
 
+  describe('listFrom', () => {
+    const lines = (count: number): TranscriptSegment[] =>
+      Array.from({ length: count }, (_, i) => ({ idx: i, startMs: i, endMs: i + 1, text: `line ${i}` }))
+
+    it('reads a page from a line on, in order, saying whether any lie past it', async () => {
+      const repo = createLocalTranscriptRepository({ dataDir })
+      await repo.replaceForMeeting('f1', lines(10).reverse())
+      expect(await repo.listFrom('f1', 2, 3)).toEqual({ segments: lines(5).slice(2), more: true })
+      expect(await repo.listFrom('f1', 7, 3)).toEqual({ segments: lines(10).slice(7), more: false })
+      expect(await repo.listFrom('f1', 8, 3)).toEqual({ segments: lines(10).slice(8), more: false })
+      expect(await repo.listFrom('f1', 40, 3)).toEqual({ segments: [], more: false })
+    })
+
+    it('reads across a gap in the numbering, which an index range could not', async () => {
+      const repo = createLocalTranscriptRepository({ dataDir })
+      const gapped = lines(6).filter(s => s.idx !== 2 && s.idx !== 3)
+      await repo.replaceForMeeting('f2', gapped)
+      expect(await repo.listFrom('f2', 1, 3)).toEqual({ segments: gapped.slice(1, 4), more: false })
+    })
+  })
+
   describe('deleteForMeeting', () => {
     // Read straight from the JSON store: listForMeeting reads a missing file
     // and an empty one identically, so only the store itself can show the
@@ -157,6 +178,62 @@ describe('supabase transcript repository', () => {
     expect(await repo.listForMeeting('m1')).toHaveLength(1000)
     // 1000 rows means "there may be more", so exactly one extra probe.
     expect(urls).toHaveLength(2)
+  })
+
+  describe('listFrom', () => {
+    /** As PostgREST answers a count: the page, and the total in Content-Range. */
+    function stubCounted(total: number, cap = 1000) {
+      const requests: Request[] = []
+      vi.stubGlobal('fetch', async (input: string | Request, init?: RequestInit) => {
+        const request = typeof input === 'string' ? new Request(input, init) : input
+        requests.push(request)
+        const url = new URL(request.url)
+        const limit = Math.min(cap, Number(url.searchParams.get('limit')))
+        const rows = Array.from({ length: Math.min(limit, total) }, (_, i) => ({
+          meeting_id: 'm1', idx: 5 + i, start_ms: 0, end_ms: 1, text: `line ${5 + i}`, created_at: 'x',
+        }))
+        return new Response(JSON.stringify(rows), {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'content-range': `0-${Math.max(rows.length - 1, 0)}/${total}` },
+        })
+      })
+      return requests
+    }
+
+    it('reads one page in one request, from the line asked for', async () => {
+      const requests = stubCounted(3)
+      const page = await repo.listFrom('m1', 5, 256)
+      expect(requests).toHaveLength(1)
+      const url = new URL(requests[0]!.url)
+      expect(url.searchParams.get('meeting_id')).toBe('eq.m1')
+      expect(url.searchParams.get('idx')).toBe('gte.5')
+      expect(url.searchParams.get('limit')).toBe('256')
+      expect(url.searchParams.get('order')).toBe('idx.asc')
+      expect(requests[0]!.headers.get('prefer')).toMatch(/count=exact/)
+      expect(page).toMatchObject({ more: false })
+      expect(page.segments.map(s => s.idx)).toEqual([5, 6, 7])
+    })
+
+    it('says there is more when there is', async () => {
+      stubCounted(300)
+      const page = await repo.listFrom('m1', 5, 256)
+      expect(page.segments).toHaveLength(256)
+      expect(page.more).toBe(true)
+    })
+
+    // The reason `more` is the store's count: a short page reads like the end of the
+    // transcript, and a plan cut short here would index half a meeting and call it done.
+    it('knows a page shortened by the server\'s row cap is not the end', async () => {
+      stubCounted(300, 100)
+      const page = await repo.listFrom('m1', 5, 256)
+      expect(page.segments).toHaveLength(100)
+      expect(page.more).toBe(true)
+    })
+
+    it('refuses an answer with no count rather than guess', async () => {
+      vi.stubGlobal('fetch', async () => new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }))
+      await expect(repo.listFrom('m1', 5, 256)).rejects.toThrow(/no count/)
+    })
   })
 
   it('deletes a whole transcript with one DELETE filtered to the meeting', async () => {

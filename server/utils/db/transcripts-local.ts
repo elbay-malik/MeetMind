@@ -57,5 +57,13 @@ export function createLocalTranscriptRepository(options: { dataDir: string }): T
         return (stored ?? []).filter(s => s.idx >= from && s.idx <= to).sort((a, b) => a.idx - b.idx)
       })
     },
+
+    async listFrom(meetingId, from, limit) {
+      return serialize(meetingId, async () => {
+        const stored = await (await storageFor(base)).getItem<TranscriptSegment[]>(transcriptKey(meetingId))
+        const rest = (stored ?? []).filter(s => s.idx >= from).sort((a, b) => a.idx - b.idx)
+        return { segments: rest.slice(0, limit), more: rest.length > limit }
+      })
+    },
   }
 }

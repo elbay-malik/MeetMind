@@ -10,6 +10,13 @@ export interface TranscriptRepository {
    * without the rest of the transcript (ADR-0012).
    */
   listRange(meetingId: string, from: number, to: number): Promise<TranscriptSegment[]>
+  /**
+   * Up to `limit` segments from `from` on, in order, and whether any lie past them:
+   * one step's page of a transcript whose length it does not know (ADR-0012). `more`
+   * comes from the store's own count, never from a short page: a row cap on the
+   * server shortens a page without saying so.
+   */
+  listFrom(meetingId: string, from: number, limit: number): Promise<{ segments: TranscriptSegment[], more: boolean }>
   /** Remove the whole transcript. Idempotent: nothing stored is not an error. */
   deleteForMeeting(meetingId: string): Promise<void>
 }

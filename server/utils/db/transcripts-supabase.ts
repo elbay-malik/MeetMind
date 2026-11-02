@@ -89,5 +89,19 @@ export function createSupabaseTranscriptRepository(options: SupabaseOptions): Tr
         if (data.length < PAGE) return segments
       }
     },
+
+    async listFrom(meetingId, from, limit) {
+      // The exact count over this filter is an index scan, and says whether anything
+      // lies past this page even if a row cap has shortened it.
+      const { data, error, count } = await table()
+        .select('*', { count: 'exact' })
+        .eq('meeting_id', meetingId)
+        .gte('idx', from)
+        .order('idx', { ascending: true })
+        .range(0, limit - 1)
+      if (error) fail('transcript page select', error)
+      if (typeof count !== 'number') throw new Error('Supabase transcript page select returned no count')
+      return { segments: data.map(rowToSegment), more: count > data.length }
+    },
   }
 }
