@@ -54,7 +54,7 @@ export function createLocalTranscriptIndexRepository(options: { dataDir: string 
     async upsertWindows(meetingId, windows) {
       if (windows.length === 0) return
       // Queued behind the shared per-meeting chain: read-modify-write, and a
-      // meeting's worth of 768-dimension vectors is exactly the payload size at
+      // meeting's worth of 1024-dimension vectors is exactly the payload size at
       // which a concurrent truncating write becomes observable.
       await serialize(meetingId, async () => {
         const byIdx = new Map((await read(meetingId)).map(w => [w.idx, w]))

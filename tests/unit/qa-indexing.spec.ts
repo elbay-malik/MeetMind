@@ -4,14 +4,15 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createLocalTranscriptIndexRepository } from '../../server/utils/db/windows-local'
 import {
-  EmbeddingError,
+  dailyLimitReached,
+  EMBEDDING_DIMENSIONS,
   MAX_BATCH,
   MAX_BATCH_TOKENS,
   planEmbeddingBatches,
   type Embedder,
 } from '../../server/utils/qa/embedder'
 import { indexMeeting, indexStatus } from '../../server/utils/qa/indexing'
-import { hashedTokenVector } from '../../server/utils/qa/stub'
+import { hashedTokenVector, STUB_EMBEDDING_MODEL } from '../../server/utils/qa/stub'
 import { planWindows } from '../../server/utils/qa/windows'
 import { estimateTokens } from '../../server/utils/summary/plan'
 import type { TranscriptSegment } from '../../shared/types/meeting'
@@ -31,10 +32,10 @@ function recordingEmbedder(options: { model?: string, failOnCall?: number } = {}
   const embedder: Embedder = {
     kind: 'stub',
     model: options.model ?? 'model-a',
-    dimensions: 768,
+    dimensions: EMBEDDING_DIMENSIONS,
     async embedDocuments(texts) {
       calls.push(texts)
-      if (calls.length === options.failOnCall) throw new EmbeddingError('Embedding quota is exhausted for now.', 429, false)
+      if (calls.length === options.failOnCall) throw dailyLimitReached()
       return texts.map(t => hashedTokenVector(t))
     },
     async embedQuery(text) {
@@ -74,6 +75,14 @@ describe('indexStatus', () => {
     const plan = await planWindows(transcript(30))
     const keys = plan.map(w => ({ idx: w.idx, contentHash: 'f'.repeat(64), model: 'model-a' }))
     expect(indexStatus(plan, keys, 'model-a')).toMatchObject({ state: 'incomplete', indexedCount: 0 })
+  })
+
+  it('reads an index from the 768-dimension stub as another model\'s, not as ready', async () => {
+    // Its vectors cannot be compared with these: reading it as current would fail
+    // the first question on the sizes, instead of offering to index again.
+    const plan = await planWindows(transcript(30))
+    const keys = plan.map(w => ({ idx: w.idx, contentHash: w.contentHash, model: 'stub-hashed-tokens-v1' }))
+    expect(indexStatus(plan, keys, STUB_EMBEDDING_MODEL)).toMatchObject({ state: 'none', indexedCount: 0 })
   })
 
   it('does not count windows embedded by a different model', async () => {

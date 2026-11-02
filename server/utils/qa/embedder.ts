@@ -2,10 +2,17 @@ import { estimateTokens } from '../summary/plan'
 
 /**
  * Vector size every embedder produces and every stored window holds. The
- * database column is `vector(768)`, so changing this is a migration, not a
- * config change (ADR-0007).
+ * database column is `vector(1024)`, so changing this is a migration, not a
+ * config change (ADR-0014).
  */
-export const EMBEDDING_DIMENSIONS = 768
+export const EMBEDDING_DIMENSIONS = 1024
+
+/**
+ * Longest single input the model takes, in its own tokens. Over it the provider
+ * refuses rather than truncating (measured, ADR-0014). Only a single transcript
+ * segment over the window budget can get there: see WINDOW_TOKEN_BUDGET.
+ */
+export const MAX_INPUT_TOKENS = 8_192
 
 /**
  * Texts per embedding request. Batches of 200 short texts have been accepted, so
@@ -52,12 +59,11 @@ export function planEmbeddingBatches<T>(items: T[], textOf: (item: T) => string)
  * Turns text into vectors. Implemented by the real provider and by a local stub,
  * chosen the same way every other external dependency is, so CI needs no key.
  *
- * Documents and questions are separate calls because the provider embeds them
- * differently: a question is prefixed as a query, a window as a document, and
- * the two land in the same space only when each is labelled as what it is.
+ * Documents and questions are separate calls because not every model treats them
+ * alike. The current one does, and is sent both as they are (ADR-0014).
  */
 export interface Embedder {
-  readonly kind: 'gemini' | 'stub'
+  readonly kind: 'workers-ai' | 'stub'
   /** Stored with every window, so vectors from different models never mix. */
   readonly model: string
   readonly dimensions: number
@@ -65,12 +71,16 @@ export interface Embedder {
   embedQuery(text: string): Promise<number[]>
 }
 
-/** Raised when the provider refuses or fails; carries what the UI should say. */
+/**
+ * Raised when the provider refuses or fails; carries what the UI should say,
+ * and, when the refusal is "not now", when asking again can succeed.
+ */
 export class EmbeddingError extends Error {
   constructor(
     message: string,
     readonly statusCode: number,
     readonly retryable: boolean,
+    readonly retryAt?: Date,
   ) {
     super(message)
     this.name = 'EmbeddingError'
@@ -78,10 +88,41 @@ export class EmbeddingError extends Error {
 }
 
 /**
- * Refuse a vector that is not what the schema holds. A request whose dimension
- * setting was silently ignored comes back at the model's 3,072-dimension
- * default; storing that is impossible, and scoring it against 768-dimension
- * vectors is meaningless, so it fails here, loudly, on the first real call.
+ * One input is over the model's limit. Indexing again cannot help: the same text
+ * is refused the same way, so the meeting stays without questions. It is said
+ * plainly rather than cutting the text, which would lose it silently (ADR-0014).
+ */
+export class EmbeddingInputTooLongError extends EmbeddingError {
+  constructor(tokens?: number) {
+    const size = tokens === undefined ? '' : `${tokens.toLocaleString('en-US')} tokens; `
+    super(
+      `A passage in this transcript is too long to index for questions (${size}the limit is ${MAX_INPUT_TOKENS.toLocaleString('en-US')} tokens). `
+      + 'Questions cannot be asked about this meeting. Its transcript and summary are not affected.',
+      422,
+      false,
+    )
+    this.name = 'EmbeddingInputTooLongError'
+  }
+}
+
+/**
+ * The provider's free daily allocation is spent. It comes back at 00:00 UTC, so
+ * that is when asking again can succeed, and nothing sooner will (ADR-0014).
+ */
+export function dailyLimitReached(now = new Date()): EmbeddingError {
+  return new EmbeddingError(
+    'The free daily limit for indexing and questions has been reached. It resets at 00:00 UTC.',
+    429,
+    false,
+    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)),
+  )
+}
+
+/**
+ * Refuse a vector that is not what the schema holds. A model changed under its
+ * name, or a reply cut short, comes back at another size. Storing that is
+ * impossible, and scoring it against 1024-dimension vectors is meaningless, so
+ * it fails here, loudly, on the first real call.
  */
 export function assertEmbedding(values: unknown, dimensions: number): number[] {
   if (!Array.isArray(values) || values.length !== dimensions) {

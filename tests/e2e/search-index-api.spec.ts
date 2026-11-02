@@ -68,7 +68,7 @@ describe('search index', () => {
   it('goes from none to ready once indexed, and names the stub model it used', async () => {
     const meeting = await transcribedMeeting()
     const before = await status(meeting.id)
-    expect(before).toMatchObject({ state: 'none', indexedCount: 0, model: 'stub-hashed-tokens-v1' })
+    expect(before).toMatchObject({ state: 'none', indexedCount: 0, model: 'stub-hashed-tokens-v2' })
     expect(before.windowCount).toBeGreaterThan(0)
 
     const after = await index(meeting.id)
@@ -101,7 +101,7 @@ describe('search index', () => {
     const meeting = await transcribedMeeting()
     await setStoredTranscript(meeting.id, [])
     expect(await index(meeting.id)).toEqual({
-      state: 'ready', windowCount: 0, indexedCount: 0, model: 'stub-hashed-tokens-v1',
+      state: 'ready', windowCount: 0, indexedCount: 0, model: 'stub-hashed-tokens-v2',
     })
   })
 

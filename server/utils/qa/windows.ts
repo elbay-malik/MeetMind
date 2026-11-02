@@ -33,6 +33,10 @@ export const WINDOW_TARGET_MS = 45_000
  * 8,192-token input limit on purpose: the windows retrieved for a question are
  * sent together to the answering model, whose per-minute allowance is the
  * binding limit (ADR-0006), so a few retrieved windows must stay small.
+ *
+ * The estimate can undercount, but not by enough: the worst measured at this size
+ * was 5,923 real tokens, on text that is nothing but emoji (ADR-0014). Only a
+ * single segment over the budget, which is never split, can reach the limit.
  */
 export const WINDOW_TOKEN_BUDGET = 1_500
 

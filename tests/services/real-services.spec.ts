@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { AwsClient } from 'aws4fetch'
-import { createGeminiEmbedder, GEMINI_EMBEDDING_MODEL } from '../../server/utils/qa/gemini'
+import { EMBEDDING_DIMENSIONS, EmbeddingInputTooLongError } from '../../server/utils/qa/embedder'
+import { createWorkersAiEmbedder, WORKERS_AI_EMBEDDING_MODEL } from '../../server/utils/qa/workers-ai'
 import { createGroqTranscriber } from '../../server/utils/transcription/groq'
 import { normalizeSegments } from '../../server/utils/transcription/normalize'
 import { INITIAL_SCAN, parseSegments, replyDuration, scanWindow } from '../../server/utils/transcription/reply-scanner'
@@ -286,7 +287,7 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
         content: 'We ship on Friday.',
         content_hash: '0'.repeat(64),
         model: 'verify-services',
-        embedding: `[${Array.from({ length: 768 }, () => 0.01).join(',')}]`,
+        embedding: `[${Array.from({ length: EMBEDDING_DIMENSIONS }, () => 0.01).join(',')}]`,
       }))
       for (const { error } of children) expect(error, `${error?.code}: ${error?.message}`).toBeNull()
 
@@ -664,44 +665,121 @@ describe.skipIf(!has('NUXT_GROQ_API_KEY') || !probe)('Groq Whisper', () => {
   })
 })
 
-// ------------------------------------------------------------- Gemini embeddings
-describe.skipIf(!has('NUXT_GEMINI_API_KEY'))('Gemini embeddings', () => {
-  // Nothing in ADR-0007's driver has run against the real API: the request
-  // shape comes from the API reference, and three of its facts could only be
-  // confirmed with a key. These are those three.
-  const embedder = () => createGeminiEmbedder({ apiKey: process.env.NUXT_GEMINI_API_KEY! })
+// --------------------------------------------------------- Workers AI embeddings
+describe.skipIf(!has('NUXT_WORKERS_AI_ACCOUNT_ID', 'NUXT_WORKERS_AI_API_TOKEN'))('Workers AI embeddings', () => {
+  // ADR-0014's measurements, kept as checks: a model swapped or changed under its
+  // name should fail here and not in front of a visitor. Seven calls, about 20
+  // neurons out of the day's 10,000.
+  const embedder = () => createWorkersAiEmbedder({
+    accountId: process.env.NUXT_WORKERS_AI_ACCOUNT_ID!,
+    apiToken: process.env.NUXT_WORKERS_AI_API_TOKEN!,
+  })
   const cosine = (a: number[], b: number[]) => {
     const dot = a.reduce((sum, v, i) => sum + v * b[i]!, 0)
     return dot / Math.sqrt(a.reduce((s, v) => s + v * v, 0) * b.reduce((s, v) => s + v * v, 0))
   }
+  const sentences = (count: number, ending: string) => [
+    ...Array.from({ length: count }, (_, i) => `Item ${i} on the agenda was the warehouse contract review, moved to Thursday.`),
+    ending,
+  ].join(' ')
 
-  it('honours embedContentConfig.outputDimensionality, returning 768 values rather than the 3,072 default', async () => {
-    // assertEmbedding inside the driver throws on any other length, so this
-    // passing at all proves the field name is right.
-    const [vector] = await embedder().embedDocuments(['We agreed to ship the billing change on Friday.'])
-    expect(vector).toHaveLength(768)
-  })
-
-  it('returns unit-length vectors at 768 dimensions, as gemini-embedding-2 is documented to', async () => {
-    // gemini-embedding-001 would need the caller to re-normalize a truncated
-    // vector; ADR-0007 chose this model partly because it does not.
-    const [vector] = await embedder().embedDocuments(['The marketing budget is being cut next quarter.'])
-    const norm = Math.sqrt(vector!.reduce((sum, v) => sum + v * v, 0))
-    console.info(`[verify] ${GEMINI_EMBEDDING_MODEL} norm at 768d: ${norm.toFixed(6)}`)
-    expect(norm).toBeCloseTo(1, 3)
-  })
-
-  it('ranks a question closer to the passage that answers it than to an unrelated one', async () => {
-    // The task prefixes are what put queries and documents in the same space.
-    const client = embedder()
-    const [budget, hiring] = await client.embedDocuments([
-      'We agreed to cut the marketing budget by twenty percent next quarter.',
+  it('returns one unit-length vector of the schema\'s size per document, each its own', async () => {
+    const vectors = await embedder().embedDocuments([
+      'We agreed to ship the billing change on Friday.',
+      'The marketing budget is being cut next quarter.',
       'Priya will interview two candidates for a design role.',
     ])
-    const question = await client.embedQuery('What did we decide about marketing spend?')
-    const toBudget = cosine(question, budget!)
-    const toHiring = cosine(question, hiring!)
-    console.info(`[verify] similarity: answering passage ${toBudget.toFixed(3)}, unrelated ${toHiring.toFixed(3)}`)
-    expect(toBudget).toBeGreaterThan(toHiring)
+    expect(vectors).toHaveLength(3)
+    for (const vector of vectors) {
+      expect(vector).toHaveLength(EMBEDDING_DIMENSIONS)
+      const norm = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0))
+      console.info(`[verify] ${WORKERS_AI_EMBEDDING_MODEL} norm at ${EMBEDDING_DIMENSIONS}d: ${norm.toFixed(6)}`)
+      // Not closer: 1.0002 has been seen (ADR-0014).
+      expect(norm).toBeCloseTo(1, 2)
+    }
+    expect(cosine(vectors[0]!, vectors[1]!)).toBeLessThan(0.99)
+  })
+
+  it('embeds a question as it embeds a document, and keeps a batch in order', async () => {
+    // The second place in a batch, so a shuffled reply fails too. No prefix on
+    // either: the driver sends text as it is, and this is what says that is right.
+    const client = embedder()
+    const [, second] = await client.embedDocuments(['An unrelated first text.', 'The second text in the batch.'])
+    expect(cosine(await client.embedQuery('The second text in the batch.'), second!)).toBeGreaterThan(0.999)
+  })
+
+  it('refuses an input over 8,192 tokens rather than truncating it', async () => {
+    const failure = await embedder().embedDocuments([sentences(1_000, 'The end.')]).catch(e => e)
+    expect(failure).toBeInstanceOf(EmbeddingInputTooLongError)
+    expect(failure).toMatchObject({ statusCode: 422, retryable: false })
+    console.info(`[verify] refusal: ${failure.message}`)
+    // The model's count, read from its refusal. It is how the driver knows the case.
+    expect(failure.message).toMatch(/\(\d[\d,]* tokens; the limit is 8,192 tokens\)/)
+  })
+
+  it('reads an input to its end, close to the limit', async () => {
+    // How the rejected bge-base fails: past 512 tokens it silently drops the rest,
+    // so these two would come back identical.
+    const [a, b] = await embedder().embedDocuments([
+      sentences(400, 'Finally, the billing migration was approved without objections.'),
+      sentences(400, 'Finally, the hiring freeze was lifted for the support team.'),
+    ])
+    const similarity = cosine(a!, b!)
+    console.info(`[verify] same text with another ending: similarity ${similarity.toFixed(6)}`)
+    expect(similarity).toBeLessThan(1 - 1e-5)
+  })
+
+  it('finds the passage for a reworded question, in English and in German', async () => {
+    // Made-up text, and clear cases. Each question shares almost no words with its
+    // passage, so this is the model's sense of meaning and not word overlap. The
+    // German half is the point: bge-base-en-v1.5 fails it with these very sentences
+    // (one miss of four), so an English-only model cannot be swapped in unnoticed.
+    const languages = {
+      English: {
+        passages: [
+          'We agreed to cut the marketing budget by twenty percent next quarter.',
+          'Priya will interview two candidates for the design role next week.',
+          'The database migration is delayed until the new server hardware arrives.',
+          'Everyone should hand in their travel expenses to Tom by the end of the month.',
+        ],
+        questions: [
+          'How much less will we spend on advertising?',
+          'Who is talking to job applicants?',
+          'Why is moving the data running late?',
+          'Where do I send my trip receipts?',
+        ],
+      },
+      German: {
+        passages: [
+          'Wir haben beschlossen, das Marketingbudget im nächsten Quartal um zwanzig Prozent zu kürzen.',
+          'Priya führt nächste Woche Vorstellungsgespräche mit zwei Kandidaten für die Designstelle.',
+          'Die Datenbankmigration verzögert sich, bis die neue Serverhardware geliefert wird.',
+          'Alle reichen ihre Reisekostenabrechnungen bis Monatsende bei Tom ein.',
+        ],
+        questions: [
+          'Wie viel weniger geben wir künftig für Werbung aus?',
+          'Wer spricht mit den Bewerbern?',
+          'Warum dauert der Umzug der Daten länger?',
+          'Wo gebe ich meine Belege von Dienstreisen ab?',
+        ],
+      },
+    }
+    const client = embedder()
+    const all = Object.values(languages)
+    const passages = await client.embedDocuments(all.flatMap(l => l.passages))
+    const questions = await client.embedDocuments(all.flatMap(l => l.questions))
+
+    // Each question ranks its own language's passages: a German question finding
+    // the English twin of its passage would say nothing against the model.
+    const size = languages.English.passages.length
+    for (const [l, name] of Object.keys(languages).entries()) {
+      const candidates = passages.slice(l * size, (l + 1) * size)
+      const found = questions.slice(l * size, (l + 1) * size).map((question) => {
+        const scores = candidates.map(passage => cosine(question, passage))
+        return scores.indexOf(Math.max(...scores))
+      })
+      console.info(`[verify] ${name}: top passage per question ${found.join(', ')}`)
+      expect(found, name).toEqual([0, 1, 2, 3])
+    }
   })
 })
