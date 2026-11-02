@@ -84,6 +84,22 @@ describe('POST /api/meetings/:id/advance', () => {
     expect(headers.get('retry-after')).toBe(Math.ceil(answer.retryAfterMs / 1000))
   })
 
+  it.each<[string, Meeting['status'], Partial<Meeting>, number]>([
+    ['a failure that can be retried later', 'failed', { failedStage: 'transcription', updatedAt: new Date().toISOString() }, 60_000],
+    ['an index parked until the limit resets', 'ready', {}, 3_600_000],
+  ])('sends no header for %s, which says when without telling anyone to come back then', async (_name, status, patch, parkedFor) => {
+    const parked = { stage: 'search_index' as const, runId: 'r', cursor: {}, stepLeaseUntil: null, attempts: 0, lastError: null, retryAt: new Date(Date.now() + parkedFor) }
+    const index = { marker: null, transcriptHash: 'h', segmentCount: 1, storedWindows: 0, storedForModel: 0 }
+    advance.mockResolvedValueOnce({
+      kind: 'assessed',
+      assessment: assessPipeline({ meeting: { ...meeting(status), ...patch }, runs: [parked], chunks: { done: 0, total: 0 }, index: status === 'ready' ? index : null }, { model: 'm', now: Date.now() }),
+    })
+    const answer = await handler({}) as { next: string, retryAfterMs: number }
+    expect(['done', 'failed']).toContain(answer.next)
+    expect(answer.retryAfterMs).toBeGreaterThan(0)
+    expect(headers.has('retry-after')).toBe(false)
+  })
+
   it('carries no meeting, no run and none of their error text', async () => {
     advance.mockResolvedValueOnce(assessed(meeting('failed'), [{
       stage: 'transcription', runId: 'r', cursor: {}, stepLeaseUntil: null, attempts: 0, lastError: 'a raw reason', retryAt: null,

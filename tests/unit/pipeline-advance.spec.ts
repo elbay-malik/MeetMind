@@ -255,9 +255,10 @@ describe('one request', () => {
       await pipeline.releaseStep(id, 'search_index', parked.token, { error: null, retryAt: new Date(NOON + 60_000) })
       return id
     }, 5],
-    ['a finished meeting, which has no chunks to count', async () => {
-      const id = await transcribedMeeting(segmentsOf(lines(1)), 'ready')
-      await driveToDone(id, depsWith(scriptedProviders([])))
+    ['a finished meeting, whose chunks are not counted again', async () => {
+      const id = await uploadedMeeting()
+      await driveToDone(id, depsWith(scriptedProviders(lines(1))))
+      expect((await repos().pipeline.listRuns(id)).map(run => run.stage)).toContain('summarization')
       return id
     }, 3],
     ['a failure cooling down before there is a transcript', async () => {
