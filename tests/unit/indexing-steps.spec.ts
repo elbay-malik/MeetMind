@@ -686,10 +686,9 @@ describe('the marker', () => {
 })
 
 describe('quota', () => {
-  const nextMidnight = () => {
-    const at = new Date()
-    return Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate() + 1)
-  }
+  // The next 00:00 UTC, unless the test happens to run just after one. The dates are
+  // workers-ai-embedder.spec.ts's to check.
+  const nextMidnight = () => dailyLimitReached().retryAt!.getTime()
 
   it('parks until 00:00 UTC at the daily limit, spends nothing until then, and resumes without re-spending', async () => {
     await clearBlock()
@@ -776,6 +775,41 @@ describe('quota', () => {
     expect(lost.kind === 'failed' && lost.retryAt).toEqual((await runOf(id))!.retryAt)
     expect(second.calls).toHaveLength(0)
     await clearBlock()
+  })
+
+  it('does not block the account for a day over a refusal just after the reset', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime('2026-11-03T00:00:00.500Z')
+      await clearBlock()
+      const id = newId()
+      await meetingWith(id, transcript(30))
+      const fetched = vi.fn(async () => new Response('{}', { status: 429 }))
+      vi.stubGlobal('fetch', fetched)
+      const deps = depsWith(createWorkersAiEmbedder({ accountId: 'a', apiToken: 't', maxAttempts: 1 }))
+
+      const refused = await advanceIndexing(id, deps)
+      expect(refused).toMatchObject({ kind: 'failed', statusCode: 429, message: DAILY_LIMIT_MESSAGE })
+      const inMargin = new Date('2026-11-03T00:05:00.000Z')
+      expect(refused.kind === 'failed' && refused.retryAt).toEqual(inMargin)
+      expect((await runOf(id))!.retryAt).toEqual(inMargin)
+      expect((await repos().slots.blockedUntil('workers-ai-embed'))!.getTime()).toBeLessThanOrEqual(inMargin.getTime())
+
+      // Asked again after that, the provider's answer is what counts, for this meeting and any other.
+      vi.setSystemTime('2026-11-03T00:05:01.000Z')
+      fetched.mockImplementation(async (_url: string, init: RequestInit) => {
+        const { text } = JSON.parse(init.body as string) as { text: string[] }
+        return Response.json({
+          success: true,
+          result: { data: text.map(() => new Array(EMBEDDING_DIMENSIONS).fill(0.1)), shape: [text.length, EMBEDDING_DIMENSIONS] },
+        })
+      })
+      expect((await drive(id, deps)).at(-1)).toMatchObject({ kind: 'done' })
+    }
+    finally {
+      vi.useRealTimers()
+      await clearBlock()
+    }
   })
 
   it('parks a meeting on another meeting\'s block without sending anything', async () => {
