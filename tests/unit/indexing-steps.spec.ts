@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TranscriptSegment } from '../../shared/types/meeting'
 import { createLocalSlotRepository } from '../../server/utils/db/slots-local'
+import { readyWindowCount } from '../../server/utils/db/windows'
 import {
   DAILY_LIMIT_MESSAGE,
   dailyLimitReached,
@@ -385,9 +386,12 @@ describe('a step\'s subrequests', () => {
     const batches = (steps: typeof short) => steps.filter(s => s.kind === 'progress').map(s => s.subrequests)
     // The meeting, its state, the run, the claim, the page, the keys, the slot, the
     // provider and the write. ADR-0012's table says about 6; it did not count the
-    // reads either side of a step, as step 7's addendum also found.
-    expect(new Set(batches(long))).toEqual(new Set([9]))
-    expect(new Set(batches(short))).toEqual(new Set([9]))
+    // reads either side of a step, as step 7's addendum also found. A pass's first step
+    // reads the state once more, under its claim.
+    expect(batches(long)[0]).toBe(10)
+    expect(batches(short)[0]).toBe(10)
+    expect(new Set(batches(long).slice(1))).toEqual(new Set([9]))
+    expect(new Set(batches(short).slice(1))).toEqual(new Set([9]))
     // The last step: the meeting, its state, the run, the claim, and the finish.
     expect(long.at(-1)).toEqual({ kind: 'done', subrequests: 5 })
     expect(short.at(-1)).toEqual({ kind: 'done', subrequests: 5 })
@@ -420,6 +424,64 @@ describe('the durable claim', () => {
     const embedded = texts()
     expect(new Set(embedded).size).toBe(embedded.length)
     expect([...embedded].sort()).toEqual(plan.map(w => w.text).sort())
+  })
+
+  it.each([
+    ['after its state read', 'readState'],
+    ['after its run read', 'listRuns'],
+    ['just before its claim', 'claimStep'],
+  ] as const)('does not reopen an index another driver finishes %s', async (_name, method) => {
+    const id = newId()
+    const segments = transcript(40)
+    await meetingWith(id, segments)
+    const plan = await planWindows(segments)
+    const { embedder, calls } = scripted()
+    const deps = depsWith(embedder)
+    // Up to the last step, which is what the other driver is about to do.
+    for (;;) {
+      const run = await runOf(id)
+      if ((run?.cursor as { pass?: { planned?: boolean } } | undefined)?.pass?.planned) break
+      await advanceIndexing(id, deps)
+    }
+    const spent = calls.length
+
+    let finished = false
+    const finishFirst = async () => {
+      if (finished) return
+      finished = true
+      expect(await advanceIndexing(id, deps)).toMatchObject({ kind: 'done', index: { windowCount: plan.length } })
+    }
+    const stale: IndexingDeps = {
+      ...deps,
+      index: {
+        ...deps.index,
+        async readState(...args) {
+          const state = await deps.index.readState(...args)
+          if (method === 'readState') await finishFirst()
+          return state
+        },
+      },
+      pipeline: {
+        ...deps.pipeline,
+        async listRuns(...args) {
+          const runs = await deps.pipeline.listRuns(...args)
+          if (method === 'listRuns') await finishFirst()
+          return runs
+        },
+        async claimStep(...args) {
+          if (method === 'claimStep') await finishFirst()
+          return deps.pipeline.claimStep(...args)
+        },
+      },
+    }
+
+    expect(await advanceIndexing(id, stale)).toMatchObject({ kind: 'done', index: { windowCount: plan.length } })
+    expect(finished).toBe(true)
+    expect((await stateOf(id)).marker).toMatchObject({ windowCount: plan.length, complete: true })
+    expect(readyWindowCount(await stateOf(id), 'model-a')).toBe(plan.length)
+    // It let go of the step it claimed, and nothing was spent on any of this.
+    expect(await runOf(id)).toMatchObject({ stepLeaseUntil: null, retryAt: null, attempts: 0, lastError: null })
+    expect(calls).toHaveLength(spent)
   })
 
   it('tells a second caller to wait while a step is live, and spends nothing for it', async () => {
