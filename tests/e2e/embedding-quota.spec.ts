@@ -8,6 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting, QuestionAnswer, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
+import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
 // Isolated from search-index-api.spec.ts for its one setting: with this canary set,
 // the stub embedder refuses any text holding it exactly as the real provider refuses
@@ -23,6 +24,7 @@ await setup({
   env: {
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
+    NUXT_INVITE_CODE: INVITE_CODE,
     NUXT_EMBED_STUB_QUOTA_CANARY: CANARY,
   },
 })
@@ -32,6 +34,7 @@ const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 async function transcribedMeeting(): Promise<Meeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
+    headers: inviteHeaders,
     body: {
       title: 'Quota test', sourceFileName: 'meeting.mp4', sourceBytes: 1_000_000,
       sourceMime: 'video/mp4', durationSec: 10, audioBytes: audio.byteLength,

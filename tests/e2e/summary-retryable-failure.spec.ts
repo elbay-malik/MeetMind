@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, ExtractionStepResponse, Meeting } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
+import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
 // Isolated from summary-api.spec.ts: NUXT_SUMMARY_STUB_FAIL_ONCE_RETRYABLE
 // makes the stub throw a retryable error exactly ONCE for the whole server
@@ -21,6 +22,7 @@ await setup({
   env: {
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
+    NUXT_INVITE_CODE: INVITE_CODE,
     NUXT_SUMMARY_STUB_FAIL_ONCE_RETRYABLE: 'true',
   },
 })
@@ -30,6 +32,7 @@ const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 async function transcribedMeeting(): Promise<Meeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
+    headers: inviteHeaders,
     body: {
       title: 'Retryable failure test', sourceFileName: 'meeting.mp4', sourceBytes: 1_000_000,
       sourceMime: 'video/mp4', durationSec: 10, audioBytes: audio.byteLength,

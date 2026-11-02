@@ -9,6 +9,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { fetch, setup } from '@nuxt/test-utils/e2e'
 import type { Meeting } from '../../shared/types/meeting'
 import { audioObjectKey, whisperReplyKey } from '../../shared/utils/meeting'
+import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-delete-'))
@@ -29,6 +30,7 @@ await setup({
   env: {
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
+    NUXT_INVITE_CODE: INVITE_CODE,
     NUXT_ADMIN_TOKEN: ADMIN_TOKEN,
     NUXT_R2_MAX_STORED_BYTES: String(CEILING),
   },
@@ -93,7 +95,7 @@ function del(id: string, authorization: string | null = `Bearer ${ADMIN_TOKEN}`)
 function register(audioBytes: number): Promise<Response> {
   return fetch('/api/meetings', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...inviteHeaders },
     body: JSON.stringify({
       title: 'delete',
       sourceFileName: 'a.mp4',

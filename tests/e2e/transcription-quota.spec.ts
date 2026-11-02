@@ -8,6 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
+import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
 // Isolated from transcription-api.spec.ts: NUXT_TRANSCRIBE_STUB_QUOTA_FAIL
 // makes the stub throw a 429 exactly ONCE for the whole server process, which
@@ -23,6 +24,7 @@ await setup({
   env: {
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
+    NUXT_INVITE_CODE: INVITE_CODE,
     NUXT_TRANSCRIBE_STUB_QUOTA_FAIL: 'true',
   },
 })
@@ -32,6 +34,7 @@ const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 async function uploadedMeeting(): Promise<Meeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
+    headers: inviteHeaders,
     body: {
       title: 'Quota test', sourceFileName: 'meeting.mp4', sourceBytes: 1_000_000,
       sourceMime: 'video/mp4', durationSec: 10, audioBytes: audio.byteLength,

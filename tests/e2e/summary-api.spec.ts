@@ -10,6 +10,7 @@ import { createLocalMeetingRepository } from '../../server/utils/db/local'
 import { quoteStartsAt } from '../../server/utils/summary/reconcile'
 import type { CreateMeetingResponse, ExtractionStepResponse, Meeting, MeetingSummary, TranscriptSegment } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
+import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-summary-'))
@@ -21,6 +22,7 @@ await setup({
   env: {
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
+    NUXT_INVITE_CODE: INVITE_CODE,
     // Makes the stub also emit one unsupported citation, so this suite can
     // prove reconciliation drops it over the real route rather than only in
     // reconcile()'s own unit tests. The stub's normal quotes are all real, so
@@ -35,6 +37,7 @@ const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 async function transcribedMeeting(): Promise<Meeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
+    headers: inviteHeaders,
     body: {
       title: 'Summary test',
       sourceFileName: 'meeting.mp4',
@@ -215,6 +218,7 @@ describe('POST /api/meetings/:id/summarize', () => {
   it('refuses a meeting with no transcript, without moving it', async () => {
     const { meeting } = await $fetch<CreateMeetingResponse>('/api/meetings', {
       method: 'POST',
+      headers: inviteHeaders,
       body: {
         title: 'No transcript',
         sourceFileName: 'a.mp4',
