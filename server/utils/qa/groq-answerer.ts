@@ -60,7 +60,6 @@ export function createGroqAnswerer(options: GroqAnswererOptions): Answerer {
   const jsonSchema = toStrictJsonSchema(wireAnswerSchema)
 
   async function askOnce(input: AnswerInput): Promise<WireAnswer> {
-    await awaitAnswerSlot(options.pacer)
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -124,10 +123,12 @@ export function createGroqAnswerer(options: GroqAnswererOptions): Answerer {
 
   return {
     kind: 'groq',
-    async answer(input) {
+    reserveSlot: () => awaitAnswerSlot(options.pacer),
+    async answer(input, { slotHeld = false } = {}) {
       let previous: AnswerError | undefined
       for (let attempt = 1; ; attempt++) {
         try {
+          if (attempt > 1 || !slotHeld) await awaitAnswerSlot(options.pacer)
           return await askOnce(input)
         }
         catch (err) {

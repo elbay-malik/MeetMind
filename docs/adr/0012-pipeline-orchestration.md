@@ -1,6 +1,6 @@
 # ADR-0012: Pipeline orchestration under the Workers free plan
 
-- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md) and [ADR-0014](0014-workers-ai-embeddings.md)
+- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md), [ADR-0014](0014-workers-ai-embeddings.md) and [ADR-0015](0015-invite-only-uploads.md)
 - **Date:** 2026-10-25
 - **Supersedes:** PLAYBOOK Phase 9 point 2 and its "No queue … single streaming request" key decision. Amends ADR-0006 §2–3 (per-chunk retry, chunk-local attestation), ADR-0007 §5–7 (index claim, pacing), ADR-0011 (what blocks a delete) and the Phase 13 note that "streaming AI calls … don't accrue CPU time".
 
@@ -106,7 +106,7 @@ Every step's work is bounded by configuration, not by meeting length. Each step 
 | **S chunk k** | `claim_step` → `reserve_slot('groq-chat')`. On a miss it returns `wait` and makes no provider call. On a hit: read `seg_from..seg_to` → one Groq call → `JSON.parse` + `wireSummarySchema` → `attestChunk` → `record_chunk` | ~2,500 input tokens, one reply (~1,780 tokens measured), attestation over ~92 segments | ~5 |
 | **F finalize** | Read every chunk's attested result → `mergeReconciled` → `finalize_summary` | Tens of items; the transcript is never read | ~3 |
 | **I index batch** | `claim_step` → plan windows for one segment range from the cursor → compare keys → embed ≤ `INDEX_BATCH` (16) windows → `upsert_windows` | 16 hashes, a 16-vector reply | ~6 |
-| **ask** | Check `meeting_index_state` (no whole-transcript re-plan) → `embedQuery` → top-4 search → `reserve_slot` (bounded wait, §4) → one Groq call → attest against 4 windows | constant | ~7 |
+| **ask** | Check `meeting_index_state` (no whole-transcript re-plan) → `reserve_slot` (bounded wait, §4) → `embedQuery` → top-4 search → one Groq call → attest against 4 windows | constant | ~7 |
 
 How each step's size is kept constant:
 - **Parse pages and chunk planning.** `planChunks` is a pure greedy pack over `estimateTokens`. Carrying `{chunkStartIdx, tokens}` in the cursor gives the same boundaries as one full pass. `planWindows` is a forward-only scan, so it slices the same way.

@@ -1,13 +1,14 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createLocalTranscriptIndexRepository } from '../../server/utils/db/windows-local'
 import type { Answerer, AnswerInput } from '../../server/utils/qa/answerer'
 import { askMeeting, TOP_K } from '../../server/utils/qa/ask'
 import { indexMeeting } from '../../server/utils/qa/indexing'
 import { createStubAnswerer } from '../../server/utils/qa/stub-answerer'
 import { createStubEmbedder } from '../../server/utils/qa/stub'
+import { ProviderBusyError, type RequestPacer } from '../../server/utils/summary/groq'
 import type { WireAnswer } from '../../shared/schemas/qa'
 import type { TranscriptSegment } from '../../shared/types/meeting'
 
@@ -39,6 +40,7 @@ function scriptedAnswerer(reply: WireAnswer) {
   const seen: AnswerInput[] = []
   const answerer: Answerer = {
     kind: 'stub',
+    async reserveSlot() {},
     async answer(input) {
       seen.push(input)
       return reply
@@ -226,5 +228,46 @@ describe('askMeeting', () => {
     expect(await ask('a10', 'What about the budget?', [], answerer))
       .toEqual({ found: false, answer: null, citations: [] })
     expect(seen).toHaveLength(0)
+  })
+})
+
+describe('a question\'s request slot', () => {
+  const QUESTION = 'What did we decide about the marketing budget?'
+  afterEach(() => vi.restoreAllMocks())
+
+  function pacer(wait: () => Promise<void> = async () => {}) {
+    const paced = { waits: 0, async wait() {
+      paced.waits++
+      await wait()
+    }, async rateLimited() {} }
+    return paced satisfies RequestPacer
+  }
+
+  // Otherwise slot pacing bounds nothing on Workers AI: a loop refused every slot would
+  // still spend an embedding per request, and invited uploads could not be indexed.
+  it('is taken before the question is embedded, so a refused question spends no embedding', async () => {
+    const segments = await indexed('s1')
+    const embed = vi.spyOn(embedder, 'embedQuery')
+    const busy = pacer(async () => {
+      throw new ProviderBusyError(new Date(Date.now() + 60_000))
+    })
+    await expect(ask('s1', QUESTION, segments, createStubAnswerer({ pacer: busy })))
+      .rejects.toMatchObject({ statusCode: 429, retryable: false })
+    expect(embed).not.toHaveBeenCalled()
+  })
+
+  it('is taken once for an answered question, not again for the answer', async () => {
+    const segments = await indexed('s2')
+    const paced = pacer()
+    const answer = await ask('s2', QUESTION, segments, createStubAnswerer({ pacer: paced }))
+    expect(answer.found).toBe(true)
+    expect(paced.waits).toBe(1)
+  })
+
+  it('is not taken for a question refused because the meeting has no index', async () => {
+    const paced = pacer()
+    await expect(ask('s3-not-indexed', QUESTION, meeting(), createStubAnswerer({ pacer: paced })))
+      .rejects.toMatchObject({ statusCode: 409 })
+    expect(paced.waits).toBe(0)
   })
 })
