@@ -32,7 +32,7 @@ uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
 │   (one request per meeting; segments in integer ms)         │
 │ Groq gpt-oss ─► decisions & action items, each citing a     │
 │   transcript segment that is verified before storage        │
-│ gemini-embedding-2 (768d) ─► Supabase pgvector; questions   │
+│ Workers AI bge-m3 (1024d) ─► Supabase pgvector; questions   │
 │   answered by gpt-oss, citations verified like summaries    │
 └───────────────┬──────────────────────────────────────────────┘
                 ▼
@@ -50,7 +50,7 @@ it**. The link holds a random UUID, and nothing on the server lists meetings or 
 across them. "Your meetings" is a list kept only in the browser that uploaded them, so
 losing the link loses access, and anyone given the link can read the meeting. A leaked
 link can only be revoked by an operator deleting the meeting. Do not upload anything
-sensitive: audio goes to Groq, transcripts go to Groq and Google. Set
+sensitive: audio goes to Groq, transcripts go to Groq and Cloudflare. Set
 `NUXT_PUBLIC_DEMO_MEETING_ID` to link one preloaded meeting from the home page. See
 [ADR-0013](docs/adr/0013-private-meeting-links.md), including its limits.
 
@@ -64,13 +64,14 @@ sensitive: audio goes to Groq, transcripts go to Groq and Google. Set
 | [0004](docs/adr/0004-transcription.md) | Transcription: one request per meeting, no chunking, stub provider for credential-free dev |
 | [0005](docs/adr/0005-audio-playback-and-transcript-sync.md) | Playback: same-origin byte-range route, native player before a waveform |
 | [0006](docs/adr/0006-structured-summaries.md) | Summaries: chunked extraction, citations checked against the transcript |
-| [0007](docs/adr/0007-semantic-qa.md) | Semantic Q&A: windowed Gemini embeddings, answers held to the same citation check |
+| [0007](docs/adr/0007-semantic-qa.md) | Semantic Q&A: windowed embeddings, answers held to the same citation check. Its choice of provider is superseded by ADR-0014 |
 | [0008](docs/adr/0008-cross-meeting-search.md) | Cross-meeting search: passages across meetings, not a synthesized answer; still no HNSW. Superseded by ADR-0013 |
 | [0009](docs/adr/0009-workers-measurement-spike.md) | Workers measurement spike before Phase 9: what the runtime actually does, measured rather than inferred |
 | [0010](docs/adr/0010-r2-cost-controls.md) | R2 cost controls: a lifecycle rule bounds growth, an application storage budget is the hard stop, per-request op metering rejected |
 | [0011](docs/adr/0011-admin-meeting-delete.md) | Deleting a meeting is admin-only, behind `NUXT_ADMIN_TOKEN`; refused while anything could still write its data |
 | [0012](docs/adr/0012-pipeline-orchestration.md) | Pipeline orchestration on the Workers free plan: one bounded step per request, browser-driven, Postgres rate-limit slots, polling not SSE |
 | [0013](docs/adr/0013-private-meeting-links.md) | A meeting is reached only through its unguessable link: no global list or cross-meeting search, \"Your meetings\" lives in this browser |
+| [0014](docs/adr/0014-workers-ai-embeddings.md) | Embeddings from Cloudflare Workers AI's bge-m3 at 1024 dimensions, replacing a provider whose terms require a paid plan in the EEA: measured batch limits, and a plain message at the daily limit |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -109,9 +110,10 @@ independent).
 
 Once real keys are in place, `pnpm test:services` checks each one against the driver
 that uses it — presigned uploads and CORS on R2, the schema and triggers on Supabase,
-whether Groq's response really has the shape the parser assumes, and that Gemini
-honours the 768-dimension request and ranks a question nearer the passage answering
-it. Those contracts are the one thing the offline tests cannot prove.
+whether Groq's response really has the shape the parser assumes, and that Workers AI
+returns 1024-dimension vectors, refuses an input over its limit rather than cutting it,
+and ranks the right passage first for a reworded question in English and in German.
+Those contracts are the one thing the offline tests cannot prove.
 
 ### Storage setup (Cloudflare R2)
 
@@ -178,6 +180,19 @@ Note the free tier allows 7,200 audio-seconds per rolling hour, about two hours 
 audio. A recording longer than that uploads successfully and then hits the provider's
 quota; the UI reports it as such.
 
+### Embeddings setup (Cloudflare Workers AI)
+
+Set `NUXT_WORKERS_AI_ACCOUNT_ID` and `NUXT_WORKERS_AI_API_TOKEN` (both, or neither) to
+index meetings with `@cf/baai/bge-m3`. The token should be scoped to Workers AI alone.
+Without them the server embeds with a deterministic stub, so indexing and questions still
+run.
+
+The Workers Free plan allows 10,000 neurons a day, resetting at 00:00 UTC, and has no
+overage to bill. At about 1,075 neurons per million tokens that is roughly 9 million tokens.
+Past it, indexing and questions are refused until the reset with a message saying so, and
+indexing resumes from where it stopped. See
+[ADR-0014](docs/adr/0014-workers-ai-embeddings.md).
+
 ### Database setup (Supabase)
 
 1. Create a Supabase project, put its **Session pooler** connection string in
@@ -198,7 +213,7 @@ quota; the UI reports it as such.
 | `pnpm typecheck` | `nuxt typecheck` (vue-tsc, strict) |
 | `pnpm test` / `pnpm test:watch` | Vitest unit + Nuxt-runtime tests |
 | `pnpm test:e2e` | Builds the app, then tests the Nitro routes against the local drivers |
-| `pnpm test:services` | Exercises the real R2, Supabase, Groq and Gemini services; each group is skipped unless its keys are set, and the banner names which ones skipped |
+| `pnpm test:services` | Exercises the real R2, Supabase, Groq and Workers AI services; each group is skipped unless its keys are set, and the banner names which ones skipped |
 | `node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: drop → extract → upload → progress page, then inspects storage |
 | `node scripts/drive-player.mjs <url> <meetingId>` | Headless Chromium: click-to-seek, active-line highlight, transcript keyboard navigation |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
