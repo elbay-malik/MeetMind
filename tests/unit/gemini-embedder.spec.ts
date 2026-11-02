@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EMBEDDING_DIMENSIONS, EmbeddingError } from '../../server/utils/qa/embedder'
-import { createGeminiEmbedder, GEMINI_EMBEDDING_MODEL, MAX_BATCH } from '../../server/utils/qa/gemini'
+import { EMBEDDING_DIMENSIONS, EmbeddingError, MAX_BATCH } from '../../server/utils/qa/embedder'
+import { createGeminiEmbedder, GEMINI_EMBEDDING_MODEL } from '../../server/utils/qa/gemini'
 
 const embedder = createGeminiEmbedder({ apiKey: 'test-key' })
 

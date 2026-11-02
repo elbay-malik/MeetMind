@@ -1,9 +1,52 @@
+import { estimateTokens } from '../summary/plan'
+
 /**
  * Vector size every embedder produces and every stored window holds. The
  * database column is `vector(768)`, so changing this is a migration, not a
  * config change (ADR-0007).
  */
 export const EMBEDDING_DIMENSIONS = 768
+
+/**
+ * Texts per embedding request. Batches of 200 short texts have been accepted, so
+ * 100 is not the provider's limit. ADR-0012 step 8 lowers it for the Workers CPU
+ * limit, which is not measured yet; ADR-0014 has the local numbers.
+ */
+export const MAX_BATCH = 100
+
+/**
+ * Estimated tokens per embedding request. The provider refuses a request over
+ * 60,000 tokens, both by its own guess from the body's length and by its real
+ * count, and a request of 40 windows at the full budget was already refused
+ * (ADR-0014). The worst real-to-estimated ratio measured is 3.94, on text with
+ * about one token per character, and the estimate never drops below a quarter
+ * of a character each. So 12,000 keeps even that under about 48,000 real tokens.
+ */
+export const MAX_BATCH_TOKENS = 12_000
+
+/**
+ * Split items into requests the provider will take, in order. Used by indexing
+ * and by the driver alike, so a batch indexing stores at once is one request. An
+ * item over the token cap on its own still goes, alone: refusing it is the
+ * provider's call, and it says why.
+ */
+export function planEmbeddingBatches<T>(items: T[], textOf: (item: T) => string): T[][] {
+  const batches: T[][] = []
+  let batch: T[] = []
+  let tokens = 0
+  for (const item of items) {
+    const cost = estimateTokens(textOf(item))
+    if (batch.length > 0 && (batch.length >= MAX_BATCH || tokens + cost > MAX_BATCH_TOKENS)) {
+      batches.push(batch)
+      batch = []
+      tokens = 0
+    }
+    batch.push(item)
+    tokens += cost
+  }
+  if (batch.length > 0) batches.push(batch)
+  return batches
+}
 
 /**
  * Turns text into vectors. Implemented by the real provider and by a local stub,

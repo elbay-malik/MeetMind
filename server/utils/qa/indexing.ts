@@ -1,7 +1,6 @@
 import type { SearchIndexStatus, TranscriptSegment } from '#shared/types/meeting'
 import type { StoredWindowKey, TranscriptIndexRepository } from '../db/windows'
-import type { Embedder } from './embedder'
-import { MAX_BATCH } from './gemini'
+import { planEmbeddingBatches, type Embedder } from './embedder'
 import { planWindows, type TranscriptWindow } from './windows'
 
 /** Stored windows that exactly match what the current transcript plans, for this model. */
@@ -76,8 +75,7 @@ export async function indexMeeting(input: IndexMeetingInput): Promise<SearchInde
   const current = currentIndexes(plan, keys, embedder.model)
   const pending = plan.filter(w => !current.has(w.idx))
 
-  for (let i = 0; i < pending.length; i += MAX_BATCH) {
-    const batch = pending.slice(i, i + MAX_BATCH)
+  for (const batch of planEmbeddingBatches(pending, w => w.text)) {
     const vectors = await embedder.embedDocuments(batch.map(w => w.text))
     await repo.upsertWindows(meetingId, batch.map((window, k) => ({
       ...window,
