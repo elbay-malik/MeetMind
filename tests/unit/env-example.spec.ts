@@ -33,3 +33,12 @@ it('keeps the invite code out of the public runtime config, which every page\'s 
   expect(config.indexOf('inviteCode:')).toBeGreaterThan(-1)
   expect(config.indexOf('inviteCode:')).toBeLessThan(config.indexOf('public: {'))
 })
+
+// Under another name it is just as public, and an e2e build has no code to bake and so nothing to find.
+it('bakes the invite code into nothing public, under any name or from the build\'s environment', async () => {
+  const config = await readFile(fileURLToPath(new URL('../../nuxt.config.ts', import.meta.url)), 'utf8')
+  const publicBlock = config.split('public: {')[1]!.split('\n    },')[0]!
+  expect(publicBlock).toContain('demoMeetingId')
+  expect(publicBlock).not.toMatch(/invite/i)
+  expect(config).not.toContain('process.env.NUXT_INVITE_CODE')
+})
