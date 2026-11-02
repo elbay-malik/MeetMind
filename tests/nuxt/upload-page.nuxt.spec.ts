@@ -35,6 +35,12 @@ describe('what the upload copy says leaves the browser', () => {
     expect(text).toContain('including the file\'s name')
   })
 
+  it('names who holds the audio and who receives a question', async () => {
+    const text = (await mountSuspended(UploadPage)).text().replace(/\s+/g, ' ')
+    expect(text).toContain('The audio is stored at Cloudflare and sent to Groq to transcribe.')
+    expect(text).toContain('Questions typed about a meeting are sent to Cloudflare and Groq too.')
+  })
+
   it('tells link holders what they can see of the file', async () => {
     const notice = await mountSuspended(MeetingLinkNotice, { props: { meetingId: ID } })
     expect(notice.text().replace(/\s+/g, ' ')).toContain('file\'s name, size and type')
