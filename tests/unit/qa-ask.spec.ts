@@ -2,15 +2,14 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { createLocalTranscriptIndexRepository } from '../../server/utils/db/windows-local'
 import type { Answerer, AnswerInput } from '../../server/utils/qa/answerer'
 import { askMeeting, TOP_K } from '../../server/utils/qa/ask'
-import { indexMeeting } from '../../server/utils/qa/indexing'
 import { createStubAnswerer } from '../../server/utils/qa/stub-answerer'
 import { createStubEmbedder } from '../../server/utils/qa/stub'
 import { ProviderBusyError, type RequestPacer } from '../../server/utils/summary/groq'
 import type { WireAnswer } from '../../shared/schemas/qa'
 import type { TranscriptSegment } from '../../shared/types/meeting'
+import { indexingHarness } from './helpers/indexing'
 
 /**
  * A meeting long enough to plan into many windows, with one distinctive
@@ -56,20 +55,24 @@ beforeAll(async () => {
 afterAll(() => rm(dataDir, { recursive: true, force: true }))
 
 const embedder = createStubEmbedder()
-const repo = () => createLocalTranscriptIndexRepository({ dataDir })
+const harness = indexingHarness(() => dataDir)
+const repo = () => harness.repos().index
+const transcripts = () => harness.repos().transcripts
 
 async function indexed(meetingId: string, segments = meeting()) {
-  await indexMeeting({ meetingId, segments, embedder, repo: repo() })
+  await harness.meetingWith(meetingId, segments)
+  const outcome = (await harness.drive(meetingId, harness.depsWith(embedder))).at(-1)
+  expect(outcome).toMatchObject({ kind: 'done' })
   return segments
 }
 
-const ask = (meetingId: string, question: string, segments: TranscriptSegment[], answerer: Answerer) =>
-  askMeeting({ meetingId, question, segments, embedder, repo: repo(), answerer })
+const ask = (meetingId: string, question: string, answerer: Answerer) =>
+  askMeeting({ meetingId, question, transcripts: transcripts(), embedder, repo: repo(), answerer })
 
 describe('askMeeting', () => {
   it('answers from the retrieved lines, citing the one that supports it with its timestamp', async () => {
-    const segments = await indexed('a1')
-    const answer = await ask('a1', 'What did we decide about the marketing budget?', segments, createStubAnswerer())
+    await indexed('a1')
+    const answer = await ask('a1', 'What did we decide about the marketing budget?', createStubAnswerer())
 
     expect(answer.found).toBe(true)
     if (!answer.found) return
@@ -83,7 +86,7 @@ describe('askMeeting', () => {
   it('shows the answering model only the retrieved lines, not the whole meeting', async () => {
     const segments = await indexed('a2')
     const { answerer, seen } = scriptedAnswerer({ citations: [], answer: '' })
-    await ask('a2', 'What did we decide about the marketing budget?', segments, answerer)
+    await ask('a2', 'What did we decide about the marketing budget?', answerer)
 
     const shown = seen[0]!.segments.map(s => s.idx)
     expect(shown).toContain(10)
@@ -96,12 +99,12 @@ describe('askMeeting', () => {
 
   it('drops a fabricated citation and withholds an answer left with none', async () => {
     // The whole point: a fluent answer whose evidence nobody said is not shown.
-    const segments = await indexed('a3')
+    await indexed('a3')
     const { answerer } = scriptedAnswerer({
       citations: [{ quote: 'We agreed to double the marketing budget immediately.', segmentIdx: 10 }],
       answer: 'The budget was doubled.',
     })
-    expect(await ask('a3', 'What happened to the marketing budget?', segments, answerer))
+    expect(await ask('a3', 'What happened to the marketing budget?', answerer))
       .toEqual({ found: false, answer: null, citations: [] })
   })
 
@@ -109,12 +112,12 @@ describe('askMeeting', () => {
   // the sentence. Lines 10 and 11 are consecutive and both retrieved by a
   // budget question; a quote running from one into the other is real speech.
   it('keeps a citation whose quote runs from one retrieved line into the next', async () => {
-    const segments = await indexed('a12')
+    await indexed('a12')
     const { answerer } = scriptedAnswerer({
       citations: [{ quote: 'by twenty percent next quarter. Finance will circulate the revised budget', segmentIdx: 10 }],
       answer: 'It was cut by a fifth.',
     })
-    const answer = await ask('a12', 'What did we decide about the marketing budget?', segments, answerer)
+    const answer = await ask('a12', 'What did we decide about the marketing budget?', answerer)
     expect(answer.found).toBe(true)
     if (!answer.found) return
     expect(answer.citations).toEqual([{
@@ -129,18 +132,18 @@ describe('askMeeting', () => {
     // it — so the model cannot have read it, and citing it is invention even
     // though the words are genuine. The check runs against the retrieved lines
     // only, not the whole transcript.
-    const segments = await indexed('a4')
+    await indexed('a4')
     const { answerer, seen } = scriptedAnswerer({
       citations: [{ quote: 'Priya will interview two candidates for a design role.', segmentIdx: 60 }],
       answer: 'Priya is interviewing.',
     })
-    const answer = await ask('a4', 'What did we decide about the marketing budget?', segments, answerer)
+    const answer = await ask('a4', 'What did we decide about the marketing budget?', answerer)
     expect(seen[0]!.segments.map(s => s.idx)).not.toContain(60)
     expect(answer).toEqual({ found: false, answer: null, citations: [] })
   })
 
   it('keeps the supported citations when only some are fabricated, in time order, once each', async () => {
-    const segments = await indexed('a5')
+    await indexed('a5')
     const { answerer } = scriptedAnswerer({
       citations: [
         { quote: 'Finance will circulate the revised budget on Monday.', segmentIdx: 11 },
@@ -150,7 +153,7 @@ describe('askMeeting', () => {
       ],
       answer: '  The marketing budget is being cut by twenty percent, with a revised budget on Monday.  ',
     })
-    const answer = await ask('a5', 'What did we decide about the marketing budget?', segments, answerer)
+    const answer = await ask('a5', 'What did we decide about the marketing budget?', answerer)
     expect(answer).toEqual({
       found: true,
       answer: 'The marketing budget is being cut by twenty percent, with a revised budget on Monday.',
@@ -162,36 +165,37 @@ describe('askMeeting', () => {
   })
 
   it('withholds an empty answer even when its citations check out', async () => {
-    const segments = await indexed('a6')
+    await indexed('a6')
     const { answerer } = scriptedAnswerer({
       citations: [{ quote: 'We agreed to cut the marketing budget by twenty percent next quarter.', segmentIdx: 10 }],
       answer: '   ',
     })
-    expect((await ask('a6', 'What about the marketing budget?', segments, answerer)).found).toBe(false)
+    expect((await ask('a6', 'What about the marketing budget?', answerer)).found).toBe(false)
   })
 
   it('refuses to answer before the meeting is indexed, without spending any call', async () => {
+    await transcripts().replaceForMeeting('a7', meeting())
     const { answerer, seen } = scriptedAnswerer({ citations: [], answer: '' })
-    await expect(ask('a7', 'What about the budget?', meeting(), answerer))
+    await expect(ask('a7', 'What about the budget?', answerer))
       .rejects.toMatchObject({ statusCode: 409, message: expect.stringMatching(/not been indexed/) })
     expect(seen).toHaveLength(0)
   })
 
   it('refuses to answer from an index made stale by a replaced transcript', async () => {
     await indexed('a8')
-    const replaced = meeting().map(s => s.idx === 10 ? { ...s, text: 'We agreed to keep the budget unchanged.' } : s)
+    await transcripts().replaceForMeeting('a8', meeting().map(s => s.idx === 10 ? { ...s, text: 'We agreed to keep the budget unchanged.' } : s))
     const { answerer, seen } = scriptedAnswerer({ citations: [], answer: '' })
-    await expect(ask('a8', 'What about the budget?', replaced, answerer))
+    await expect(ask('a8', 'What about the budget?', answerer))
       .rejects.toMatchObject({ statusCode: 409, message: expect.stringMatching(/out of date/) })
     expect(seen).toHaveLength(0)
   })
 
   it('refuses a window whose text changed between the status check and retrieval', async () => {
     // The race the retrieval-time hash check exists for: the transcript is
-    // replaced after the index reads as ready but before search runs. Status
-    // alone cannot catch it, so this repository reports current keys while its
+    // replaced after the index reads as ready but before search runs. The marker
+    // alone cannot catch it, so this repository reports it as finished while its
     // search hands back a window carrying a stale hash.
-    const segments = await indexed('a11')
+    await indexed('a11')
     const real = repo()
     const racing = {
       ...real,
@@ -202,14 +206,14 @@ describe('askMeeting', () => {
     }
     const { answerer, seen } = scriptedAnswerer({ citations: [], answer: '' })
     await expect(askMeeting({
-      meetingId: 'a11', question: 'What about the marketing budget?', segments, embedder, repo: racing, answerer,
+      meetingId: 'a11', question: 'What about the marketing budget?', transcripts: transcripts(), embedder, repo: racing, answerer,
     })).rejects.toMatchObject({ statusCode: 409, message: expect.stringMatching(/changed after it was indexed/) })
     expect(seen).toHaveLength(0)
   })
 
   it('refuses a question with no words in it', async () => {
-    const segments = await indexed('a9')
-    await expect(ask('a9', ' ?! ', segments, createStubAnswerer()))
+    await indexed('a9')
+    await expect(ask('a9', ' ?! ', createStubAnswerer()))
       .rejects.toMatchObject({ statusCode: 400 })
   })
 
@@ -217,15 +221,15 @@ describe('askMeeting', () => {
     // Stub-only behaviour, but it is what every demo without a key shows: a
     // question sharing only "the" with an unrelated line must come back not
     // found, not as a confident citation of the wrong decision.
-    const segments = await indexed('a12')
-    const answer = await ask('a12', 'Which vendors bid for the office lease?', segments, createStubAnswerer())
+    await indexed('a12b')
+    const answer = await ask('a12b', 'Which vendors bid for the office lease?', createStubAnswerer())
     expect(answer).toEqual({ found: false, answer: null, citations: [] })
   })
 
   it('reports not found, without calling the model, for a meeting with nothing in it', async () => {
     await indexed('a10', [])
     const { answerer, seen } = scriptedAnswerer({ citations: [], answer: '' })
-    expect(await ask('a10', 'What about the budget?', [], answerer))
+    expect(await ask('a10', 'What about the budget?', answerer))
       .toEqual({ found: false, answer: null, citations: [] })
     expect(seen).toHaveLength(0)
   })
@@ -246,27 +250,28 @@ describe('a question\'s request slot', () => {
   // Otherwise slot pacing bounds nothing on Workers AI: a loop refused every slot would
   // still spend an embedding per request, and invited uploads could not be indexed.
   it('is taken before the question is embedded, so a refused question spends no embedding', async () => {
-    const segments = await indexed('s1')
+    await indexed('s1')
     const embed = vi.spyOn(embedder, 'embedQuery')
     const busy = pacer(async () => {
       throw new ProviderBusyError(new Date(Date.now() + 60_000))
     })
-    await expect(ask('s1', QUESTION, segments, createStubAnswerer({ pacer: busy })))
+    await expect(ask('s1', QUESTION, createStubAnswerer({ pacer: busy })))
       .rejects.toMatchObject({ statusCode: 429, retryable: false })
     expect(embed).not.toHaveBeenCalled()
   })
 
   it('is taken once for an answered question, not again for the answer', async () => {
-    const segments = await indexed('s2')
+    await indexed('s2')
     const paced = pacer()
-    const answer = await ask('s2', QUESTION, segments, createStubAnswerer({ pacer: paced }))
+    const answer = await ask('s2', QUESTION, createStubAnswerer({ pacer: paced }))
     expect(answer.found).toBe(true)
     expect(paced.waits).toBe(1)
   })
 
   it('is not taken for a question refused because the meeting has no index', async () => {
     const paced = pacer()
-    await expect(ask('s3-not-indexed', QUESTION, meeting(), createStubAnswerer({ pacer: paced })))
+    await transcripts().replaceForMeeting('s3-not-indexed', meeting())
+    await expect(ask('s3-not-indexed', QUESTION, createStubAnswerer({ pacer: paced })))
       .rejects.toMatchObject({ statusCode: 409 })
     expect(paced.waits).toBe(0)
   })

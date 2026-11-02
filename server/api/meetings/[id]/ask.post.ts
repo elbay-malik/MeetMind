@@ -40,7 +40,7 @@ export default defineEventHandler(async (event): Promise<{ answer: QuestionAnswe
     const answer = await askMeeting({
       meetingId: id,
       question: parsed.data.question,
-      segments: await useTranscriptRepository(event).listForMeeting(id),
+      transcripts: useTranscriptRepository(event),
       embedder: useEmbedder(event),
       repo: useTranscriptIndexRepository(event),
       answerer: useAnswerer(event),
