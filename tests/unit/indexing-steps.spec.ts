@@ -784,16 +784,33 @@ describe('other failures', () => {
     expect((await drive(id, deps)).at(-1)!.kind).toBe('done')
   })
 
-  it('counts a database failure like a 5xx, and lets go of the step', async () => {
+  it('counts a database failure like a 5xx, lets go of the step, and tells the caller nothing of the database', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const id = newId()
     await meetingWith(id, transcript(30))
     const { embedder, calls } = scripted()
+    const secret = 'Supabase transcript page select failed (42501): permission denied for table transcript_segments'
     const deps = depsWith(embedder, { transcripts: { listFrom: async () => {
-      throw new Error('database down')
+      throw new Error(secret)
     } } })
-    expect(await advanceIndexing(id, deps)).toMatchObject({ kind: 'progress', next: 'wait', progress: { lastError: 'database down' } })
+
+    const first = await advanceIndexing(id, deps)
+    expect(first).toMatchObject({ kind: 'progress', next: 'wait' })
     expect(calls).toHaveLength(0)
-    expect((await runOf(id))!.stepLeaseUntil).toBeNull()
+    const parked = (await runOf(id))!
+    expect(parked.stepLeaseUntil).toBeNull()
+
+    advanceClock(RETRYABLE_PARK_MS + 1)
+    const second = await advanceIndexing(id, deps)
+    expect(second).toMatchObject({ kind: 'failed', statusCode: 500, resumes: true })
+
+    // Not in the answers, and not on the run, which any later caller is shown.
+    for (const told of [JSON.stringify(first), JSON.stringify(second), parked.lastError, (await runOf(id))!.lastError]) {
+      expect(told).not.toMatch(/Supabase|42501|transcript_segments/)
+    }
+    // It is in the log, for whoever runs this.
+    expect(warn.mock.calls.map(call => String(call[1]))).toContain(`Error: ${secret}`)
+    warn.mockRestore()
   })
 
   it.each([
