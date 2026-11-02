@@ -17,6 +17,7 @@ const repo = vi.hoisted(() => ({
   fail: null as Error | null,
 }))
 const refuseOnPublicDemo = vi.hoisted(() => vi.fn())
+const isPublicDemo = vi.hoisted(() => vi.fn())
 const embedDocuments = vi.hoisted(() => vi.fn())
 vi.mock('../../server/utils/db', () => ({
   useMeetingRepository: () => ({
@@ -29,7 +30,7 @@ vi.mock('../../server/utils/db', () => ({
   useTranscriptIndexRepository: () => ({ readState: async () => repo.state }),
 }))
 vi.mock('../../server/utils/qa', () => ({ useEmbedder: () => ({ model: 'model-a', embedDocuments }) }))
-vi.mock('../../server/utils/demo-meeting', () => ({ refuseOnPublicDemo }))
+vi.mock('../../server/utils/demo-meeting', () => ({ refuseOnPublicDemo, isPublicDemo }))
 vi.mock('../../server/utils/http', async importOriginal => ({
   ...await importOriginal<typeof import('../../server/utils/http')>(),
   requireMeetingId: () => 'meeting',
@@ -49,6 +50,7 @@ beforeEach(() => {
   repo.counts = { done: 0, total: 0 }
   repo.fail = null
   refuseOnPublicDemo.mockReset()
+  isPublicDemo.mockReset()
   embedDocuments.mockReset()
 })
 afterAll(() => vi.unstubAllGlobals())
@@ -77,13 +79,48 @@ describe('GET /api/meetings/:id/pipeline', () => {
     })
   })
 
-  it('is not refused on the public demo, and never asks whether it is', async () => {
-    repo.meeting = meeting('uploaded')
-    refuseOnPublicDemo.mockImplementation(() => {
-      throw Object.assign(new Error('read-only'), { statusCode: 403 })
+  describe('on the public demo, where POST .../advance can only answer 403', () => {
+    const HOUR = 3_600_000
+    const fromNow = (ms: number) => new Date(Date.now() + ms).toISOString()
+
+    beforeEach(() => {
+      isPublicDemo.mockReturnValue(true)
+      refuseOnPublicDemo.mockImplementation(() => {
+        throw Object.assign(new Error('read-only'), { statusCode: 403 })
+      })
     })
-    await expect(handler({})).resolves.toMatchObject({ status: 'uploaded', next: 'continue' })
-    expect(refuseOnPublicDemo).not.toHaveBeenCalled()
+
+    it('is not refused, and does not say continue, since no later call could', async () => {
+      repo.meeting = meeting('uploaded')
+      await expect(handler({})).resolves.toMatchObject({ status: 'uploaded', next: 'wait', retryAt: null, retryAfterMs: null })
+      expect(refuseOnPublicDemo).not.toHaveBeenCalled()
+    })
+
+    it('does not say continue for an index with work to do, and still says how it stands', async () => {
+      repo.meeting = meeting('ready')
+      repo.state = { ...INDEX, marker: null, storedWindows: 0, storedForModel: 0 }
+      await expect(handler({})).resolves.toMatchObject({ next: 'wait', retryAt: null, retryAfterMs: null, index: { state: 'building' } })
+    })
+
+    it('does not offer a retry of a failure, which asking again could not start', async () => {
+      repo.meeting = meeting('failed', { failedStage: 'transcription', errorMessage: 'it broke', updatedAt: fromNow(0) })
+      await expect(handler({})).resolves.toMatchObject({ next: 'failed', retryAt: null, retryAfterMs: null })
+    })
+
+    it('does not offer to pick up a parked index, which opening it could not do', async () => {
+      const until = fromNow(8 * HOUR)
+      repo.meeting = meeting('ready')
+      repo.state = { ...INDEX, marker: null, storedWindows: 0, storedForModel: 0 }
+      repo.runs = [{ stage: 'search_index', runId: 'r', cursor: {}, stepLeaseUntil: null, attempts: 0, lastError: null, retryAt: new Date(until) }]
+      await expect(handler({})).resolves.toMatchObject({ next: 'done', retryAt: null, retryAfterMs: null, index: { state: 'parked', retryAt: until } })
+    })
+
+    it('still gives the time of a step already under way, which is not this caller\'s to take', async () => {
+      const until = fromNow(60_000)
+      repo.meeting = meeting('transcribing')
+      repo.runs = [{ stage: 'transcription', runId: 'r', cursor: {}, stepLeaseUntil: null, attempts: 1, lastError: null, retryAt: new Date(until) }]
+      await expect(handler({})).resolves.toMatchObject({ next: 'wait', retryAt: until })
+    })
   })
 
   // `continue` here says what a POST would do, which this GET does not do.

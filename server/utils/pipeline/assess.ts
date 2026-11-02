@@ -225,3 +225,14 @@ export function toPipelineResponse({ answer }: PipelineAssessment, now: number):
     retryAfterMs: answer.retryAt ? Math.max(0, answer.retryAt.getTime() - now) : null,
   }
 }
+
+/**
+ * The answer for a meeting whose `POST .../advance` can only refuse, which is the public demo
+ * (ADR-0015): nothing is on offer to a caller, so nothing here says there is. `continue` and a
+ * time to come back and retry both promise a step, so neither is said. A `wait` with a time
+ * stays, because that is a step someone already started, and `index` still says how it stands.
+ */
+export function withNoStepOnOffer(answer: PipelineResponse): PipelineResponse {
+  if (answer.next === 'wait') return answer
+  return { ...answer, next: answer.next === 'continue' ? 'wait' : answer.next, retryAt: null, retryAfterMs: null }
+}

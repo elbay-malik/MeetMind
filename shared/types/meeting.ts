@@ -212,7 +212,9 @@ export interface PipelineResponse {
   }
   /**
    * - `continue`: ask again now; a step can be taken.
-   * - `wait`: ask again at `retryAt`.
+   * - `wait`: ask again at `retryAt`. With none, nothing this caller can do moves it, and
+   *   only looking again will show if something else has: a `pending_upload`, or a public
+   *   demo that is not finished, whose `POST .../advance` answers 403 (`GET .../pipeline`).
    * - `done`: nothing more to do. With a `retryAt` the index is parked until then: the
    *   meeting can be read, not asked, and opening it after that picks the index up again.
    * - `failed`: transcription or extraction failed. Stop, and read why from

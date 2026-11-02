@@ -179,7 +179,9 @@ Honest limits, all accepted for a demo:
   documentation, so look at one invocation log on the first deployment. Any script running in the
   page can read the field, and there is no CSP yet (SEC-18).
 - **The pipeline page still offers its buttons on a demo that is not finished.** They answer with
-  the read-only message. A demo left in that state is the operator's to fix.
+  the read-only message. A demo left in that state is the operator's to fix. `GET .../pipeline`
+  does not offer them too: there it answers `wait` with no time, not `continue` (ADR-0012's step 9
+  addendum).
 
 ## Alternatives considered
 
