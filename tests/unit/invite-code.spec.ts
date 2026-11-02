@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { MIN_INVITE_CODE_LENGTH, requireInviteCode } from '../../server/utils/invite'
 
@@ -57,6 +59,20 @@ describe('requireInviteCode', () => {
     const logged = warn.mock.calls.flat().join(' ')
     expect(logged).toContain('NUXT_INVITE_CODE')
     expect(logged).not.toContain('a-short-code')
+  })
+
+  // A plain === answers sooner the earlier a guess goes wrong, and passes every test of what is admitted.
+  it('compares in constant time, whether the code is right or wrong', async () => {
+    const verify = vi.spyOn(crypto.subtle, 'verify')
+    await expect(attempt(CODE, `Bearer ${CODE}`)).resolves.toBeUndefined()
+    await expect(attempt(CODE, 'Bearer wrong')).rejects.toMatchObject({ statusCode: 401 })
+    expect(verify).toHaveBeenCalledTimes(2)
+  })
+
+  // The e2e spec tries the names a query string would use, and a list cannot try them all.
+  it('reads the code from the header alone, wherever else one could be looked for', async () => {
+    const gate = await readFile(fileURLToPath(new URL('../../server/utils/invite.ts', import.meta.url)), 'utf8')
+    expect(gate).not.toMatch(/getQuery|getRequestURL|event\.path|readBody|parseCookies|getCookie/)
   })
 
   it('does not warn over a refused code when the configuration is fine', async () => {

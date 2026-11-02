@@ -54,6 +54,7 @@ const REFUSED: [string, Record<string, string>][] = [
   ['the code with its last character changed', bearer(`${INVITE_CODE.slice(0, -1)}X`)],
   ['the code cut short', bearer(INVITE_CODE.slice(0, -1))],
   ['the code with a character added', bearer(`${INVITE_CODE}x`)],
+  ['the code in another case', bearer(INVITE_CODE.toUpperCase())],
   ['the right code under another scheme', { authorization: `Basic ${INVITE_CODE}` }],
   ['the right code with no scheme', { authorization: INVITE_CODE }],
   ['an empty bearer', { authorization: 'Bearer ' }],
@@ -92,7 +93,7 @@ describe('POST /api/meetings without the code', () => {
 
   // In a URL or a body it would be in logs and history, which is why neither is read.
   it.each([
-    ['the query string', `/api/meetings?code=${INVITE_CODE}&inviteCode=${INVITE_CODE}&invite=${INVITE_CODE}&authorization=${INVITE_CODE}`],
+    ['the query string', `/api/meetings?code=${INVITE_CODE}&inviteCode=${INVITE_CODE}&invite=${INVITE_CODE}&authorization=${INVITE_CODE}&token=${INVITE_CODE}&access_token=${INVITE_CODE}&key=${INVITE_CODE}`],
     ['a path suffix', `/api/meetings/${INVITE_CODE}`],
   ])('does not take the code from %s', async (_name, path) => {
     const before = await meetingRows()
