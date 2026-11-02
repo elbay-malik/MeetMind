@@ -208,8 +208,8 @@ Step 8 should measure it on real Workers CPU, and its batches also have to stay 
 
 ## Consequences
 
-- **A transcript and each question now go to Cloudflare.** The upload page and README say
-  so. Cloudflare already held the audio. Its service-specific terms for Workers AI, as read on
+- **A transcript and each question now go to Cloudflare.** The upload page, the question form
+  and the README say so. Cloudflare already held the audio. Its service-specific terms for Workers AI, as read on
   2026-11-02, state no geographic limit on unpaid use and say it does not use customer content
   to train generative AI. That was a reading, not a legal review.
 - **Every indexed meeting must be indexed again.** Today that is none.
