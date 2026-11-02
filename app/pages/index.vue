@@ -140,8 +140,9 @@ async function uploadAndContinue() {
     >
       <template #description>
         <p class="text-default">
-          The audio is stored and sent to Groq to transcribe. The transcript is sent to Groq
-          to summarize and answer questions, and to Cloudflare to index it for questions.
+          The audio is stored at Cloudflare and sent to Groq to transcribe. The transcript is
+          sent to Groq to summarize and answer questions, and to Cloudflare to index it for
+          questions. Questions typed about a meeting are sent to Cloudflare and Groq too.
         </p>
         <p class="mt-1 text-default">
           There are no accounts. Anyone with the link to your meeting can view it, including

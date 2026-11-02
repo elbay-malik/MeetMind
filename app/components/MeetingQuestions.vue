@@ -160,6 +160,7 @@ const status = computed(() => {
         label="Your question"
         name="question"
         :hint="`${question.length}/${MAX_QUESTION_CHARS}`"
+        help="Your question is sent to Cloudflare to search this meeting and to Groq to answer it."
       >
         <UInput
           v-model="question"

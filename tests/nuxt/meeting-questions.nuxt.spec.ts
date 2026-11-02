@@ -29,6 +29,14 @@ async function askWith(reply: typeof refusal) {
   return wrapper
 }
 
+describe('the question form', () => {
+  // Someone opening a shared link never sees the upload page's notice.
+  it('says where a question goes, before it is sent', async () => {
+    const wrapper = await mountSuspended(MeetingQuestions, { props: { meetingId: ID } })
+    expect(wrapper.find('form').text()).toContain('Your question is sent to Cloudflare to search this meeting and to Groq to answer it.')
+  })
+})
+
 describe('the question form at the provider\'s daily limit', () => {
   const MESSAGE = 'The free daily limit for indexing and questions has been reached. It resets at 00:00 UTC.'
 

@@ -107,6 +107,7 @@ describe('what the pages tell people', () => {
     expect(text).toContain('Groq')
     expect(text).toContain('Cloudflare')
     expect(text).not.toContain('Google')
+    expect(text).toContain('Questions typed about a meeting are sent to Cloudflare and Groq too')
     expect(text).toContain('Anyone with the link')
     // SEC-10: true of the video, but read as if nothing else left the machine.
     expect(text).not.toContain('Only a small audio file is sent for transcription')
