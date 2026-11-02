@@ -50,7 +50,8 @@ it**. The link holds a random UUID, and nothing on the server lists meetings or 
 across them. "Your meetings" is a list kept only in the browser that uploaded them, so
 losing the link loses access, and anyone given the link can read the meeting. A leaked
 link can only be revoked by an operator deleting the meeting. Do not upload anything
-sensitive: audio goes to Groq, transcripts go to Groq and Cloudflare. Set
+sensitive: audio goes to Groq and is stored at Cloudflare, transcripts and questions go to
+Groq and Cloudflare. Set
 `NUXT_PUBLIC_DEMO_MEETING_ID` to link one preloaded meeting from the home page. See
 [ADR-0013](docs/adr/0013-private-meeting-links.md), including its limits.
 

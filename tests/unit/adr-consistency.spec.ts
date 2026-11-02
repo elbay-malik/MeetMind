@@ -53,6 +53,13 @@ describe('ADRs changed by ADR-0014', () => {
     expect(decision).toMatch(/Superseded on .* by \[ADR-0014\]/)
   })
 
+  it('claims only the disclosure of a question that the README really makes', async () => {
+    const flat = (text: string) => text.replace(/\s+/g, ' ')
+    expect(flat(await adr('0014'))).toContain('The upload page, the question form and the README say so.')
+    const readme = await readFile(fileURLToPath(new URL('../../README.md', import.meta.url)), 'utf8')
+    expect(flat(readme)).toContain('transcripts and questions go to Groq and Cloudflare')
+  })
+
   it('leaves no ADR calling the dropped function something that stays', async () => {
     expect((await adr('0008')).split('\n').find(line => line.startsWith('- **Status:**')))
       .not.toMatch(/stays unused/)
