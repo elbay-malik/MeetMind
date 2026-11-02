@@ -618,31 +618,37 @@ describe.skipIf(!has('NUXT_GROQ_API_KEY') || !probe)('Groq Whisper', () => {
     const reply = await createGroqTranscriber({ apiKey: process.env.NUXT_GROQ_API_KEY! })
       .transcribe({ bytes: audio, contentType: 'audio/ogg' })
 
-    // Windows far smaller than the real page, so every boundary the reply has
-    // gets cut: the same calls, in the same order, as `page` in steps.ts.
-    const objects: Uint8Array[] = []
-    let scan = INITIAL_SCAN
-    let offset = 0
-    let width = 16
-    let finished = false
-    while (!finished) {
-      const window = reply.subarray(offset, offset + width)
-      const scanned = scanWindow(window, scan, { atEnd: offset + window.byteLength >= reply.byteLength, maxObjects: 2 })
-      if (scanned.consumed === 0 && scanned.objects.length === 0 && !scanned.finished) {
-        width *= 2
-        continue
-      }
-      objects.push(...scanned.objects)
-      offset += scanned.consumed
-      scan = scanned.state
-      finished = scanned.finished
-      width = 16
-    }
-
     const whole = JSON.parse(new TextDecoder().decode(reply)) as { duration: number, segments: Array<{ start: number, end: number, text: string }> }
-    const lines = parseSegments(objects)
-    expect(lines.length, 'the clip came back with no segments, so nothing was compared').toBeGreaterThan(0)
-    expect(lines).toEqual(whole.segments.map(({ start, end, text }) => ({ start, end, text })))
+    const expected = whole.segments.map(({ start, end, text }) => ({ start, end, text }))
+    expect(expected.length, 'the clip came back with no segments, so nothing was compared').toBeGreaterThan(0)
+
+    // The same calls, in the same order, as `page` in steps.ts. Windows far
+    // smaller than a page cut every boundary the reply has; a window holding
+    // the whole reply collects many objects at once, as a real page does.
+    const read = (startWidth: number, maxObjects: number) => {
+      const objects: Uint8Array[] = []
+      let scan = INITIAL_SCAN
+      let offset = 0
+      let width = startWidth
+      let finished = false
+      while (!finished) {
+        const window = reply.subarray(offset, offset + width)
+        const scanned = scanWindow(window, scan, { atEnd: offset + window.byteLength >= reply.byteLength, maxObjects })
+        if (scanned.consumed === 0 && scanned.objects.length === 0 && !scanned.finished) {
+          width *= 2
+          continue
+        }
+        objects.push(...scanned.objects)
+        offset += scanned.consumed
+        scan = scanned.state
+        finished = scanned.finished
+        width = startWidth
+      }
+      return parseSegments(objects)
+    }
+    expect(read(16, 2)).toEqual(expected)
+    const lines = read(reply.byteLength, 100)
+    expect(lines).toEqual(expected)
 
     // The audio's end comes from the head of the reply alone. Null here would
     // quietly turn off the check for timestamps past the end of the audio.
