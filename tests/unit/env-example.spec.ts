@@ -17,3 +17,19 @@ it('.env.example documents the embedding credentials under the names the driver 
     expect(driver).toContain(name)
   }
 })
+
+it('.env.example documents the invite code under the name the gate warns about, and says what its absence does', async () => {
+  const example = await readFile(fileURLToPath(new URL('../../.env.example', import.meta.url)), 'utf8')
+  const config = await readFile(fileURLToPath(new URL('../../nuxt.config.ts', import.meta.url)), 'utf8')
+  const gate = await readFile(fileURLToPath(new URL('../../server/utils/invite.ts', import.meta.url)), 'utf8')
+  expect(example).toMatch(/^NUXT_INVITE_CODE=$/m)
+  expect(example).toContain('closes uploads for everyone')
+  expect(config).toContain('NUXT_INVITE_CODE')
+  expect(gate).toContain('NUXT_INVITE_CODE')
+})
+
+it('keeps the invite code out of the public runtime config, which every page\'s payload carries', async () => {
+  const config = await readFile(fileURLToPath(new URL('../../nuxt.config.ts', import.meta.url)), 'utf8')
+  expect(config.indexOf('inviteCode:')).toBeGreaterThan(-1)
+  expect(config.indexOf('inviteCode:')).toBeLessThan(config.indexOf('public: {'))
+})

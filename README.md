@@ -51,9 +51,23 @@ across them. "Your meetings" is a list kept only in the browser that uploaded th
 losing the link loses access, and anyone given the link can read the meeting. A leaked
 link can only be revoked by an operator deleting the meeting. Do not upload anything
 sensitive: audio goes to Groq and is stored at Cloudflare, transcripts and questions go to
-Groq and Cloudflare. Set
-`NUXT_PUBLIC_DEMO_MEETING_ID` to link one preloaded meeting from the home page. See
-[ADR-0013](docs/adr/0013-private-meeting-links.md), including its limits.
+Groq and Cloudflare. See [ADR-0013](docs/adr/0013-private-meeting-links.md), including its
+limits.
+
+## Who can upload
+
+Public visitors get the demo meeting, and **uploading takes an invite code**. Set
+`NUXT_INVITE_CODE` to at least 32 characters (`openssl rand -hex 24`) and give it to whoever
+may upload; it is sent in a request header and kept only in the page's memory. Unlike every
+other setting, leaving it out does not select a stub: **unset or too short, uploads are closed
+for everyone**. It is one shared code, so rotating it locks everyone out of uploading, and
+existing links keep working.
+
+Set `NUXT_PUBLIC_DEMO_MEETING_ID` to link one finished meeting from the home page. Anyone can
+read that meeting and ask it questions, which spends the shared quotas, and nobody can change
+it through its link. To create it, see "Creating the demo meeting" in
+[ADR-0015](docs/adr/0015-invite-only-uploads.md), which also records what guards every route
+that can write, and what this does not do.
 
 ## Architecture Decision Records
 
@@ -73,6 +87,7 @@ Groq and Cloudflare. Set
 | [0012](docs/adr/0012-pipeline-orchestration.md) | Pipeline orchestration on the Workers free plan: one bounded step per request, browser-driven, Postgres rate-limit slots, polling not SSE |
 | [0013](docs/adr/0013-private-meeting-links.md) | A meeting is reached only through its unguessable link: no global list or cross-meeting search, \"Your meetings\" lives in this browser |
 | [0014](docs/adr/0014-workers-ai-embeddings.md) | Embeddings from Cloudflare Workers AI's bge-m3 at 1024 dimensions, replacing a provider whose terms require a paid plan in the EEA: measured batch limits, and a plain message at the daily limit |
+| [0015](docs/adr/0015-invite-only-uploads.md) | Visitors get the demo meeting, which can only be read and asked; uploading takes an invite code, and a missing code closes it. A guard for every route that can write |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -100,14 +115,15 @@ up automatically) and pnpm via corepack:
 ```bash
 corepack enable
 pnpm install        # also copies ffmpeg core assets into public/ffmpeg/
-cp .env.example .env  # optional: cloud credentials (see below)
+cp .env.example .env  # then set NUXT_INVITE_CODE, and any cloud credentials (see below)
 pnpm dev            # http://localhost:3000
 ```
 
 Without any credentials the app is fully usable: uploaded audio and meeting rows are
 kept under `.data/` by the local drivers, and a stub transcriber stands in for Groq.
-Set the variables below to switch to the production services (each group is
-independent).
+The one setting you need even so is `NUXT_INVITE_CODE`, since without it uploading is
+closed (see [Who can upload](#who-can-upload)). Set the variables below to switch to the
+production services (each group is independent).
 
 Once real keys are in place, `pnpm test:services` checks each one against the driver
 that uses it — presigned uploads and CORS on R2, the schema and triggers on Supabase,
@@ -215,7 +231,7 @@ indexing resumes from where it stopped. See
 | `pnpm test` / `pnpm test:watch` | Vitest unit + Nuxt-runtime tests |
 | `pnpm test:e2e` | Builds the app, then tests the Nitro routes against the local drivers |
 | `pnpm test:services` | Exercises the real R2, Supabase, Groq and Workers AI services; each group is skipped unless its keys are set, and the banner names which ones skipped |
-| `node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: drop → extract → upload → progress page, then inspects storage |
+| `NUXT_INVITE_CODE=<code> node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: wrong code, right code, drop → extract → upload → progress page, then inspects storage. Takes the code the server was started with |
 | `node scripts/drive-player.mjs <url> <meetingId>` | Headless Chromium: click-to-seek, active-line highlight, transcript keyboard navigation |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
 | `pnpm db:migrate` | Applies `supabase/migrations/` to the real project at `SUPABASE_DB_URL`, in order, skipping what a ledger says is already there. Run `verify-migrations.sh` first; pass `--dry-run` to see what is pending |
@@ -228,7 +244,8 @@ in-browser extraction, upload & storage, transcription, the transcript viewer wi
 click-to-seek playback, structured summaries with decisions and action items,
 and semantic Q&A over a meeting with verified, clickable citations. Phase 8's archive
 and cross-meeting search were later removed, leaving each meeting reachable only through
-its own link ([ADR-0013](docs/adr/0013-private-meeting-links.md)).
+its own link ([ADR-0013](docs/adr/0013-private-meeting-links.md)), and uploading now takes an
+invite code ([ADR-0015](docs/adr/0015-invite-only-uploads.md)).
 Several playbook instructions were changed after re-checking their premises — see
 [ADR-0004](docs/adr/0004-transcription.md),
 [ADR-0005](docs/adr/0005-audio-playback-and-transcript-sync.md),
