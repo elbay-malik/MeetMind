@@ -163,7 +163,6 @@ missing=$(psql_url -At -c "
     ('table','meeting_action_items'), ('table','transcript_windows'),
     ('table','provider_slots'), ('table','pipeline_runs'), ('table','summary_chunks'),
     ('function','match_transcript_windows'),
-    ('function','match_transcript_windows_across_meetings'),
     ('function','stored_audio_bytes'),
     ('function','reserve_slot'), ('function','note_rate_limit'),
     ('function','claim_step'), ('function','release_step'), ('function','locked_step_run'),

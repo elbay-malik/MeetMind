@@ -82,17 +82,6 @@ export interface Database {
         }
         Returns: WindowMatchRow[]
       }
-      /** In the schema but called by nothing since ADR-0013, until a cleanup migration drops it. */
-      match_transcript_windows_across_meetings: {
-        Args: {
-          /** A vector literal, '[0.1,0.2,…]'. */
-          p_query: string
-          p_model: string
-          p_meeting_limit: number
-          p_per_meeting_limit: number
-        }
-        Returns: (WindowMatchRow & { meeting_id: string })[]
-      }
       stored_audio_bytes: {
         Args: {
           p_retention_days: number
