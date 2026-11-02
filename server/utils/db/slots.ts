@@ -7,7 +7,7 @@
  */
 
 /** The providers whose limits are paced here. */
-export type SlotProvider = 'groq-chat' | 'groq-whisper'
+export type SlotProvider = 'groq-chat' | 'groq-whisper' | 'workers-ai-embed'
 
 export type SlotReservation
   = | { granted: true, slotAt: Date }

@@ -16,8 +16,9 @@ export const MAX_INPUT_TOKENS = 8_192
 
 /**
  * Texts per embedding request. Batches of 200 short texts have been accepted, so
- * 100 is not the provider's limit. ADR-0012 step 8 lowers it for the Workers CPU
- * limit, which is not measured yet; ADR-0014 has the local numbers.
+ * 100 is not the provider's limit. An indexing step asks for far fewer, for the
+ * Workers CPU limit: `INDEX_BATCH` (ADR-0012), which is not measured yet either.
+ * ADR-0014 has the local numbers.
  */
 export const MAX_BATCH = 100
 
@@ -105,13 +106,15 @@ export class EmbeddingInputTooLongError extends EmbeddingError {
   }
 }
 
+export const DAILY_LIMIT_MESSAGE = 'The free daily limit for indexing and questions has been reached. It resets at 00:00 UTC.'
+
 /**
  * The provider's free daily allocation is spent. It comes back at 00:00 UTC, so
  * that is when asking again can succeed, and nothing sooner will (ADR-0014).
  */
 export function dailyLimitReached(now = new Date()): EmbeddingError {
   return new EmbeddingError(
-    'The free daily limit for indexing and questions has been reached. It resets at 00:00 UTC.',
+    DAILY_LIMIT_MESSAGE,
     429,
     false,
     new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)),

@@ -23,13 +23,26 @@ function announce(kind: Embedder['kind']) {
  * without credentials.
  */
 export function useEmbedder(event: H3Event): Embedder {
+  return pickEmbedder(event, {})
+}
+
+/**
+ * The embedder for one indexing step (ADR-0012): exactly one provider request per
+ * batch. A retry is the next step's attempt, recorded on the run, not a second
+ * request inside this one.
+ */
+export function useStepEmbedder(event: H3Event): Embedder {
+  return pickEmbedder(event, { maxAttempts: 1 })
+}
+
+function pickEmbedder(event: H3Event, options: { maxAttempts?: number }): Embedder {
   const config = useRuntimeConfig(event)
   const workersAiReady = requireAllOrNone('Workers AI', {
     NUXT_WORKERS_AI_ACCOUNT_ID: config.workersAiAccountId,
     NUXT_WORKERS_AI_API_TOKEN: config.workersAiApiToken,
   })
   const embedder = workersAiReady
-    ? createWorkersAiEmbedder({ accountId: config.workersAiAccountId, apiToken: config.workersAiApiToken })
+    ? createWorkersAiEmbedder({ accountId: config.workersAiAccountId, apiToken: config.workersAiApiToken, maxAttempts: options.maxAttempts })
     : createStubEmbedder({ quotaCanary: config.embedStubQuotaCanary })
   announce(embedder.kind)
   return embedder

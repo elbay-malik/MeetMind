@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { H3Event } from 'h3'
 import { EMBEDDING_DIMENSIONS } from '../../server/utils/qa/embedder'
-import { useEmbedder } from '../../server/utils/qa/index'
+import { useEmbedder, useStepEmbedder } from '../../server/utils/qa/index'
 
 const useRuntimeConfig = vi.hoisted(() => vi.fn())
 // Auto-imported from Nuxt's app runtime in this tier, so not a global to stub.
@@ -41,5 +41,26 @@ describe('useEmbedder', () => {
   it.each([['the-account', ''], ['', 'the-token']])('refuses half a configuration (%j, %j)', (accountId, token) => {
     configure(accountId, token)
     expect(() => useEmbedder(event)).toThrow(/Workers AI is partially configured/)
+  })
+})
+
+// A retry is the next step's attempt, on the ledger (ADR-0012). A second request inside
+// one step would be a step that can spend twice and take twice as long, past its lease.
+describe('useStepEmbedder', () => {
+  it('sends one request and leaves a failure to the next step, where useEmbedder retries in place', async () => {
+    configure('the-account', 'the-token')
+    const fetched = vi.fn(async () => new Response('down', { status: 500 }))
+    vi.stubGlobal('fetch', fetched)
+
+    await expect(useStepEmbedder(event).embedDocuments(['x'])).rejects.toMatchObject({ retryable: true })
+    expect(fetched).toHaveBeenCalledTimes(1)
+
+    await expect(useEmbedder(event).embedDocuments(['x'])).rejects.toMatchObject({ retryable: true })
+    expect(fetched).toHaveBeenCalledTimes(3)
+  })
+
+  it('falls back to the stub as useEmbedder does, and so reads as another model\'s index', () => {
+    configure('', '')
+    expect(useStepEmbedder(event).kind).toBe('stub')
   })
 })
