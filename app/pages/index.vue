@@ -6,8 +6,9 @@ useSeoMeta({ title: 'MeetMind — Upload' })
 
 // An id the server's own check refuses could only open a 404, so no button for it. This
 // cannot catch a well-formed id with no meeting behind it: that would take a lookup on
-// every visit to the home page.
-const configuredDemoId = useRuntimeConfig().public.demoMeetingId
+// every visit to the home page. Trimmed like the server's guard, so the two agree on
+// which meeting it is.
+const configuredDemoId = String(useRuntimeConfig().public.demoMeetingId ?? '').trim()
 const demoMeetingId = meetingIdSchema.safeParse(configuredDemoId).success ? configuredDemoId : ''
 if (configuredDemoId && !demoMeetingId) {
   console.warn('NUXT_PUBLIC_DEMO_MEETING_ID is not a meeting id, so the home page shows no demo link')

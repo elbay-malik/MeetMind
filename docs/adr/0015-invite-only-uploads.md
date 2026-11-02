@@ -88,6 +88,8 @@ The guard does not depend on the meeting's state.
 The ids are compared in lower case. `requireMeetingId` accepts a UUID in capitals, the column
 is `uuid` so Postgres finds the same row, and a comparison of the strings would have been a
 way around this. A percent-encoded id reaches the handler decoded, so it needs nothing extra.
+The configured id is trimmed first, as the invite code is: a stored newline would otherwise turn
+the guard off.
 
 The invite code makes no difference on the demo. It is for uploading, and a second meaning
 would be a second route to guess it against. An operator finishes or repairs the meeting

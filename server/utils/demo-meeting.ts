@@ -9,10 +9,12 @@ import type { H3Event } from 'h3'
  * variable unset. Holding the invite code makes no difference: that is for uploading.
  *
  * Compared in lower case: `requireMeetingId` accepts a UUID in capitals, which is the
- * same row to Postgres, and the configured id may be written either way.
+ * same row to Postgres, and the configured id may be written either way. Trimmed, as
+ * `requireInviteCode` trims its setting: a secret store that kept a pasted newline would
+ * otherwise turn this guard off with no warning.
  */
 export function refuseOnPublicDemo(event: H3Event, id: string): void {
-  const demoId = String(useRuntimeConfig(event).public.demoMeetingId ?? '')
+  const demoId = String(useRuntimeConfig(event).public.demoMeetingId ?? '').trim()
   if (demoId && demoId.toLowerCase() === id.toLowerCase()) {
     throw createError({
       statusCode: 403,

@@ -69,6 +69,12 @@ describe('the demo link', () => {
     expect((await demoButton())?.attributes('href')).toBe(`/meetings/${ID}`)
   })
 
+  // The server's guard ignores this whitespace too, so the two agree on which meeting it is.
+  it.each([`${ID}\n`, `  ${ID} `])('is shown with a clean link for an id stored with whitespace around it (%j)', async (id) => {
+    setDemo(id)
+    expect((await demoButton())?.attributes('href')).toBe(`/meetings/${ID}`)
+  })
+
   it.each(['9b1deb4d-3b7d', 'not-a-uuid', '../../api/health'])('is not shown for %s, which could only open a 404', async (id) => {
     setDemo(id)
     expect(await demoButton()).toBeUndefined()
