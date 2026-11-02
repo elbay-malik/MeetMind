@@ -996,6 +996,208 @@ check "deleting a meeting removes what transcription wrote" \
   "select not exists (select 1 from public.transcript_segments where meeting_id in ('$T1', '$T2', '$T3', '$T4', '$T5'))
           and not exists (select 1 from public.pipeline_runs where meeting_id in ('$T1', '$T2', '$T3', '$T4', '$T5'))"
 
+# Step 8: step-wise indexing. The twins of the upsertWindows and finishIndex cases in
+# tests/unit/pipeline-ledger.spec.ts.
+INDEX_MIGRATION=supabase/migrations/20261103120000_search_index_steps.sql
+[ -f "$INDEX_MIGRATION" ] || fail "$INDEX_MIGRATION is missing"
+psql -q -c "create table vl_f (label text primary key, result text);"
+VEC="[$(printf '0.1,%.0s' $(seq 1 1023))0.1]"
+win() { # win <idx> <first segment> <last segment> [hash character]
+  local hash
+  hash=$(printf "${4:-a}%.0s" $(seq 1 64))
+  echo "{\"idx\":$1,\"first_segment_idx\":$2,\"last_segment_idx\":$3,\"start_ms\":$(($2 * 1000)),\"end_ms\":$(($3 * 1000 + 900)),\"content\":\"window $1\",\"content_hash\":\"$hash\",\"embedding\":$VEC}"
+}
+upsert() { # upsert <label> <meeting> <token> <windows-json> <cursor-json> [model]
+  psql -q -c "insert into vl_c (label, attempts)
+              select '$1', public.upsert_windows('$2', $3, '$4', '$5', public.transcript_hash('$2'), '${6:-model-a}')::int;"
+}
+finish_idx() { # finish_idx <label> <meeting> <token> <window count> [model] [hash expression]
+  psql -q -c "insert into vl_f select '$1', public.finish_index('$2', $3, ${6:-public.transcript_hash('$2')}, '${5:-model-a}', $4);"
+}
+result() { echo "(select result from vl_f where label = '$1')"; }
+ix_run() { echo "(select $2 from public.pipeline_runs where meeting_id = '$1' and stage = 'search_index')"; }
+ix_state() { echo "(select $2 from public.read_index_state('$1', '${3:-model-a}'))"; }
+marker() { echo "(select $2 from public.meeting_index_state where meeting_id = '$1')"; }
+windows_of() { echo "(select count(*) from public.transcript_windows where meeting_id = '$1')"; }
+window_model() { echo "(select model from public.transcript_windows where meeting_id = '$1' and idx = $2)"; }
+
+check "meeting_index_state has RLS on and no policies" \
+  "select c.relrowsecurity and not exists (select 1 from pg_policy where polrelid = c.oid)
+   from pg_class c where c.oid = 'public.meeting_index_state'::regclass"
+
+I1=a0000000-0000-0000-0000-000000000021   # batches, the fence and finishing
+ledger_meeting "$I1" ready
+check "read_index_state answers one row for a meeting with no marker: a meeting indexed before this reads as not complete" \
+  "select count(*) = 1 and bool_and(text_hash is null and model is null and window_count is null and complete is null
+             and current_hash ~ '^[0-9a-f]{64}\$' and segment_count = 10 and stored_windows = 0 and stored_for_model = 0)
+     from public.read_index_state('$I1', 'model-a')"
+claim i1 "$I1" search_index ready 60000
+upsert u1 "$I1" "$(tok i1)" "[$(win 0 0 4)]" '{"at":1}'
+check "upsert_windows stores the batch and its cursor, marks the index incomplete, and ends the step with its count started afresh" \
+  "select $(got u1 attempts) = 1 and $(windows_of "$I1") = 1 and $(window_model "$I1" 0) = 'model-a'
+          and $(ix_run "$I1" cursor) = '{\"at\":1}'::jsonb and $(ix_run "$I1" step_token) is null
+          and $(ix_run "$I1" step_lease_until) is null and $(ix_run "$I1" attempts) = 0
+          and $(marker "$I1" complete) = false and $(marker "$I1" model) = 'model-a' and $(marker "$I1" window_count) = 0
+          and $(marker "$I1" text_hash) = public.transcript_hash('$I1')"
+claim i1b "$I1" search_index ready 60000
+check "the next claim after a batch counts from one" "select $(got i1b attempts) = 1"
+upsert i1late "$I1" "$(tok i1)" "[$(win 1 4 9)]" '{"at":9}'
+check "upsert_windows writes nothing under a token that is not the live one" \
+  "select $(got i1late attempts) = 0 and $(windows_of "$I1") = 1
+          and $(ix_run "$I1" cursor) = '{\"at\":1}'::jsonb and $(ix_run "$I1" step_token) is not null"
+claim i1s "$I1" summarization ready 60000
+upsert wrongstage8 "$I1" "$(tok i1s)" "[$(win 1 4 9)]" '{"at":8}'
+finish_idx wrongstage8f "$I1" "$(tok i1s)" 1
+check "neither takes another stage's token" \
+  "select $(got wrongstage8 attempts) = 0 and $(result wrongstage8f) = 'lost' and $(windows_of "$I1") = 1"
+psql -q -At -c "select public.release_step('$I1', 'summarization', $(tok i1s), null, null);" >/dev/null
+reject "upsert_windows refuses windows that are not an array" \
+  "select public.upsert_windows('$I1', $(tok i1b), '{}', '{}', public.transcript_hash('$I1'), 'model-a')" "must be a JSON array"
+reject "upsert_windows refuses a cursor that is not an object" \
+  "select public.upsert_windows('$I1', $(tok i1b), '[]', '[1]', public.transcript_hash('$I1'), 'model-a')" "must be a JSON object"
+reject "upsert_windows refuses a vector of another size" \
+  "select public.upsert_windows('$I1', $(tok i1b), '[{\"idx\":3,\"first_segment_idx\":0,\"last_segment_idx\":1,\"start_ms\":0,\"end_ms\":1,\"content\":\"x\",\"content_hash\":\"$(printf 'a%.0s' $(seq 1 64))\",\"embedding\":[1,2]}]', '{}', public.transcript_hash('$I1'), 'model-a')" "expected 1024 dimensions"
+check "a refused batch leaves everything as it was, the step still live" \
+  "select $(windows_of "$I1") = 1 and $(ix_run "$I1" step_token) = $(tok i1b) and $(ix_run "$I1" cursor) = '{\"at\":1}'::jsonb"
+reject "finish_index refuses a negative count" \
+  "select public.finish_index('$I1', $(tok i1b), public.transcript_hash('$I1'), 'model-a', -1)" "must not be negative"
+
+finish_idx hole "$I1" "$(tok i1b)" 2
+check "finish_index refuses a plan with a hole in it, and the step stays live" \
+  "select $(result hole) = 'changed' and $(marker "$I1" complete) = false and $(ix_run "$I1" step_token) = $(tok i1b)"
+upsert u2 "$I1" "$(tok i1b)" "[$(win 1 4 9)]" '{"at":2}'
+claim i1c "$I1" search_index ready 60000
+upsert empty8 "$I1" "$(tok i1c)" "[]" '{"at":3}'
+check "an empty batch stores only the cursor, for a step that found everything stored" \
+  "select $(got empty8 attempts) = 1 and $(windows_of "$I1") = 2 and $(ix_run "$I1" cursor) = '{\"at\":3}'::jsonb and $(ix_run "$I1" step_token) is null"
+claim i1d "$I1" search_index ready 60000
+finish_idx wronghash "$I1" "$(tok i1d)" 2 model-a "'$(printf 'b%.0s' $(seq 1 64))'"
+check "finish_index refuses a transcript that is not the one this run planned" \
+  "select $(result wronghash) = 'changed' and $(marker "$I1" complete) = false"
+finish_idx short "$I1" "$(tok i1d)" 1
+check "finish_index refuses a plan that does not reach the transcript's last line, whatever it holds" \
+  "select $(result short) = 'changed' and $(marker "$I1" complete) = false and $(windows_of "$I1") = 2"
+finish_idx wrongmodel "$I1" "$(tok i1d)" 2 model-b
+check "finish_index refuses windows of another model" \
+  "select $(result wrongmodel) = 'changed' and $(marker "$I1" complete) = false"
+finish_idx done1 "$I1" "$(tok i1d)" 2
+check "finish_index marks the index complete and ends the step, clearing the cursor" \
+  "select $(result done1) = 'complete' and $(marker "$I1" complete) and $(marker "$I1" window_count) = 2
+          and $(ix_run "$I1" step_token) is null and $(ix_run "$I1" cursor) = '{}'::jsonb and $(ix_run "$I1" attempts) = 0
+          and $(ix_state "$I1" stored_windows) = 2 and $(ix_state "$I1" stored_for_model) = 2
+          and $(ix_state "$I1" current_hash) = $(marker "$I1" text_hash)"
+finish_idx late2 "$I1" "$(tok i1d)" 2
+check "finish_index answers lost under a token that is not the live one" "select $(result late2) = 'lost'"
+claim i1e "$I1" search_index ready 60000
+upsert u3 "$I1" "$(tok i1e)" "[]" '{}'
+check "the first write of a new run takes the marker back to incomplete, before anything has changed" \
+  "select $(marker "$I1" complete) = false and $(marker "$I1" window_count) = 0 and $(windows_of "$I1") = 2"
+
+# What the fingerprint notices.
+psql -q -c "create table vl_h as select public.transcript_hash('$I1') as hash;"
+HASH="(select hash from vl_h)"
+same_hash() { # same_hash <description> <statement that changes it> <statement that puts it back>
+  psql -q -c "$2"
+  check "transcript_hash changes with $1" "select public.transcript_hash('$I1') <> $HASH"
+  psql -q -c "$3"
+  check "transcript_hash comes back when $1 does" "select public.transcript_hash('$I1') = $HASH"
+}
+same_hash "a line's text" "update public.transcript_segments set text = 'other' where meeting_id = '$I1' and idx = 5;" \
+  "update public.transcript_segments set text = 'line 5' where meeting_id = '$I1' and idx = 5;"
+same_hash "a line's time" "update public.transcript_segments set start_ms = 5001 where meeting_id = '$I1' and idx = 5;" \
+  "update public.transcript_segments set start_ms = 5000 where meeting_id = '$I1' and idx = 5;"
+same_hash "a line's position" "update public.transcript_segments set idx = 90 where meeting_id = '$I1' and idx = 9;" \
+  "update public.transcript_segments set idx = 9 where meeting_id = '$I1' and idx = 90;"
+check "transcript_hash of no lines is the hash of nothing, the same as the local driver's" \
+  "select public.transcript_hash(gen_random_uuid()) = encode(sha256(''::bytea), 'hex')"
+
+# Another model's index is replaced a batch at a time. Nothing removes it whole.
+I2=a0000000-0000-0000-0000-000000000022
+ledger_meeting "$I2" ready
+claim i2 "$I2" search_index ready 60000
+upsert i2a "$I2" "$(tok i2)" "[$(win 0 0 4),$(win 1 4 7),$(win 2 7 9)]" '{}' model-old
+claim i2b "$I2" search_index ready 60000
+finish_idx i2done "$I2" "$(tok i2b)" 3 model-old
+check "an index finished under one model reads as stored for that model and not for another" \
+  "select $(result i2done) = 'complete' and $(ix_state "$I2" stored_for_model model-old) = 3 and $(ix_state "$I2" stored_for_model) = 0
+          and $(ix_state "$I2" stored_windows) = 3"
+claim i2c "$I2" search_index ready 60000
+upsert i2d "$I2" "$(tok i2c)" "[$(win 0 0 9 b)]" '{}'
+check "a batch under another model replaces only its own windows, and leaves the rest of the old index stored" \
+  "select $(windows_of "$I2") = 3 and $(window_model "$I2" 0) = 'model-a' and $(window_model "$I2" 1) = 'model-old'
+          and $(marker "$I2" model) = 'model-a' and $(marker "$I2" complete) = false"
+claim i2e "$I2" search_index ready 60000
+finish_idx i2f "$I2" "$(tok i2e)" 1
+check "finishing removes only what is past the plan's end, leaving no window of the old model" \
+  "select $(result i2f) = 'complete' and $(windows_of "$I2") = 1 and $(window_model "$I2" 0) = 'model-a'
+          and $(marker "$I2" window_count) = 1"
+
+# A transcript with no lines.
+I3=a0000000-0000-0000-0000-000000000023
+empty_meeting "$I3" ready
+claim i3 "$I3" search_index ready 60000
+finish_idx i3f "$I3" "$(tok i3)" 0
+check "a transcript with no lines finishes with no windows" \
+  "select $(result i3f) = 'complete' and $(marker "$I3" window_count) = 0 and $(marker "$I3" complete)"
+claim i1f "$I2" search_index ready 60000
+finish_idx i2zero "$I2" "$(tok i1f)" 0
+check "a plan of no windows does not finish a transcript that has lines" \
+  "select $(result i2zero) = 'changed' and $(windows_of "$I2") = 1"
+psql -q -At -c "select public.release_step('$I2', 'search_index', $(tok i1f), null, null);" >/dev/null
+
+# A straggler whose step is re-claimed while it waits for the lock.
+I4=a0000000-0000-0000-0000-000000000024
+ledger_meeting "$I4" ready
+claim straggler "$I4" search_index ready 60000
+psql -q -c "update public.pipeline_runs set step_lease_until = clock_timestamp() - interval '1 second'
+            where meeting_id = '$I4' and stage = 'search_index';"
+STRAGGLER=$(psql -At -c "select step_token from vl_c where label = 'straggler'")
+( psql -q -c "begin;
+              select * from public.claim_step('$I4', 'search_index', 'ready', 60000);
+              select pg_sleep(1.5);
+              commit;" >/tmp/vi_a.out 2>&1; echo $? >/tmp/vi_a.rc ) &
+sleep 0.5
+psql -At -c "select public.upsert_windows('$I4', '$STRAGGLER', '[$(win 0 0 9)]', '{\"at\":1}', public.transcript_hash('$I4'), 'model-a');" >/tmp/vi_b.out 2>&1 && echo 0 >/tmp/vi_b.rc || echo 1 >/tmp/vi_b.rc
+wait
+check "a write by a lost lease queues behind the re-claim and then writes nothing" \
+  "select $(cat /tmp/vi_a.rc) = 0 and $(cat /tmp/vi_b.rc) = 0 and '$(tr -d '[:space:]' </tmp/vi_b.out)' = 'f'
+          and $(windows_of "$I4") = 0 and not exists (select 1 from public.meeting_index_state where meeting_id = '$I4')
+          and $(ix_run "$I4" cursor) = '{}'::jsonb and $(ix_run "$I4" step_token) is not null"
+
+# Deleted while a step was out: the cascade leaves it nothing to write into.
+claim i4 "$I1" search_index ready 60000
+psql -q -c "delete from public.meetings where id = '$I1';"
+upsert gone "$I1" "$(tok i4)" "[$(win 0 0 4)]" '{}'
+finish_idx gonef "$I1" "$(tok i4)" 1
+check "deleting a meeting removes its marker, windows and run, and a straggler writes nothing back" \
+  "select $(got gone attempts) = 0 and $(result gonef) = 'lost' and $(windows_of "$I1") = 0
+          and not exists (select 1 from public.meeting_index_state where meeting_id = '$I1')
+          and not exists (select 1 from public.pipeline_runs where meeting_id = '$I1')"
+
+for fn in 'public.transcript_hash(uuid)' 'public.read_index_state(uuid, text)' \
+          'public.upsert_windows(uuid, uuid, jsonb, jsonb, text, text)' 'public.finish_index(uuid, uuid, text, text, integer)'; do
+  check "$fn is executable by the service role and not by anon, authenticated or PUBLIC" \
+    "select not has_function_privilege('anon', '$fn', 'execute')
+        and not has_function_privilege('authenticated', '$fn', 'execute')
+        and has_function_privilege('service_role', '$fn', 'execute')
+        and not exists (select 1 from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                         where p.oid = '$fn'::regprocedure and a.grantee = 0)"
+done
+check "step 8's functions pin their search_path" \
+  "select bool_and('search_path=public' = any(proconfig)) and count(*) = 4 from pg_proc
+   where proname in ('transcript_hash', 'read_index_state', 'upsert_windows', 'finish_index')"
+
+# Repeatable: a second apply fails on nothing and changes no row.
+psql -q -c "create table vl_s as select * from public.meeting_index_state;"
+psql -q < "$INDEX_MIGRATION"
+check "applying step 8's migration again keeps every marker, and the indexes stay usable" \
+  "select not exists (select * from vl_s except select * from public.meeting_index_state)
+          and not exists (select * from public.meeting_index_state except select * from vl_s)
+          and (select count(*) from vl_s) > 0
+          and $(ix_state "$I2" stored_for_model) = 1
+          and not has_function_privilege('anon', 'public.finish_index(uuid, uuid, text, text, integer)', 'execute')"
+psql -q -c "delete from public.meetings where id in ('$I2', '$I3', '$I4'); drop table vl_f; drop table vl_h; drop table vl_s;"
+
 check "the ledger functions pin their search_path" \
   "select bool_and('search_path=public' = any(proconfig)) and count(*) = 8 from pg_proc
    where proname in ('claim_step', 'release_step', 'locked_step_run', 'plan_chunks', 'record_chunk', 'finalize_summary',

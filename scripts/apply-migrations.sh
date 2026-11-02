@@ -162,12 +162,15 @@ missing=$(psql_url -At -c "
     ('table','meeting_summaries'), ('table','meeting_decisions'),
     ('table','meeting_action_items'), ('table','transcript_windows'),
     ('table','provider_slots'), ('table','pipeline_runs'), ('table','summary_chunks'),
+    ('table','meeting_index_state'),
     ('function','match_transcript_windows'),
     ('function','stored_audio_bytes'),
     ('function','reserve_slot'), ('function','note_rate_limit'),
     ('function','claim_step'), ('function','release_step'), ('function','locked_step_run'),
     ('function','plan_chunks'), ('function','record_chunk'), ('function','finalize_summary'),
-    ('function','append_segments'), ('function','finish_transcription')
+    ('function','append_segments'), ('function','finish_transcription'),
+    ('function','transcript_hash'), ('function','read_index_state'),
+    ('function','upsert_windows'), ('function','finish_index')
   )
   select kind || ' ' || name from expected e
   where not exists (
