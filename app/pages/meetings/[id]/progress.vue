@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ExtractionStepResponse, Meeting, MeetingStatus, SearchIndexStatus, TranscriptionStepResponse, TranscriptSegment } from '#shared/types/meeting'
+import type { ExtractionStepResponse, IndexingStepResponse, Meeting, MeetingStatus, SearchIndexStatus, TranscriptionStepResponse, TranscriptSegment } from '#shared/types/meeting'
 
 const route = useRoute()
 const meetingId = computed(() => String(route.params.id))
@@ -46,6 +46,8 @@ async function reloadAll() {
  * neither waits for extraction nor blocks it.
  */
 const indexing = ref(false)
+/** How far the indexing this page is driving has got, from the last step's answer. */
+const indexProgress = ref<IndexingStepResponse['progress'] | null>(null)
 const indexError = ref<string | null>(null)
 const justIndexed = ref(false)
 const questionsCard = ref<HTMLElement | null>(null)
@@ -58,15 +60,28 @@ async function startIndexing() {
   indexing.value = true
   indexError.value = null
   justIndexed.value = false
+  indexProgress.value = null
   try {
-    await $fetch(`/api/meetings/${meetingId.value}/search-index`, { method: 'POST' })
-    justIndexed.value = true
+    // One step per request (ADR-0012), driven the same way as the two stages below.
+    let finished = false
+    while (!finished && !unmounted) {
+      const res = await $fetch.raw<IndexingStepResponse>(`/api/meetings/${meetingId.value}/search-index`, { method: 'POST' })
+      finished = res.status !== 202
+      const step = res._data
+      if (finished || !step) continue
+      indexProgress.value = step.progress
+      if (step.next === 'wait' && step.retryAfterMs !== null) {
+        await sleep(step.retryAfterMs + Math.random() * 2000)
+      }
+    }
+    if (finished) justIndexed.value = true
   }
   catch (err) {
     indexError.value = describeError(err)
   }
   finally {
     indexing.value = false
+    indexProgress.value = null
     await refreshIndex()
     // The button disappears once the index is ready; keep focus in the card
     // (on the link to ask) rather than letting it fall to <body>.
@@ -79,7 +94,16 @@ async function startIndexing() {
 
 const indexLabel = computed(() => {
   const index = searchIndex.value
-  if (indexing.value) return 'Indexing the transcript for questions.'
+  if (indexing.value) {
+    const step = indexProgress.value
+    if (!step?.done) return 'Indexing the transcript for questions.'
+    // The plan's length comes from the status read before this run started, when the
+    // run itself has not reached its end yet.
+    const total = step.total ?? index?.windowCount
+    return total
+      ? `Indexing the transcript for questions: ${Math.min(step.done, total)} of ${total} passages done.`
+      : `Indexing the transcript for questions: ${step.done} passages done.`
+  }
   // With no status to read, every reason below would be a guess.
   if (indexUnread.value) return 'Could not check whether this meeting can be asked questions. Reload the page to try again.'
   if (!index || index.state === 'unavailable') return 'Available once transcription has finished.'
