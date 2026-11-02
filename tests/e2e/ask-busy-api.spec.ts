@@ -8,6 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { SlotState } from '../../server/utils/db/slots'
 import type { CreateMeetingResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
+import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
@@ -58,7 +59,7 @@ async function indexedMeeting(): Promise<Meeting> {
   await $fetch(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
   await driveTranscription(meeting.id)
   await db.setItem(`transcripts/${meeting.id}`, DISCUSSION)
-  await $fetch(`/api/meetings/${meeting.id}/search-index`, { method: 'POST' })
+  await driveIndexing(meeting.id)
   return meeting
 }
 

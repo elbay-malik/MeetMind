@@ -8,6 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { MAX_QUESTION_CHARS } from '../../shared/schemas/qa'
 import type { CreateMeetingResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
+import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
@@ -18,7 +19,9 @@ await setup({
   rootDir,
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
-  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret', NUXT_INVITE_CODE: INVITE_CODE },
+  // The gap between embedding requests would make a first step answer "wait" with
+  // nothing stored, depending on what the test before it did.
+  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret', NUXT_INVITE_CODE: INVITE_CODE, NUXT_EMBED_INTERVAL_MS: '0' },
 })
 
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
@@ -59,7 +62,7 @@ async function indexedMeeting(): Promise<Meeting> {
   const meeting = await uploadedMeeting()
   await driveTranscription(meeting.id)
   await setStoredTranscript(meeting.id, DISCUSSION)
-  await $fetch(`/api/meetings/${meeting.id}/search-index`, { method: 'POST' })
+  await driveIndexing(meeting.id)
   return meeting
 }
 
@@ -113,6 +116,44 @@ describe('POST /api/meetings/:id/ask', () => {
     const res = await ask(meeting.id, 'What did we decide about the marketing budget?')
     expect(res.status).toBe(409)
     expect((await res.json()).message).toMatch(/Index it again/)
+  })
+
+  // ADR-0012 step 8: the marker decides, not what happens to be stored.
+  it('refuses while the index is part-way, and answers once it is finished', async () => {
+    const meeting = await uploadedMeeting()
+    await driveTranscription(meeting.id)
+    await setStoredTranscript(meeting.id, Array.from({ length: 300 }, (_, i) => ({
+      idx: i,
+      startMs: i * 5_000,
+      endMs: i * 5_000 + 4_800,
+      text: i === 22 ? 'We agreed to cut the marketing budget by twenty percent next quarter.' : `general update number ${i} with nothing notable`,
+    })))
+    const first = await fetch(`/api/meetings/${meeting.id}/search-index`, { method: 'POST' })
+    expect(first.status).toBe(202)
+
+    // The windows this question would find are stored by now. It is refused anyway.
+    const refused = await ask(meeting.id, 'What did we decide about the marketing budget?')
+    expect(refused.status).toBe(409)
+    expect((await refused.json()).message).toMatch(/incomplete or out of date/)
+
+    await driveIndexing(meeting.id)
+    expect((await ask(meeting.id, 'What did we decide about the marketing budget?')).status).toBe(200)
+  })
+
+  it('refuses with every window stored, until the last step has said so', async () => {
+    const meeting = await uploadedMeeting()
+    await driveTranscription(meeting.id)
+    await setStoredTranscript(meeting.id, DISCUSSION)
+    // One batch holds all of this transcript's windows; the step after it finishes.
+    const batch = await fetch(`/api/meetings/${meeting.id}/search-index`, { method: 'POST' })
+    expect(batch.status).toBe(202)
+    const { index: { windowCount } } = await $fetch<{ index: { windowCount: number } }>(`/api/meetings/${meeting.id}/search-index`)
+    expect(((await batch.json()) as { progress: { done: number } }).progress.done).toBe(windowCount)
+
+    expect((await ask(meeting.id, 'What did we decide about the marketing budget?')).status).toBe(409)
+    const last = await fetch(`/api/meetings/${meeting.id}/search-index`, { method: 'POST' })
+    expect(last.status).toBe(200)
+    expect((await ask(meeting.id, 'What did we decide about the marketing budget?')).status).toBe(200)
   })
 
   it('refuses a meeting with no finished transcript', async () => {

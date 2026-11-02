@@ -2,11 +2,12 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting, QuestionAnswer, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
+import { indexUntilStopped } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
@@ -26,8 +27,15 @@ await setup({
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
     NUXT_INVITE_CODE: INVITE_CODE,
     NUXT_EMBED_STUB_QUOTA_CANARY: CANARY,
+    // These are about the limit, not the gap between requests.
+    NUXT_EMBED_INTERVAL_MS: '0',
   },
 })
+
+const db = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+
+/** The block one test's refusal leaves is the account's, and would hold off the next. */
+beforeEach(() => db.removeItem('slots/workers-ai-embed'))
 
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 
@@ -58,7 +66,16 @@ const longTranscript = (last: string): TranscriptSegment[] => Array.from({ lengt
 
 const status = async (id: string) =>
   (await $fetch<{ index: SearchIndexStatus }>(`/api/meetings/${id}/search-index`)).index
-const index = (id: string) => fetch(`/api/meetings/${id}/search-index`, { method: 'POST' })
+const index = indexUntilStopped
+const oneStep = (id: string) => fetch(`/api/meetings/${id}/search-index`, { method: 'POST' })
+
+/** Past 00:00 UTC, as far as this meeting's run and the account's block can tell. */
+async function theDayAfter(id: string): Promise<void> {
+  await db.removeItem('slots/workers-ai-embed')
+  const ledger = await db.getItem<{ runs: { search_index: { retryAt: number | null } } }>(`pipeline/${id}`)
+  ledger!.runs.search_index.retryAt = Date.now() - 1_000
+  await db.setItem(`pipeline/${id}`, ledger)
+}
 const ask = (id: string, question: string) => fetch(`/api/meetings/${id}/ask`, {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
@@ -101,8 +118,17 @@ describe('the provider\'s daily limit', () => {
     expect(partial.indexedCount).toBeGreaterThan(0)
     expect(partial.indexedCount).toBeLessThan(partial.windowCount)
 
+    // The run is parked until then, not just refused: asked again, it says the same
+    // and goes no further, and the meeting has not moved either way (ADR-0012 §5).
+    const again = await oneStep(meeting.id)
+    expectTheDailyLimit(again, await again.json() as Refusal)
+    expect(await status(meeting.id)).toEqual(partial)
+    expect((await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)).meeting)
+      .toMatchObject({ status: meeting.status, errorMessage: null })
+
     // The day after, as far as the provider is concerned.
     await setStoredTranscript(meeting.id, longTranscript('the last line, as it really was'))
+    await theDayAfter(meeting.id)
     const resumed = await index(meeting.id)
     expect(resumed.status).toBe(200)
     expect((await resumed.json() as { index: SearchIndexStatus }).index)
