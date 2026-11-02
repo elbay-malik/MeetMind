@@ -138,7 +138,10 @@ describe('GET /api/meetings/:id/pipeline', () => {
   it('tells the caller nothing of a database error, and keeps it for the log', async () => {
     repo.fail = new Error('Supabase meeting select failed (42P01): relation "meetings" does not exist')
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    await expect(handler({})).rejects.toMatchObject({ statusCode: 500, message: 'The pipeline hit a problem on the server. Try again shortly.' })
+    const failure = await handler({}).catch((err: { statusCode: number, message: string }) => err) as { statusCode: number, message: string }
+    expect(failure).toMatchObject({ statusCode: 500, message: 'The pipeline hit a problem on the server. Try again shortly.' })
+    // Every field of the error goes over the wire, `data` and `statusMessage` as much as `message`.
+    expect(JSON.stringify({ ...failure, message: failure.message })).not.toMatch(/Supabase|42P01|relation/)
     expect(warn).toHaveBeenCalledTimes(1)
     warn.mockRestore()
   })

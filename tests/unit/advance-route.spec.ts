@@ -130,6 +130,8 @@ describe('POST /api/meetings/:id/advance', () => {
     const failure = await handler({}).catch((err: { statusCode: number, message: string }) => err) as { statusCode: number, message: string }
     expect(failure.statusCode).toBe(500)
     expect(failure.message).toBe('The pipeline hit a problem on the server. Try again shortly.')
+    // Every field of the error goes over the wire, `data` and `statusMessage` as much as `message`.
+    expect(JSON.stringify({ ...failure, message: failure.message })).not.toMatch(/Supabase|SUPABASE|42P01|pipeline_runs/)
     expect(warn).toHaveBeenCalledTimes(1)
     expect(String(warn.mock.lastCall![1])).toMatch(/Supabase|SUPABASE/)
     warn.mockRestore()
