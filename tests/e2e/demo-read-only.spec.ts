@@ -168,7 +168,7 @@ describe('the demo meeting', () => {
   ])('is not moved along when it is %s', async (_name, stage) => {
     const keys = ['meetings', 'summaries', 'windows', 'transcripts', 'pipeline'].map(table => `${table}/${demoId}`)
     const saved = await Promise.all(keys.map(key => db.getItem(key)))
-    const row = (saved[0] as Meeting)
+    const row = saved[0] as Meeting
     await stage(demoId, row)
     const before = await everythingStored()
     for (const route of ANY_CHANGING_ROUTE) await expectReadOnly(await post(demoId, route))
