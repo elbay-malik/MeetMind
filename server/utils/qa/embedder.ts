@@ -26,8 +26,8 @@ export const MAX_BATCH = 100
  * 60,000 tokens, both by its own guess from the body's length and by its real
  * count, and a request of 40 windows at the full budget was already refused
  * (ADR-0014). The worst real-to-estimated ratio measured is 3.94, on text with
- * about one token per character, and the estimate never drops below a quarter
- * of a character each. So 12,000 keeps even that under about 48,000 real tokens.
+ * about one token per character, since the estimate never drops below a quarter
+ * token per character. So 12,000 keeps even that under about 48,000 real tokens.
  */
 export const MAX_BATCH_TOKENS = 12_000
 

@@ -78,16 +78,14 @@ describe('source hygiene', () => {
   })
 
   // ADR-0014: its terms forbid the free tier here, so nothing may depend on it or
-  // tell a visitor otherwise. The ADRs and the playbook are history, and these tests
-  // have to name it to look for it.
+  // tell a visitor otherwise. The ADRs and the playbook are history, and tests have to
+  // name it to look for it.
   it('names the removed embedding provider nowhere but in the historical record', async () => {
-    const { stdout } = await run('git', ['ls-files'], { cwd: rootDir, maxBuffer: 32 * 1024 * 1024 })
-    const removed = new RegExp(['gem', 'ini|goo', 'gle'].join(''), 'i')
     const offenders: string[] = []
-    for (const file of stdout.split(String.fromCharCode(LINE_FEED)).filter(Boolean)) {
+    for (const file of [...await trackedTextFiles(), '.env.example']) {
       if (/^(docs|tests)\/|^pnpm-lock\.yaml$/.test(file)) continue
       const text = await readFile(join(rootDir, file), 'utf8').catch(() => null)
-      if (text !== null && removed.test(text)) offenders.push(file)
+      if (text !== null && /gemini|google/i.test(text)) offenders.push(file)
     }
     expect(offenders).toEqual([])
   })
