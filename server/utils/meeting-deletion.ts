@@ -16,12 +16,7 @@ import { UPLOAD_URL_TTL_SEC } from './storage-budget'
  */
 export const UPLOAD_GRACE_SEC = 15 * 60
 
-/**
- * Retry-After for the two refusals that have no deadline to count down to: an
- * indexing run, which embeds in batches for as long as the quota allows, and a
- * row that changed between the check and the delete.
- */
-export const INDEXING_RETRY_AFTER_SEC = 60
+/** Retry-After for the one refusal with no deadline to count down to: a row that changed between the check and the delete. */
 export const CHANGED_RETRY_AFTER_SEC = 1
 
 /** Why a meeting cannot be deleted right now, and when to try again. */
@@ -105,8 +100,6 @@ export interface DeletionDeps {
   pipeline: Pick<PipelineRepository, 'listRuns'>
   /** {@link removeMeetingData}, bound to the request. */
   removeData: (meetingId: string, audioKey: string) => Promise<void>
-  /** Indexing runs in flight in this process (server/utils/qa/in-flight.ts). */
-  indexingRuns: ReadonlyMap<string, Promise<unknown>>
   now?: () => number
 }
 
@@ -136,8 +129,7 @@ export async function deleteMeeting(id: string, deps: DeletionDeps): Promise<Del
   if (!meeting) {
     // Possibly an earlier delete that removed the row and then failed partway
     // through the rest. Finish it: every step is idempotent and the audio key
-    // follows from the id. After any indexing run, for the reason below.
-    await settled(deps.indexingRuns.get(id))
+    // follows from the id.
     await removeOrExplain(deps, id, audioObjectKey(id))
     return { kind: 'not-found' }
   }
@@ -146,13 +138,6 @@ export async function deleteMeeting(id: string, deps: DeletionDeps): Promise<Del
   // so the fenced delete below refuses it even though this read missed it.
   const blocker = deletionBlocker(meeting, now(), await deps.pipeline.listRuns(id))
   if (blocker) return { kind: 'blocked', ...blocker }
-  if (deps.indexingRuns.has(id)) {
-    return {
-      kind: 'blocked',
-      reason: 'It is being indexed for search, and that would write its windows back',
-      retryAfterSec: INDEXING_RETRY_AFTER_SEC,
-    }
-  }
 
   // The row before the data. Fenced on the row as read above, so a claim that
   // landed since then leaves nothing to delete -- and nothing of a meeting that
@@ -162,21 +147,8 @@ export async function deleteMeeting(id: string, deps: DeletionDeps): Promise<Del
     return { kind: 'blocked', reason: 'It changed while it was being deleted', retryAfterSec: CHANGED_RETRY_AFTER_SEC }
   }
 
-  // The in-flight check above is a read, and indexing has no claim on the row
-  // to fence against. An indexing request can start after that check and still
-  // read the row before it goes, then write its windows after they have been
-  // removed -- on the local driver nothing would refuse them. The indexing
-  // route registers its run BEFORE reading the row, so any run that could have
-  // seen the row is registered by now, and waiting for it is enough. Its own
-  // outcome does not matter: on Supabase it fails on the foreign key.
-  await settled(deps.indexingRuns.get(id))
-
   await removeOrExplain(deps, id, deleted.audioKey)
   return { kind: 'deleted' }
-}
-
-async function settled(run: Promise<unknown> | undefined): Promise<void> {
-  if (run) await run.catch(() => undefined)
 }
 
 async function removeOrExplain(deps: DeletionDeps, id: string, audioKey: string): Promise<void> {
