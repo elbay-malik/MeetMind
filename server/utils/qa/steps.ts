@@ -1,7 +1,7 @@
 import type { SearchIndexStatus } from '#shared/types/meeting'
 import { transcriptionFinished } from '#shared/utils/meeting'
 import type { MeetingRepository } from '../db/meetings'
-import type { PipelineRepository, ReleaseOutcome, StepClaim } from '../db/pipeline'
+import type { PipelineRepository, PipelineRun, ReleaseOutcome, StepClaim } from '../db/pipeline'
 import type { SlotRepository } from '../db/slots'
 import type { TranscriptRepository } from '../db/transcripts'
 import { readyWindowCount, type IndexState, type TranscriptIndexRepository } from '../db/windows'
@@ -152,15 +152,7 @@ export async function advanceIndexing(meetingId: string, deps: IndexingDeps): Pr
 
   const run = await steps.readRun()
   const parked = waitingOn(run, now())
-  if (parked) {
-    // A wait of hours is an answer, not something for a page to sit through. Said the
-    // same way however many times it is asked, and nothing is sent.
-    const live = run!.stepLeaseUntil !== null && run!.stepLeaseUntil.getTime() > now()
-    if (!live && run!.lastError === DAILY_LIMIT_MESSAGE) {
-      return { kind: 'failed', statusCode: 429, message: DAILY_LIMIT_MESSAGE, retryAt: parked, resumes: true }
-    }
-    return steps.progress(parked, (run!.cursor as IndexCursor).pass, run!.lastError)
-  }
+  if (parked) return steps.waiting(run!, parked)
 
   // Whatever status the meeting is in: indexing needs a finished transcript and nothing
   // else, so it neither waits for extraction nor blocks it. Another stage moving the
@@ -195,11 +187,24 @@ function stepsFor(meetingId: string, deps: IndexingDeps, now: () => number) {
     }
   }
 
+  /** The answer for a run that cannot take a step until `until`. */
+  function waiting(run: PipelineRun, until: Date): IndexingOutcome {
+    // A wait of hours is an answer, not something for a page to sit through. Said the
+    // same way however many times it is asked, and nothing is sent.
+    const live = run.stepLeaseUntil !== null && run.stepLeaseUntil.getTime() > now()
+    if (!live && run.lastError === DAILY_LIMIT_MESSAGE) {
+      return { kind: 'failed', statusCode: 429, message: DAILY_LIMIT_MESSAGE, retryAt: until, resumes: true }
+    }
+    return progress(until, (run.cursor as IndexCursor).pass, run.lastError)
+  }
+
   /** Where things stand after this caller lost a race, so it reports that rather than guessing. */
   async function snapshot(): Promise<IndexingOutcome> {
     if (!await deps.meetings.get(meetingId)) return { kind: 'refused', statusCode: 404, message: 'Meeting not found' }
     const run = await readRun()
-    return progress(waitingOn(run, now()), (run?.cursor as IndexCursor | undefined)?.pass, run?.lastError ?? null)
+    const until = waitingOn(run, now())
+    if (until) return waiting(run!, until)
+    return progress(null, (run?.cursor as IndexCursor | undefined)?.pass, run?.lastError ?? null)
   }
 
   /**
@@ -378,5 +383,5 @@ function stepsFor(meetingId: string, deps: IndexingDeps, now: () => number) {
     }
   }
 
-  return { done, progress, readRun, snapshot, step }
+  return { done, readRun, snapshot, step, waiting }
 }

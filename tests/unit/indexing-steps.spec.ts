@@ -740,6 +740,44 @@ describe('quota', () => {
     expect(sent.slice(INDEX_BATCH * 2)).toEqual(plan.slice(INDEX_BATCH).map(w => w.text))
   })
 
+  it('tells a caller that lost the claim to the step hitting the limit the same as anyone, not to sit and wait', async () => {
+    await clearBlock()
+    const id = newId()
+    await meetingWith(id, transcript(100))
+    const gate = deferred()
+    const first = scripted()
+    first.queue(async () => {
+      await gate.promise
+      throw dailyLimitReached()
+    })
+    const deps = depsWith(first.embedder)
+
+    // The run is free when this caller reads it. By its claim the other holds the
+    // lease, and by the time it looks again the other has been refused and parked it.
+    let other: Promise<unknown> | undefined
+    const second = scripted()
+    const lost = await advanceIndexing(id, depsWith(second.embedder, {
+      pipeline: {
+        ...deps.pipeline,
+        async claimStep(...args) {
+          other = advanceIndexing(id, deps)
+          await vi.waitFor(() => expect(first.calls).toHaveLength(1))
+          const claim = await deps.pipeline.claimStep(...args)
+          expect(claim).toBeNull()
+          gate.resolve()
+          await other
+          return claim
+        },
+      },
+    }))
+
+    await expect(other).resolves.toMatchObject({ kind: 'failed', statusCode: 429 })
+    expect(lost).toMatchObject({ kind: 'failed', statusCode: 429, message: DAILY_LIMIT_MESSAGE, resumes: true })
+    expect(lost.kind === 'failed' && lost.retryAt).toEqual((await runOf(id))!.retryAt)
+    expect(second.calls).toHaveLength(0)
+    await clearBlock()
+  })
+
   it('parks a meeting on another meeting\'s block without sending anything', async () => {
     await clearBlock()
     const until = Date.now() + 6 * 60 * 60 * 1000
