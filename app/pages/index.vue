@@ -20,6 +20,7 @@ const { code: inviteCode, status: inviteStatus, error: inviteError, check: check
 
 const inviteInput = ref<{ inputRef?: HTMLInputElement } | null>(null)
 const recordingInput = ref<HTMLInputElement | null>(null)
+const uploadButton = ref<{ $el?: HTMLElement } | null>(null)
 
 /** What just happened to the code. Mounted whichever card is showing, so it is announced. */
 const inviteLabel = computed(() => ({
@@ -35,8 +36,10 @@ const inviteRefused = computed(() => inviteError.value === INVITE_REFUSED_MESSAG
 async function submitInvite() {
   await checkInvite()
   await nextTick()
-  if (inviteStatus.value === 'accepted') recordingInput.value?.focus()
-  else inviteInput.value?.inputRef?.focus()
+  if (inviteStatus.value !== 'accepted') inviteInput.value?.inputRef?.focus()
+  // Audio is already waiting when the code was asked for again during an upload.
+  else if (canUpload.value) uploadButton.value?.$el?.focus()
+  else recordingInput.value?.focus()
 }
 
 const selectedFile = ref<File | null>(null)
@@ -72,15 +75,21 @@ const statusLabel = computed(() => ({
  */
 const oversized = computed(() => state.outputBytes > MAX_AUDIO_BYTES)
 
-const uploadLabel = computed(() => ({
-  idle: '',
-  registering: 'Registering meeting…',
-  uploading: 'Uploading audio…',
-  confirming: 'Confirming upload…',
-  done: 'Uploaded',
-  cancelled: 'Upload cancelled',
-  error: 'Upload failed',
-}[uploader.state.status]))
+const canUpload = computed(() =>
+  state.status === 'done' && !!state.outputBlob && !uploading.value && !!title.value.trim()
+  && !oversized.value && inviteStatus.value === 'accepted')
+
+const uploadLabel = computed(() => uploader.state.inviteRefused
+  ? '' // The invite card says this one, and it stops being true once there is a new code.
+  : {
+      idle: '',
+      registering: 'Registering meeting…',
+      uploading: 'Uploading audio…',
+      confirming: 'Confirming upload…',
+      done: 'Uploaded',
+      cancelled: 'Upload cancelled',
+      error: 'Upload failed',
+    }[uploader.state.status])
 
 function selectFile(files: FileList | null) {
   const file = files?.[0]
@@ -129,7 +138,12 @@ async function uploadAndContinue() {
   })
   if (meeting) await navigateTo(`/meetings/${meeting.id}/progress`)
   // Rotated since this page checked it. The audio stays, so a new code costs no second extraction.
-  else if (uploader.state.inviteRefused) forgetInvite()
+  // Focus goes to the field, because the button just pressed is now disabled.
+  else if (uploader.state.inviteRefused) {
+    forgetInvite()
+    await nextTick()
+    inviteInput.value?.inputRef?.focus()
+  }
 }
 </script>
 
@@ -383,7 +397,8 @@ async function uploadAndContinue() {
         </UFormField>
         <div class="flex flex-wrap items-center gap-3">
           <UButton
-            :disabled="uploading || !title.trim() || oversized || inviteStatus !== 'accepted'"
+            ref="uploadButton"
+            :disabled="!canUpload"
             :loading="uploading"
             icon="i-lucide-arrow-right"
             trailing
@@ -440,7 +455,7 @@ async function uploadAndContinue() {
         />
 
         <UAlert
-          v-if="uploader.state.error"
+          v-if="uploader.state.error && !uploader.state.inviteRefused"
           role="alert"
           color="error"
           variant="subtle"
