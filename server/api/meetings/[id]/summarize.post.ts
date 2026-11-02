@@ -1,13 +1,7 @@
 import type { ExtractionStepResponse, Meeting, MeetingSummary } from '#shared/types/meeting'
-import {
-  useMeetingRepository,
-  usePipelineRepository,
-  useSummaryRepository,
-  useTranscriptRepository,
-} from '../../../utils/db'
 import { refuseOnPublicDemo } from '../../../utils/demo-meeting'
 import { conflict, notFound, requireMeetingId } from '../../../utils/http'
-import { useStepSummarizer } from '../../../utils/summary'
+import { useExtractionStepDeps } from '../../../utils/pipeline/deps'
 import { advanceExtraction } from '../../../utils/summary/steps'
 
 /**
@@ -26,13 +20,7 @@ import { advanceExtraction } from '../../../utils/summary/steps'
 export default defineEventHandler(async (event): Promise<{ meeting: Meeting, summary: MeetingSummary } | ExtractionStepResponse> => {
   const id = requireMeetingId(event)
   refuseOnPublicDemo(event, id)
-  const outcome = await advanceExtraction(id, {
-    meetings: useMeetingRepository(event),
-    pipeline: usePipelineRepository(event),
-    transcripts: useTranscriptRepository(event),
-    summaries: useSummaryRepository(event),
-    summarizer: useStepSummarizer(event),
-  })
+  const outcome = await advanceExtraction(id, useExtractionStepDeps(event))
 
   switch (outcome.kind) {
     case 'done':
