@@ -34,9 +34,12 @@ export const WINDOW_TARGET_MS = 45_000
  * sent together to the answering model, whose per-minute allowance is the
  * binding limit (ADR-0006), so a few retrieved windows must stay small.
  *
- * The estimate can undercount, but not by enough: the worst measured at this size
- * was 5,923 real tokens, on text that is nothing but emoji (ADR-0014). Only a
- * single segment over the budget, which is never split, can reach the limit.
+ * The estimate can undercount, but on nothing measured by enough: the worst at this
+ * size was 5,923 real tokens, on text that is nothing but emoji (ADR-0014). So a
+ * single segment over the budget, which is never split, is the case to expect. A
+ * character that expands under the tokenizer's normalization, such as U+FDFA, can
+ * pass the limit inside a window under budget. Speech does not produce that, and
+ * the provider refuses it rather than truncating.
  */
 export const WINDOW_TOKEN_BUDGET = 1_500
 

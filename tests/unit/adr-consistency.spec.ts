@@ -60,6 +60,21 @@ describe('ADRs changed by ADR-0014', () => {
     expect(flat(readme)).toContain('transcripts and questions go to Groq and Cloudflare')
   })
 
+  it('does not call a lone oversize segment the only way past the input limit', async () => {
+    const flat = (text: string) => text.replace(/^\s*\*\s?/gm, '').replace(/\s+/g, ' ')
+    const source = (path: string) => readFile(fileURLToPath(new URL(`../../${path}`, import.meta.url)), 'utf8')
+    const absolute = /only (a )?(lone|single)[^.]*segment/i
+    const places = {
+      'ADR-0014': flat(await adr('0014')),
+      'windows.ts': flat(await source('server/utils/qa/windows.ts')),
+      'embedder.ts': flat(await source('server/utils/qa/embedder.ts')),
+    }
+    for (const [place, text] of Object.entries(places)) expect(text, place).not.toMatch(absolute)
+    // Its exception stays named where the bound is explained.
+    expect(places['ADR-0014']).toContain('U+FDFA')
+    expect(places['windows.ts']).toContain('U+FDFA')
+  })
+
   it('leaves no ADR calling the dropped function something that stays', async () => {
     expect((await adr('0008')).split('\n').find(line => line.startsWith('- **Status:**')))
       .not.toMatch(/stays unused/)
