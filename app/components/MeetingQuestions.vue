@@ -21,8 +21,9 @@ const answerHeading = ref<HTMLElement | null>(null)
 
 /**
  * When a refused question can be asked again. The answering model's slot is
- * shared with extraction (ADR-0012), so a question can be turned away for a
- * while; the button stays off until then rather than inviting a repeat 429.
+ * shared with extraction (ADR-0012), and the embedding provider has a daily limit
+ * (ADR-0014), so a question can be turned away for a while; the button stays off
+ * until then rather than inviting a repeat 429.
  */
 const retryAt = ref<Date | null>(null)
 let retryTimer: ReturnType<typeof setTimeout> | undefined
