@@ -263,6 +263,21 @@ describe('when no step is left', () => {
       expect(answer).toMatchObject({ next: 'done', retryAt: null, index: { state: 'held', done: 0, total: null } })
     })
 
+    const passOf = (model: string) => run('search_index', {
+      cursor: { pass: { textHash: HASH, model, nextWindow: 16, nextSegment: 160, pageSegments: 256, planned: false } },
+    })
+
+    // What the step refuses is what the table has to hold, or `continue` never ends.
+    it('takes no index step for a pass of another model, with no marker and no windows to say so', () => {
+      const { step, answer } = assess({ meeting: meeting('ready'), runs: [passOf('model-b')], index: index.none })
+      expect(step).toBeNull()
+      expect(answer).toMatchObject({ next: 'done', retryAt: null, index: { state: 'held', done: 0, total: null } })
+    })
+
+    it('carries on a pass of this model, with no marker yet', () => {
+      expect(assess({ meeting: meeting('ready'), runs: [passOf(MODEL)], index: index.none }).step).toBe('indexing')
+    })
+
     it.each<[string, IndexState]>([
       ['nothing built', index.none],
       ['a pass of this model under way', index.partial],

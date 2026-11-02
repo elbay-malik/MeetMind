@@ -4,7 +4,7 @@ import type { MeetingRepository } from '../db/meetings'
 import type { ChunkCounts, PipelineRepository, PipelineRun, PipelineStage } from '../db/pipeline'
 import { readyWindowCount, type IndexState, type TranscriptIndexRepository } from '../db/windows'
 import { DAILY_RESET_MARGIN_MS } from '../qa/embedder'
-import { indexProgress, unattendedMayIndex } from '../qa/steps'
+import { holdsPassOfAnotherModel, indexProgress, unattendedMayIndex } from '../qa/steps'
 import { cooldownEnds, refusedAsTooLong, waitingOn } from '../summary/steps'
 import { audioIsGone, replyProgress } from '../transcription/steps'
 
@@ -127,8 +127,8 @@ function extractionTurn({ meeting, runs, chunks }: PipelineSnapshot, now: number
 function indexTurn({ runs, index }: PipelineSnapshot, model: string, now: number): IndexTurn {
   if (!index) return { kind: 'unavailable' }
   if (readyWindowCount(index, model) !== null) return { kind: 'complete' }
-  if (!unattendedMayIndex(index, model)) return { kind: 'held' }
   const run = runOf(runs, 'search_index')
+  if (!unattendedMayIndex(index, model) || holdsPassOfAnotherModel(run, model)) return { kind: 'held' }
   const until = waitingOn(run, now)
   if (until) return until.getTime() - now > LONGEST_INDEX_WAIT_MS ? { kind: 'parked', until } : { kind: 'waiting', until }
   // No time to come back, and a reason: what a refusal an explicit request got leaves, and

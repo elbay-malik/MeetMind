@@ -878,11 +878,10 @@ describe('an index nobody asked to replace', () => {
       expect(await db().getItem(`windows/${id}`)).toBeNull()
     })
 
-    it('does not start over from a pass of another model, with or without a marker saying so', async () => {
+    /** A run part way through a pass of the real model, with no marker and no windows: a marker removed by hand. */
+    async function passOfAnotherModelAndNothingElse(): Promise<string> {
       const id = await transcribedMeeting(segmentsOf(text), 'ready')
-      const providers = asModel(LOST_SETTINGS)
-      const deps = depsWith(providers)
-      const { transcriptHash } = await deps.index.readState(id, LOST_SETTINGS)
+      const { transcriptHash } = await stateOf(id, LOST_SETTINGS)
       await db().setItem(`pipeline/${id}`, {
         runs: {
           search_index: {
@@ -892,8 +891,19 @@ describe('an index nobody asked to replace', () => {
         },
         chunks: [],
       })
-      expect(await advanceIndexing(id, deps, { unattended: true })).toMatchObject({ kind: 'refused' })
+      return id
+    }
+
+    it('does not start over from a pass of another model, with or without a marker saying so', async () => {
+      const id = await passOfAnotherModelAndNothingElse()
+      const providers = asModel(LOST_SETTINGS)
+      expect(await advanceIndexing(id, depsWith(providers), { unattended: true })).toMatchObject({ kind: 'refused' })
       expect(providers.calls).toEqual([])
+    })
+
+    // The step refuses this, so an assessment saying `continue` would be saying it for ever.
+    it('is held by that pass, not told to continue to a step that will only refuse', async () => {
+      await expectHandsOff(await passOfAnotherModelAndNothingElse(), LOST_SETTINGS)
     })
   })
 })

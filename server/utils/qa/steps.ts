@@ -160,6 +160,16 @@ export function unattendedMayIndex(state: IndexState, model: string): boolean {
   return !marker.complete || marker.textHash === state.transcriptHash
 }
 
+/**
+ * Whether the run is part way through a pass under another model. An unattended step refuses
+ * to take that over, with or without a marker or windows to say so, so nothing may be told
+ * that one could.
+ */
+export function holdsPassOfAnotherModel(run: Pick<PipelineRun, 'cursor'> | undefined, model: string): boolean {
+  const pass = (run?.cursor as IndexCursor | undefined)?.pass
+  return pass !== undefined && pass.model !== model
+}
+
 /** How far this meeting's index has got, from what is stored. */
 export function indexProgress(run: Pick<PipelineRun, 'cursor'> | undefined, state: IndexState, model: string): { done: number, total: number | null } {
   const ready = readyWindowCount(state, model)
