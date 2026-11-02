@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, IndexingStepResponse, Meeting, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
+import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
@@ -43,8 +44,7 @@ async function transcribedMeeting(): Promise<Meeting> {
 
 const status = async (id: string) =>
   (await $fetch<{ index: SearchIndexStatus }>(`/api/meetings/${id}/search-index`)).index
-const index = async (id: string) =>
-  (await $fetch<{ index: SearchIndexStatus }>(`/api/meetings/${id}/search-index`, { method: 'POST' })).index
+const index = async (id: string) => (await driveIndexing(id)).index
 
 /** A transcript longer than the stub produces, so it plans into several windows. */
 const longTranscript = (tag: string): TranscriptSegment[] =>
@@ -108,15 +108,68 @@ describe('search index', () => {
   })
 
   it('lets concurrent requests for one meeting all finish with the same ready index', async () => {
-    // A double click or a second tab joins the run already in flight. How many
-    // windows were actually embedded is not observable from here; the unit
-    // tests prove a repeat run spends nothing. What must hold is that every
-    // caller gets a consistent, complete answer.
+    // A double click or a second tab takes turns with the run already going: each
+    // step is claimed. How many windows were actually embedded is not observable
+    // from here; the unit tests prove each is embedded once. What must hold is that
+    // every caller gets a consistent, complete answer.
     const meeting = await transcribedMeeting()
     await setStoredTranscript(meeting.id, longTranscript('concurrent'))
     const results = await Promise.all([index(meeting.id), index(meeting.id), index(meeting.id)])
     for (const result of results) expect(result).toEqual(results[0])
     expect(results[0]!.state).toBe('ready')
+  })
+
+  it('does one step per request, answering 202 with progress until the last, then 200', async () => {
+    const meeting = await transcribedMeeting()
+    const lines = Array.from({ length: 300 }, (_, i) => ({
+      idx: i, startMs: i * 5_000, endMs: i * 5_000 + 4_800, text: `stepping line ${i} about subject ${i}`,
+    }))
+    await setStoredTranscript(meeting.id, lines)
+    const before = await status(meeting.id)
+    expect(before.windowCount).toBeGreaterThan(16)
+
+    const steps: IndexingStepResponse[] = []
+    for (let i = 0; i < 60; i++) {
+      const res = await fetch(`/api/meetings/${meeting.id}/search-index`, { method: 'POST' })
+      if (res.status === 200) {
+        expect((await res.json() as { index: SearchIndexStatus }).index).toEqual({ ...before, state: 'ready', indexedCount: before.windowCount })
+        break
+      }
+      expect(res.status).toBe(202)
+      const step = await res.json() as IndexingStepResponse
+      steps.push(step)
+      if (step.next === 'wait') {
+        // The slot's short gap between two batches, said in both places.
+        expect(Number(res.headers.get('retry-after'))).toBeGreaterThanOrEqual(0)
+        expect(step.retryAfterMs).toBeLessThanOrEqual(1_000)
+        await new Promise(resolve => setTimeout(resolve, step.retryAfterMs! + 20))
+      }
+      // Part-way, the status says how far, and a page can read it.
+      const partial = await status(meeting.id)
+      if (step.progress.done < before.windowCount) {
+        expect(partial.state).toBe('incomplete')
+        expect(partial.indexedCount).toBe(step.progress.done)
+      }
+    }
+    expect(Math.max(...steps.map(s => s.progress.done))).toBe(before.windowCount)
+    expect(steps.at(-1)!.progress.total).toBe(before.windowCount)
+    expect(await status(meeting.id)).toMatchObject({ state: 'ready', indexedCount: before.windowCount })
+    // Nothing about the meeting moved with it (ADR-0012 §5).
+    expect((await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)).meeting).toMatchObject({ status: meeting.status, errorMessage: null })
+  })
+
+  it('reads an index with no marker as incomplete, and finishes it', async () => {
+    // As a meeting indexed before step 8 reads: all its windows, and nothing to say
+    // a run finished.
+    const meeting = await transcribedMeeting()
+    await setStoredTranscript(meeting.id, longTranscript('older'))
+    const ready = await index(meeting.id)
+    const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+    await storage.removeItem(`pipeline/${meeting.id}`)
+
+    expect(await status(meeting.id)).toEqual({ ...ready, state: 'incomplete' })
+    expect(await index(meeting.id)).toEqual(ready)
+    expect(await status(meeting.id)).toEqual(ready)
   })
 
   it('404s for unknown and malformed ids', async () => {

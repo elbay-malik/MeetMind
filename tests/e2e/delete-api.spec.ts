@@ -193,6 +193,17 @@ const ledger = (stepLeaseUntil: number | null) => ({
   chunks: [],
 })
 
+/** The same, with one indexing run, paused or holding a step. */
+const indexLedger = (stepLeaseUntil: number | null, retryAt: number | null = null) => ({
+  runs: {
+    search_index: {
+      runId: randomUUID(), cursor: {}, stepToken: stepLeaseUntil === null ? null : randomUUID(), stepLeaseUntil,
+      attempts: 1, lastError: null, retryAt,
+    },
+  },
+  chunks: [],
+})
+
 /** The same, with one transcription run, paused or holding a step. */
 const transcriptionLedger = (stepLeaseUntil: number | null) => ({
   runs: {
@@ -258,6 +269,26 @@ describe('DELETE /api/meetings/:id while the meeting may still be written', () =
     const res = await del(meeting.id)
     expect(res.status).toBe(204)
     await expect(access(reply)).rejects.toThrow()
+    expect(await db.hasItem(`pipeline/${meeting.id}`)).toBe(false)
+  })
+
+  // ADR-0012 step 8: the in-process map this replaced could not see another isolate's
+  // run, and a `ready` meeting held nothing else for it to read.
+  it('409s while an indexing step holds a live lease', async () => {
+    const meeting = await seedMeeting()
+    await db.setItem(`pipeline/${meeting.id}`, indexLedger(Date.now() + 45_000))
+    const refused = await del(meeting.id)
+    expect(refused.status).toBe(409)
+    expect(Number(refused.headers.get('retry-after'))).toBeLessThanOrEqual(45)
+    expect((await refused.json()).message).toMatch(/pipeline step is running/)
+    expect((await fetch(`/api/meetings/${meeting.id}`)).status).toBe(200)
+  })
+
+  it('deletes an indexing run parked until tomorrow, marker and all', async () => {
+    const meeting = await seedMeeting()
+    const parked = indexLedger(null, Date.now() + 12 * 60 * 60 * 1000)
+    await db.setItem(`pipeline/${meeting.id}`, { ...parked, indexMarker: { textHash: 'a'.repeat(64), model: 'm', windowCount: 0, complete: false } })
+    expect((await del(meeting.id)).status).toBe(204)
     expect(await db.hasItem(`pipeline/${meeting.id}`)).toBe(false)
   })
 

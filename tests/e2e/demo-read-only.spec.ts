@@ -9,6 +9,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup, startServer } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, ExtractionStepResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
+import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
@@ -106,7 +107,7 @@ describe('the demo meeting', () => {
     await db.setItem(`transcripts/${demoId}`, DISCUSSION)
     await db.removeItem(`pipeline/${demoId}`)
     await driveExtraction(demoId)
-    await $fetch(`/api/meetings/${demoId}/search-index`, { method: 'POST' })
+    await driveIndexing(demoId)
     const { index } = await $fetch<{ index: { state: string } }>(`/api/meetings/${demoId}/search-index`)
     expect(index.state).toBe('ready')
     expect((await $fetch<{ meeting: Meeting }>(`/api/meetings/${demoId}`)).meeting.status).toBe('ready')
@@ -198,7 +199,8 @@ describe('the demo meeting', () => {
     const id = await registerAndUpload('Not the demo')
     await driveTranscription(id)
     await driveExtraction(id)
-    expect((await post(id, 'search-index')).status).toBe(200)
+    expect((await post(id, 'search-index')).status).toBe(202)
+    expect((await driveIndexing(id)).index.state).toBe('ready')
     expect((await $fetch<{ meeting: Meeting }>(`/api/meetings/${id}`)).meeting.status).toBe('ready')
   })
 
