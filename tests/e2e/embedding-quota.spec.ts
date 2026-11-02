@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting, QuestionAnswer, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, Meeting, PipelineResponse, QuestionAnswer, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
 import { DAILY_RESET_MARGIN_MS } from '../../server/utils/qa/embedder'
 import { indexUntilStopped } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
@@ -153,6 +153,48 @@ describe('the provider\'s daily limit', () => {
     const answered = await ask(meeting.id, 'What about the line nobody minds?')
     expect(answered.status).toBe(200)
     expect((await answered.json() as { answer: QuestionAnswer }).answer).toHaveProperty('found')
+  })
+})
+
+describe('POST .../advance at the daily limit', () => {
+  it('finishes the meeting and answers done with when to come back, not failed, not hours of waiting', async () => {
+    const meeting = await transcribedMeeting()
+    await setStoredTranscript(meeting.id, longTranscript(`the last line, holding ${CANARY}`))
+    const advance = () => fetch(`/api/meetings/${meeting.id}/advance`, { method: 'POST' })
+
+    let answer: PipelineResponse | null = null
+    for (let i = 0; i < 100 && answer?.next !== 'done' && answer?.next !== 'failed'; i++) {
+      const res = await advance()
+      expect(res.status).toBe(200)
+      answer = await res.json() as PipelineResponse
+      if (answer.next === 'wait') await new Promise(resolve => setTimeout(resolve, Math.min(answer!.retryAfterMs ?? 0, 2_000) + 20))
+    }
+
+    expect(answer).toMatchObject({ status: 'ready', next: 'done', index: { state: 'parked' } })
+    expect(Date.parse(answer!.retryAt!)).toBe(nextReset())
+    expect(answer!.index.retryAt).toBe(answer!.retryAt)
+    // No sentence, and nothing else a provider or database said.
+    expect(Object.keys(answer!).sort()).toEqual(['index', 'next', 'progress', 'retryAfterMs', 'retryAt', 'status'])
+
+    const row = (await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)).meeting
+    expect(row).toMatchObject({ status: 'ready', errorMessage: null, failedStage: null })
+    expect((await status(meeting.id)).state).toBe('incomplete')
+
+    // A read says the same. Asked again, it stays so, with no block moved.
+    expect(await $fetch<PipelineResponse>(`/api/meetings/${meeting.id}/pipeline`)).toMatchObject({ status: 'ready', next: 'done', retryAt: answer!.retryAt })
+    const again = await advance()
+    expect(again.status).toBe(200)
+    expect(await again.json()).toMatchObject({ next: 'done', retryAt: answer!.retryAt })
+
+    // The day after, whoever opens it next finishes the rest.
+    await setStoredTranscript(meeting.id, longTranscript('the last line, as it really was'))
+    await theDayAfter(meeting.id)
+    for (let i = 0; i < 100; i++) {
+      answer = await (await advance()).json() as PipelineResponse
+      if (answer.next === 'done') break
+      if (answer.next === 'wait') await new Promise(resolve => setTimeout(resolve, Math.min(answer!.retryAfterMs ?? 0, 2_000) + 20))
+    }
+    expect(answer).toMatchObject({ status: 'ready', next: 'done', retryAt: null, index: { state: 'complete' } })
   })
 })
 

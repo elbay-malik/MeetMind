@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, Meeting, PipelineResponse } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 
@@ -74,6 +74,15 @@ describe('transcription quota exhaustion', () => {
     expect(tooSoon.status).toBe(409)
     const body = await tooSoon.json()
     expect(body.message).toMatch(/wait \d+s/)
+
+    // The driver's route says the same thing its way, with no provider's words in it, and
+    // takes no step: a retry is only for after the cooldown, which is when it says.
+    const driver = await fetch(`/api/meetings/${meeting.id}/advance`, { method: 'POST' })
+    expect(driver.status).toBe(200)
+    const answer = await driver.json() as PipelineResponse
+    expect(answer).toMatchObject({ status: 'failed', next: 'failed', progress: { stage: 'transcription' } })
+    expect(Date.parse(answer.retryAt!)).toBeGreaterThan(Date.now())
+    expect(JSON.stringify(answer)).not.toMatch(/quota/)
 
     // Past the cooldown, and past the stub's single-shot failure, a retry
     // succeeds normally.
