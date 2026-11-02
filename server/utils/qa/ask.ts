@@ -61,6 +61,11 @@ export async function askMeeting(input: AskInput): Promise<QuestionAnswer> {
   }
   if (plan.length === 0) return NOT_FOUND
 
+  // Before the embedding, not just before the answer. A question refused here has spent
+  // nothing, so slot pacing also limits how fast this open route can spend Workers AI:
+  // the other way round, a loop refused every slot still spends an embedding per request.
+  await answerer.reserveSlot()
+
   const matches = await repo.search(meetingId, await embedder.embedQuery(question), {
     model: embedder.model,
     limit: TOP_K,
@@ -81,7 +86,7 @@ export async function askMeeting(input: AskInput): Promise<QuestionAnswer> {
     .sort((a, b) => a.idx - b.idx)
   if (retrieved.length === 0) return NOT_FOUND
 
-  const wire = await answerer.answer({ question, segments: retrieved })
+  const wire = await answerer.answer({ question, segments: retrieved }, { slotHeld: true })
 
   const seen = new Set<string>()
   const citations: Citation[] = []

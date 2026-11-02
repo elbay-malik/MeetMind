@@ -89,6 +89,16 @@ describe('groq answerer', () => {
     expect(pacer.waits).toBe(2)
   })
 
+  it('makes its first attempt on a slot the caller holds, and takes a new one only to retry', async () => {
+    stubGroq([() => reply('not json'), () => reply(good)])
+    const pacer = countingPacer()
+    const answerer = createGroqAnswerer({ apiKey: 'k', pacer })
+    await answerer.reserveSlot()
+    expect(pacer.waits).toBe(1)
+    await answerer.answer({ question: 'q', segments }, { slotHeld: true })
+    expect(pacer.waits).toBe(2)
+  })
+
   it('retries a reply that does not match the schema, then gives up', async () => {
     const bodies = stubGroq([() => reply({ answer: 'no citations key' }), () => reply({ answer: 'still wrong' })])
     await expect(createGroqAnswerer({ apiKey: 'k', pacer: countingPacer() }).answer({ question: 'q', segments }))

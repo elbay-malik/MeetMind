@@ -18,7 +18,16 @@ export interface AnswerInput {
  */
 export interface Answerer {
   readonly kind: 'groq' | 'stub'
-  answer(input: AnswerInput): Promise<WireAnswer>
+  /**
+   * Take this question's slot, or be refused. Called before anything else is spent on
+   * the question: see ask.ts.
+   */
+  reserveSlot(): Promise<void>
+  /**
+   * `slotHeld` says `reserveSlot` already took the slot for the first attempt. Every
+   * other attempt takes its own.
+   */
+  answer(input: AnswerInput, options?: { slotHeld?: boolean }): Promise<WireAnswer>
 }
 
 /**

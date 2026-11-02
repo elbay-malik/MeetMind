@@ -69,8 +69,11 @@ export function createStubAnswerer(options: {
 } = {}): Answerer {
   return {
     kind: 'stub',
-    async answer({ question, segments }) {
+    async reserveSlot() {
       if (options.pacer) await awaitAnswerSlot(options.pacer)
+    },
+    async answer({ question, segments }, { slotHeld = false } = {}) {
+      if (options.pacer && !slotHeld) await awaitAnswerSlot(options.pacer)
       const wanted = meaningfulTokens(question)
       let best: { idx: number, text: string, overlap: number } | null = null
       for (const segment of segments) {

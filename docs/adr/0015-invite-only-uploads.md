@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-02
-- **Supersedes:** Nothing whole. Amends ADR-0010 (open registration is no longer what is left for rate limiting to cover) and ADR-0013 (registration is closed, and its decision 5's demo meeting can now only be read and asked).
+- **Supersedes:** Nothing whole. Amends ADR-0010 (open registration is no longer what is left for rate limiting to cover), ADR-0012 (a question takes its request slot before it is embedded) and ADR-0013 (registration is closed, and its decision 5's demo meeting can now only be read and asked).
 
 ## Context
 
@@ -141,9 +141,15 @@ Honest limits, all accepted for a demo:
 - **Whoever holds the code has what any visitor used to have.** SEC-02, SEC-03 and SEC-05 are
   closed to strangers and remain for them, including overwriting their own object with its grant
   for 15 minutes. They are trusted, and the storage budget still applies.
-- **Questions on the demo still spend quota, with no limit.** A script asking in a loop can take
-  the shared Groq slot, which stalls extraction for invited uploads, and can spend the day's Workers
-  AI allocation (SEC-04, SEC-06). No rate limiter is added here (SEC-07).
+- **Questions on the demo still spend quota, and nothing limits how many are sent.** A script
+  asking in a loop can take every free slot on the shared Groq chat, which stalls extraction for
+  invited uploads for as long as it runs (SEC-04). A question takes its slot before it is embedded,
+  so a refused one spends nothing, and Workers AI spend follows the slot's pace: at the default of
+  one a minute, 1,440 questions of at most 500 tokens, about 8% of the day's allocation. No rate
+  limiter is added here (SEC-07). A Cloudflare rate-limit rule on this route is the cheapest bound
+  to add at deployment.
+- **What a visitor types goes to Cloudflare and Groq.** The question form says so before it is
+  sent. Groq's section 6.2 applies to it too, and nobody can vouch for what a stranger types.
 - **Guessing is limited only by the code's length.** Each attempt costs one MAC and nothing locks
   out. At 192 random bits that is enough; it is why the minimum is enforced.
 - **Nothing warns until someone tries.** The closed warning is logged per refused request, not at
