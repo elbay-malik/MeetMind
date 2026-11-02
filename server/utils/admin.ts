@@ -20,10 +20,19 @@ const encoder = new TextEncoder()
  * signed-token.ts takes, and for the same reason: `node:crypto.timingSafeEqual`
  * is not available on Workers. Lengths can differ freely; a MAC is fixed-size.
  */
-export async function adminTokenMatches(provided: string, expected: string): Promise<boolean> {
+export async function secretMatches(provided: string, expected: string): Promise<boolean> {
   const key = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify'])
   const expectedMac = await crypto.subtle.sign('HMAC', key, encoder.encode(expected))
   return crypto.subtle.verify('HMAC', key, expectedMac, encoder.encode(provided))
+}
+
+/**
+ * The token in `Authorization: Bearer <token>`, or an empty string when there is
+ * none. Empty, not null, so a missing header takes the same path through
+ * {@link secretMatches} as a wrong one, and no configured secret can equal it.
+ */
+export function bearerToken(event: H3Event): string {
+  return /^Bearer (.+)$/i.exec(getRequestHeader(event, 'authorization') ?? '')?.[1] ?? ''
 }
 
 /**
@@ -42,9 +51,7 @@ export async function requireAdmin(event: H3Event): Promise<void> {
     throw new Error(`NUXT_ADMIN_TOKEN must be at least ${MIN_ADMIN_TOKEN_LENGTH} characters; refusing to use a shorter one`)
   }
 
-  const header = getRequestHeader(event, 'authorization') ?? ''
-  const match = /^Bearer (.+)$/i.exec(header)
-  if (!match || !(await adminTokenMatches(match[1]!, configured))) {
+  if (!(await secretMatches(bearerToken(event), configured))) {
     setResponseHeader(event, 'WWW-Authenticate', 'Bearer')
     throw createError({ statusCode: 401, statusMessage: 'Unauthorized', message: 'Admin token required' })
   }
