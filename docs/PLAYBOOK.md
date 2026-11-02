@@ -223,7 +223,7 @@
 2. Because MeetMind's server work is API-proxying + DB + embeddings (no server-side video processing), it fits Cloudflare's **free** tier: streaming AI calls are I/O-bound and don't accrue CPU time. *(Withdrawn by ADR-0012: CPU is per invocation and the parsing, attestation and multi-chunk work around those calls does count. Each request is a bounded step instead, and the deploy measures per-step CPU.)*
 3. If you ever choose the multi-thread FFmpeg path, set COOP/COEP headers (e.g., a Cloudflare `_headers` file) and self-host core assets — but the recommended single-thread path avoids this entirely.
 4. Set up a Supabase keep-alive (cron/GitHub Action) to prevent the 7-day pause; configure DB backups to R2.
-5. Configure all secrets as Worker environment variables.
+5. Configure all secrets with `wrangler secret put`, including `NUXT_PUBLIC_DEMO_MEETING_ID` (`wrangler deploy` deletes a dashboard variable that `wrangler.jsonc` does not list; see ADR-0015).
 
 **Packages:** `wrangler` (Cloudflare deploy), Nitro Cloudflare preset.
 **Key decision:** **Cloudflare Workers free tier over Vercel Hobby.** Verdict: MeetMind offloads heavy compute to the browser, so Cloudflare's 10ms CPU limit is not a blocker for I/O-bound AI proxies, and it permits a public portfolio demo (Vercel Hobby is non-commercial and its function model is less favorable here). Rejected Cloudflare paid ($5/mo) as unnecessary without server-side heavy compute.
