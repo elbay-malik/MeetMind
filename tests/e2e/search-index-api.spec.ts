@@ -146,7 +146,8 @@ describe('search index', () => {
       }
       // Part-way, the status says how far, and a page can read it.
       const partial = await status(meeting.id)
-      if (step.progress.done < before.windowCount) {
+      // Not before the first batch: a first step can find the slot taken by the test before.
+      if (step.progress.done > 0 && step.progress.done < before.windowCount) {
         expect(partial.state).toBe('incomplete')
         expect(partial.indexedCount).toBe(step.progress.done)
       }
