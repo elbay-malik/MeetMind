@@ -172,6 +172,59 @@ export interface IndexingStepResponse {
   retryAfterMs: number | null
 }
 
+/**
+ * What `POST /api/meetings/:id/advance` and `GET /api/meetings/:id/pipeline` answer
+ * (ADR-0012): how far this one meeting has got, from what is stored, and what a driver
+ * should do next. It carries nothing else on purpose: no error text, which can be a
+ * provider's or a database's own words, and no model, token or cursor.
+ */
+export interface PipelineResponse {
+  status: MeetingStatus
+  progress: {
+    /**
+     * The stage these figures are about: the earliest one not finished. It only moves
+     * forward, even while an index batch runs in one of extraction's gaps.
+     */
+    stage: 'upload' | 'transcription' | 'summarization' | 'search_index'
+    /** Bytes of the provider's reply read, chunks with a result, or passages dealt with. */
+    done: number
+    /** Null until it is known, which for passages is when the plan's end has been reached. */
+    total: number | null
+    /** Always null for now: ADR-0012's step 9 addendum says why no figure would be honest. */
+    etaSeconds: number | null
+  }
+  /**
+   * The search index, which can be anywhere while the status moves on, and never moves it.
+   * - `unavailable`: there is no finished transcript to index yet.
+   * - `building`: it has work to do, now or at `retryAt`.
+   * - `complete`: this meeting can be asked questions.
+   * - `parked`: nothing will happen until `retryAt`, too far off for a page to sit through.
+   *   The provider's daily limit, or a run that kept stopping.
+   * - `held`: it holds another model's or another transcript's work, which nothing
+   *   replaces except `POST .../search-index`.
+   * - `stopped`: it was refused in a way only that POST can try again.
+   */
+  index: {
+    state: 'unavailable' | 'building' | 'complete' | 'parked' | 'held' | 'stopped'
+    done: number
+    total: number | null
+    retryAt: string | null
+  }
+  /**
+   * - `continue`: ask again now; a step can be taken.
+   * - `wait`: ask again at `retryAt`.
+   * - `done`: nothing more to do. With a `retryAt` the index is parked until then: the
+   *   meeting can be read, not asked, and opening it after that picks the index up again.
+   * - `failed`: transcription or extraction failed. Stop, and read why from
+   *   `GET /api/meetings/:id`. With a `retryAt`, asking again from then retries; without
+   *   one, nothing will.
+   */
+  next: 'continue' | 'wait' | 'done' | 'failed'
+  retryAt: string | null
+  /** The same wait as a duration measured on the server; see {@link ExtractionStepResponse}. */
+  retryAfterMs: number | null
+}
+
 /** Fields the client supplies when registering a meeting before uploading its audio. */
 export interface CreateMeetingInput {
   title: string

@@ -11,6 +11,7 @@ import {
   MAX_CHUNKS,
   MAX_STEP_ATTEMPTS,
   RETRYABLE_PARK_MS,
+  tooManyChunksMessage,
   waitingOn,
 } from '../summary/steps'
 import { containOutliers, normalizeSegments } from './normalize'
@@ -106,6 +107,26 @@ type TranscriptionCursor = { reply?: ReplyCursor }
 const PAST_TRANSCRIPTION: readonly Meeting['status'][] = ['summarizing', 'indexing', 'ready']
 
 const STAGE = 'transcription'
+
+const AUDIO_MISSING_MESSAGE = 'The meeting audio is missing from storage'
+
+/**
+ * The failures no retry can get past, because the audio is not what was uploaded, or not
+ * there at all, and nothing in the app can upload to an existing meeting again. Read from
+ * the stored message, since a failed run keeps nothing else about why. Only for a caller
+ * deciding by itself whether to retry: `advanceTranscription` tries again if asked, which
+ * is how a meeting whose object an operator put back gets going.
+ */
+export function audioIsGone(meeting: Pick<Meeting, 'status' | 'failedStage' | 'errorMessage'>): boolean {
+  if (meeting.status !== 'failed' || meeting.failedStage !== STAGE) return false
+  return meeting.errorMessage === AUDIO_MISSING_MESSAGE || /^Stored audio is \d+ bytes, expected \d+$/.test(meeting.errorMessage ?? '')
+}
+
+/** How far the run has read the provider's reply, in bytes. Before there is a reply there is no total. */
+export function replyProgress(run: Pick<PipelineRun, 'cursor'> | undefined): { done: number, total: number | null } {
+  const reply = (run?.cursor as TranscriptionCursor | undefined)?.reply
+  return { done: reply?.byteOffset ?? 0, total: reply?.size ?? null }
+}
 
 /** Do the meeting's next transcription step, if one is runnable. */
 export async function advanceTranscription(meetingId: string, deps: TranscriptionDeps): Promise<TranscriptionOutcome> {
@@ -339,7 +360,7 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
       }
 
       const audio = await store.get(meeting.audioKey, MAX_AUDIO_BYTES)
-      if (!audio) throw new TranscriptionError('The meeting audio is missing from storage', 409, false)
+      if (!audio) throw new TranscriptionError(AUDIO_MISSING_MESSAGE, 409, false)
       // The object changed after we verified it at upload.
       if (audio.size !== meeting.audioBytes) {
         throw new TranscriptionError(`Stored audio is ${audio.size} bytes, expected ${meeting.audioBytes}`, 409, false)
@@ -472,7 +493,7 @@ function stepsFor(meeting: Meeting, deps: TranscriptionDeps, now: () => number) 
       // The transcript is complete and stays; it is extraction that cannot go
       // ahead, and a retry there refuses the same way, as it always has.
       const refusal = plan.count > MAX_CHUNKS
-        ? `This transcript would need ${plan.count} sequential requests, over the ${MAX_CHUNKS} limit.`
+        ? tooManyChunksMessage(plan.count)
         : null
       const chunks = refusal === null ? plan.chunks.map((c, chunkNo) => ({ chunkNo, ...c })) : []
       if (!await pipeline.finishTranscription(meetingId, claimed.token, { chunks, refusal })) return await snapshot()
