@@ -52,6 +52,12 @@ export interface SummaryChunk extends ChunkPlan {
   unusable: boolean
 }
 
+/** How much of a plan has a result. */
+export interface ChunkCounts {
+  done: number
+  total: number
+}
+
 export interface ClaimOptions {
   /** The meeting's status the step belongs to. In any other status nothing is claimed. */
   status: MeetingStatus
@@ -152,6 +158,14 @@ export interface PipelineRepository {
    * than merged.
    */
   listChunks(meetingId: string): Promise<SummaryChunk[]>
+  /**
+   * How much of a run's plan has a result, without reading a single result: the same
+   * size of answer on any length of meeting, for deciding which step comes next and
+   * reporting how far it has got. A stored result is counted as it stands, whether or not
+   * it would pass {@link listChunks}'s check. That only moves a redo's turn in the
+   * queue: the extraction step goes by `listChunks`.
+   */
+  countChunks(meetingId: string, runId: string): Promise<ChunkCounts>
   /**
    * Store one chunk's result and end the step. Refuses a result that would not
    * read back. False when `token` is not live, or the chunk is not planned with

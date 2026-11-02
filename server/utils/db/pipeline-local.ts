@@ -236,6 +236,13 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
       })
     },
 
+    async countChunks(meetingId, runId) {
+      return withLedger(meetingId, async (_s, state) => {
+        const plan = state.chunks.filter(c => c.runId === runId)
+        return { done: plan.filter(c => c.result != null).length, total: plan.length }
+      })
+    },
+
     async recordChunk(meetingId, token, chunk, result) {
       assertStorableResult(chunk, result)
       return withLedger(meetingId, async (s, state) => {
