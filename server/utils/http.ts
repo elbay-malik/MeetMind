@@ -16,6 +16,17 @@ export function notFound(message = 'Not Found') {
   return createError({ statusCode: 404, statusMessage: 'Not Found', message })
 }
 
+/**
+ * "Not now", not "failed": say when, in the header for any client and in the body
+ * for the page. Relative as well as absolute, because the page holds off by its
+ * own clock, which need not agree with the server's.
+ */
+export function retryLater(event: H3Event, retryAt: Date): { retryAt: string, retryAfterSec: number } {
+  const seconds = Math.max(1, Math.ceil((retryAt.getTime() - Date.now()) / 1000))
+  setResponseHeader(event, 'retry-after', seconds)
+  return { retryAt: retryAt.toISOString(), retryAfterSec: seconds }
+}
+
 export function conflict(message: string) {
   return createError({ statusCode: 409, statusMessage: 'Conflict', message })
 }

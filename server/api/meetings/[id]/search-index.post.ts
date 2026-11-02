@@ -1,16 +1,16 @@
 import type { SearchIndexStatus } from '#shared/types/meeting'
 import { transcriptionFinished } from '#shared/utils/meeting'
 import { useMeetingRepository, useTranscriptIndexRepository, useTranscriptRepository } from '../../../utils/db'
-import { conflict, notFound, requireMeetingId } from '../../../utils/http'
+import { conflict, notFound, requireMeetingId, retryLater } from '../../../utils/http'
 import { useEmbedder } from '../../../utils/qa'
-import { EmbeddingError } from '../../../utils/qa/embedder'
+import { EmbeddingError, EmbeddingInputTooLongError } from '../../../utils/qa/embedder'
 import { indexMeeting } from '../../../utils/qa/indexing'
 import { indexingInFlight } from '../../../utils/qa/in-flight'
 
 /**
  * Index a meeting's transcript for questions (ADR-0007). Idempotent and
  * resumable: windows already stored for this transcript and model are skipped,
- * and a run the embedding quota stops partway keeps what it stored.
+ * and a run the provider's daily limit stops partway keeps what it stored.
  */
 export default defineEventHandler(async (event): Promise<{ index: SearchIndexStatus }> => {
   const id = requireMeetingId(event)
@@ -47,8 +47,12 @@ export default defineEventHandler(async (event): Promise<{ index: SearchIndexSta
         statusCode: err.statusCode,
         statusMessage: 'Indexing failed',
         // Said explicitly, because the difference matters to whoever retries:
-        // what was already embedded is kept, so trying again later resumes.
-        message: `${err.message} Windows indexed so far are kept; indexing again resumes from there.`,
+        // what was already embedded is kept, so trying again later resumes. Not
+        // for a passage over the limit, which stops the next run at the same place.
+        message: err instanceof EmbeddingInputTooLongError
+          ? err.message
+          : `${err.message} Passages indexed so far are kept; indexing again resumes from there.`,
+        data: err.retryAt ? retryLater(event, err.retryAt) : undefined,
       })
     }
     throw err

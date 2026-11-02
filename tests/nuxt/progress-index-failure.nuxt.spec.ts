@@ -1,0 +1,60 @@
+import { describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
+import ProgressPage from '~/pages/meetings/[id]/progress.vue'
+import type { Meeting, SearchIndexStatus } from '../../shared/types/meeting'
+
+const ID = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
+const MESSAGE = 'The free daily limit for indexing and questions has been reached. It resets at 00:00 UTC. '
+  + 'Passages indexed so far are kept; indexing again resumes from there.'
+
+const meeting = {
+  id: ID,
+  title: 'Weekly sync',
+  status: 'ready',
+  sourceFileName: 'sync.mp4',
+  sourceBytes: 1_000,
+  sourceMime: 'video/mp4',
+  durationSec: 60,
+  audioKey: `meetings/${ID}/audio.ogg`,
+  audioBytes: 1_000,
+  failedStage: null,
+  errorMessage: null,
+  createdAt: '2026-11-01T10:00:00.000Z',
+  updatedAt: '2026-11-01T10:00:00.000Z',
+} as unknown as Meeting
+
+// What the status route reads before indexing, then after a run the limit stopped.
+let index: SearchIndexStatus = { state: 'none', windowCount: 12, indexedCount: 0, model: 'stub' }
+
+registerEndpoint(`/api/meetings/${ID}`, () => ({ meeting }))
+registerEndpoint(`/api/meetings/${ID}/transcript`, () => ({ segments: [] }))
+registerEndpoint(`/api/meetings/${ID}/search-index`, {
+  method: 'GET',
+  handler: () => ({ index }),
+})
+// Shaped as the route answers: tests/e2e/embedding-quota.spec.ts holds it to this.
+registerEndpoint(`/api/meetings/${ID}/search-index`, {
+  method: 'POST',
+  handler: (event: { node: { res: { statusCode: number } } }) => {
+    index = { ...index, state: 'incomplete', indexedCount: 8 }
+    event.node.res.statusCode = 429
+    return { error: true, statusCode: 429, statusMessage: 'Indexing failed', message: MESSAGE }
+  },
+})
+
+describe('the progress page when the provider\'s daily limit stops indexing', () => {
+  it('says so in plain words, shows how far it got, and offers to carry on', async () => {
+    const page = await mountSuspended(ProgressPage, { route: `/meetings/${ID}/progress` })
+    await flushPromises()
+    const button = page.findAll('button').find(b => b.text().includes('Index for questions'))
+    expect(button, 'no button to index with').toBeTruthy()
+    await button!.trigger('click')
+
+    await vi.waitFor(() => expect(page.find('[role="alert"]').exists()).toBe(true))
+    await flushPromises()
+    expect(page.find('[role="alert"]').text()).toContain(MESSAGE)
+    expect(page.text()).toContain('8 of 12 passages indexed')
+    expect(page.findAll('button').some(b => b.text().includes('Update the index'))).toBe(true)
+  })
+})

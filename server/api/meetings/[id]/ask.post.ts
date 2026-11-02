@@ -2,7 +2,7 @@ import type { QuestionAnswer } from '#shared/types/meeting'
 import { askBodySchema } from '#shared/schemas/qa'
 import { transcriptionFinished } from '#shared/utils/meeting'
 import { useMeetingRepository, useTranscriptIndexRepository, useTranscriptRepository } from '../../../utils/db'
-import { badRequest, conflict, notFound, requireMeetingId } from '../../../utils/http'
+import { badRequest, conflict, notFound, requireMeetingId, retryLater } from '../../../utils/http'
 import { useAnswerer, useEmbedder } from '../../../utils/qa'
 import { AnswerError } from '../../../utils/qa/answerer'
 import { askMeeting, QuestionError } from '../../../utils/qa/ask'
@@ -51,18 +51,12 @@ export default defineEventHandler(async (event): Promise<{ answer: QuestionAnswe
     if (err instanceof QuestionError) {
       throw createError({ statusCode: err.statusCode, statusMessage: 'Cannot answer', message: err.message })
     }
-    if (err instanceof AnswerError && err.retryAt) {
-      // "Not now", not "failed": say when, in the header for any client and in
-      // the body for the question form.
-      const seconds = Math.max(1, Math.ceil((err.retryAt.getTime() - Date.now()) / 1000))
-      setResponseHeader(event, 'retry-after', seconds)
+    if ((err instanceof AnswerError || err instanceof EmbeddingError) && err.retryAt) {
       throw createError({
         statusCode: err.statusCode,
         statusMessage: 'Answering failed',
         message: err.message,
-        // Relative as well as absolute: the form holds off for `retryAfterSec`
-        // by its own clock, which need not agree with the server's.
-        data: { retryAt: err.retryAt.toISOString(), retryAfterSec: seconds },
+        data: retryLater(event, err.retryAt),
       })
     }
     if (err instanceof EmbeddingError || err instanceof AnswerError) {
