@@ -105,7 +105,8 @@ describe('what the pages tell people', () => {
     expect(text).toContain('This is a demo')
     expect(text).toContain('Do not upload anything sensitive')
     expect(text).toContain('Groq')
-    expect(text).toContain('Google')
+    expect(text).toContain('Cloudflare')
+    expect(text).not.toContain('Google')
     expect(text).toContain('Anyone with the link')
     // SEC-10: true of the video, but read as if nothing else left the machine.
     expect(text).not.toContain('Only a small audio file is sent for transcription')
