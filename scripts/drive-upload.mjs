@@ -5,8 +5,9 @@
 // Usage: node scripts/drive-upload.mjs <baseURL> [fixturePath] [dataDir]
 //   dataDir: the server's NUXT_DATA_DIR — when given, the stored object is
 //   inspected on disk (size, ffprobe if available, and "no video" invariant).
-// Requires a running server (pnpm dev / preview). BROWSER_CHANNEL=chrome|msedge
-// picks a system browser instead of Playwright's bundled Chromium.
+// Requires a running server (pnpm dev / preview), and the code it was started
+// with in NUXT_INVITE_CODE. BROWSER_CHANNEL=chrome|msedge picks a system browser
+// instead of Playwright's bundled Chromium.
 import { execFileSync } from 'node:child_process'
 import { copyFileSync, mkdtempSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -27,6 +28,12 @@ const [
 const fail = (msg) => {
   console.error(`FAIL: ${msg}`)
   process.exitCode = 1
+}
+
+const inviteCode = process.env.NUXT_INVITE_CODE
+if (!inviteCode) {
+  console.error('FAIL: set NUXT_INVITE_CODE to the code the server was started with')
+  process.exit(1)
 }
 
 /** Poll the meeting's real status via the API instead of a transient UI label. */
@@ -53,6 +60,28 @@ page.on('pageerror', e => fail(`page error: ${e.message}`))
 
 try {
   await page.goto(`${baseURL}/`, { waitUntil: 'networkidle' })
+
+  // Uploading is invite-only (ADR-0015): a wrong code fails at once, before any
+  // recording can be chosen, and the right one opens that step.
+  const recordingInputs = page.locator('input[type=file]')
+  if (await recordingInputs.count() !== 0) fail('a recording can be chosen before any code is checked')
+  const codeField = page.getByLabel('Invite code')
+  const wrongCode = 'not-the-invite-code-not-the-invite-code'
+  await codeField.fill(wrongCode)
+  await page.getByRole('button', { name: 'Continue' }).click()
+  await page.getByRole('alert').filter({ hasText: 'valid invite code' }).waitFor({ timeout: 5_000 })
+  if (await recordingInputs.count() !== 0) fail('a wrong code still offered a recording to choose')
+  console.log('a wrong code was refused at once')
+
+  await codeField.fill(inviteCode)
+  await page.getByRole('button', { name: 'Continue' }).click()
+  await recordingInputs.waitFor({ state: 'attached', timeout: 5_000 })
+  console.log('the right code opened the recording step')
+
+  // Nowhere a later visitor, or a log, could read it back. Page memory only.
+  const kept = await page.evaluate(() => JSON.stringify([location.href, { ...localStorage }, { ...sessionStorage }, document.cookie]))
+  if (kept.includes(inviteCode) || kept.includes(wrongCode)) fail('an invite code reached the URL, storage or a cookie')
+  if (consoleLines.some(line => line.includes(inviteCode) || line.includes(wrongCode))) fail('an invite code reached the console')
 
   // The file input must be reachable by name, not just by CSS selector.
   const namedInput = page.getByRole('button', { name: 'Choose a meeting recording' })

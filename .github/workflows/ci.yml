@@ -111,6 +111,9 @@ jobs:
         # drive-upload.mjs (which sets process.exitCode rather than throwing)
         # was advisory. `shell: bash` is the form that adds `-o pipefail`.
         shell: bash
+        # For the server and the driver. Throwaway, like the upload secret below.
+        env:
+          NUXT_INVITE_CODE: ci-invite-code-0123456789abcdefghij
         run: |
           DATA_DIR=$(mktemp -d)
           NUXT_DATA_DIR="$DATA_DIR" NUXT_UPLOAD_TOKEN_SECRET=ci-secret PORT=3000 \

@@ -155,6 +155,10 @@ run_browser_job() {
   [ "$port" = "$PORT_BASE" ] || note "  port $PORT_BASE is busy; using $port instead"
   local base="http://localhost:$port"
 
+  # For the server and the driver. Throwaway, like the upload secret below: this
+  # server lives for one job. Exported inside the job's own subshell, so it ends here.
+  export NUXT_INVITE_CODE=ci-invite-code-0123456789abcdefghij
+
   local data_dir
   data_dir=$(mktemp -d)
   printf '%s' "$data_dir" > "$DATA_DIR_FILE"
