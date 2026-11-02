@@ -28,6 +28,9 @@ const inviteLabel = computed(() => ({
   accepted: 'Invite code accepted.',
 }[inviteStatus.value]))
 
+/** The code itself was judged wrong. Being closed or unreachable says nothing about it. */
+const inviteRefused = computed(() => inviteError.value === INVITE_REFUSED_MESSAGE)
+
 /** The form goes away once the code is accepted, so focus goes on with it rather than falling to <body>. */
 async function submitInvite() {
   await checkInvite()
@@ -198,10 +201,20 @@ async function uploadAndContinue() {
         class="space-y-3"
         @submit.prevent="submitInvite"
       >
+        <!-- The refusal goes through the field, so the input reads as invalid and is described
+             by it, which focus returning there then announces. An alert as well, because focus
+             does not move when the code was submitted with Enter. -->
         <UFormField
           label="Invite code"
-          help="Held in this page only, and checked before anything is read from your recording."
+          :help="inviteRefused ? undefined : 'Held in this page only, and checked before anything is read from your recording.'"
+          :error="inviteRefused ? inviteError ?? undefined : undefined"
         >
+          <template
+            v-if="inviteRefused"
+            #error
+          >
+            <span role="alert">{{ inviteError }}</span>
+          </template>
           <UInput
             ref="inviteInput"
             v-model="inviteCode"
@@ -220,7 +233,7 @@ async function uploadAndContinue() {
           Continue
         </UButton>
         <UAlert
-          v-if="inviteError"
+          v-if="inviteError && !inviteRefused"
           role="alert"
           color="error"
           variant="subtle"

@@ -181,6 +181,56 @@ describe('a wrong code', () => {
   })
 })
 
+describe('the code field', () => {
+  /** What a screen reader hears on the field: every id it points at, as the text there. */
+  function description(page: Page) {
+    const ids = (codeField(page).attributes('aria-describedby') ?? '').split(' ').filter(Boolean)
+    return ids.map((id) => {
+      const target = document.getElementById(id)
+      expect(target, `aria-describedby names ${id}, which is not on the page`).not.toBeNull()
+      return target!.textContent
+    }).join(' ')
+  }
+
+  it('reads as valid, and describes itself, before anything has been refused', async () => {
+    const page = await mount()
+    expect(codeField(page).attributes('aria-invalid')).toBe('false')
+    expect(description(page)).toContain('Held in this page only')
+  })
+
+  it('reads as invalid and is described by the refusal, which appears once', async () => {
+    checkReply = { statusCode: 401, message: REFUSED }
+    const page = await mount()
+    await submitCode(page, 'not-the-code')
+    expect(codeField(page).attributes('aria-invalid')).toBe('true')
+    expect(description(page)).toContain(REFUSED)
+    expect(alerts(page).filter(a => a.includes(REFUSED))).toHaveLength(1)
+    expect(page.text().split(REFUSED)).toHaveLength(2)
+  })
+
+  it('stops reading as invalid when the next try fails for another reason', async () => {
+    checkReply = { statusCode: 401, message: REFUSED }
+    const page = await mount()
+    await submitCode(page, 'not-the-code')
+    checkReply = { statusCode: 502 }
+    await submitCode(page, CODE)
+    expect(codeField(page).attributes('aria-invalid')).toBe('false')
+  })
+
+  // Neither says anything about the code, so neither may mark it wrong.
+  it.each([
+    ['uploads are closed', { statusCode: 503, message: CLOSED }, CLOSED],
+    ['the check failed', { statusCode: 502 }, 'Could not check the code'],
+  ])('does not read as invalid when %s', async (_name, reply, message) => {
+    checkReply = reply
+    const page = await mount()
+    await submitCode(page, CODE)
+    expect(codeField(page).attributes('aria-invalid')).toBe('false')
+    expect(description(page)).not.toContain(message)
+    expect(alerts(page).join(' ')).toContain(message)
+  })
+})
+
 describe('when uploads are closed', () => {
   it('says so, in an alert, whatever code was entered', async () => {
     checkReply = { statusCode: 503, message: CLOSED }
