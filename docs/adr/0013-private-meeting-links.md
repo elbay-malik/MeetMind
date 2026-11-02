@@ -1,6 +1,6 @@
 # ADR-0013: A meeting is reached only through its unguessable link
 
-- **Status:** Accepted, amended by [ADR-0014](0014-workers-ai-embeddings.md)
+- **Status:** Accepted, amended by [ADR-0014](0014-workers-ai-embeddings.md) and [ADR-0015](0015-invite-only-uploads.md)
 - **Date:** 2026-11-02
 - **Supersedes:** ADR-0008 decisions 1, 3, 4, 5, 6 and 7 (cross-meeting search is gone, along with its route, repository method and UI) and PLAYBOOK Phase 8's archive and cross-meeting search. ADR-0008's decision 2 no longer has anything to apply to. Amends ADR-0010 (the search endpoint was its pressing case for rate limiting), ADR-0011 (how an operator finds a meeting, and what a leaked link means) and ADR-0012's note that cross-meeting search reads `meeting_index_state`.
 
@@ -8,6 +8,11 @@
 > Cloudflare Workers AI. Where this ADR names Google or Gemini as receiving a transcript or
 > spending quota, it is now Cloudflare. ADR-0014's migration also did the cleanup decision 7
 > describes, so that function is gone.
+
+> **Note, 2026-11-02:** [ADR-0015](0015-invite-only-uploads.md) closed registration:
+> `POST /api/meetings` now needs an invite code, so where this ADR calls registration open, it
+> no longer is. The demo meeting (decision 5) can now only be read and asked. Asking it still
+> spends quota, and a link holder can still drive any other meeting.
 
 ## Context
 

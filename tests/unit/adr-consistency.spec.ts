@@ -1,4 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises'
+import { relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -83,5 +84,53 @@ describe('ADRs changed by ADR-0014', () => {
   it('leaves no ADR calling the dropped function something that stays', async () => {
     expect((await adr('0008')).split('\n').find(line => line.startsWith('- **Status:**')))
       .not.toMatch(/stays unused/)
+  })
+})
+
+describe('ADRs changed by ADR-0015', () => {
+  it('every ADR it names in its header says so in its own status', async () => {
+    const header = /^- \*\*Supersedes:\*\* (.*)$/m.exec(await adr('0015'))?.[1]
+    expect(header, 'could not find the header line of ADR-0015').toBeTruthy()
+    const named = [...new Set([...header!.matchAll(/ADR-(\d{4})/g)].map(m => m[1]!))]
+    expect(named).toEqual(expect.arrayContaining(['0010', '0013']))
+    const silent: string[] = []
+    for (const number of named) {
+      const status = /^- \*\*Status:\*\* (.*)$/m.exec(await adr(number))?.[1] ?? ''
+      if (!status.includes('ADR-0015')) silent.push(number)
+    }
+    expect(silent).toEqual([])
+  })
+
+  it('tells a reader of ADR-0013 that registration closed, above what says it is open', async () => {
+    const text = await adr('0013')
+    expect(text.indexOf('[ADR-0015](0015-invite-only-uploads.md) closed registration')).toBeGreaterThan(-1)
+    expect(text.indexOf('[ADR-0015](0015-invite-only-uploads.md) closed registration')).toBeLessThan(text.indexOf('registration is still'))
+  })
+
+  it('leaves no ADR calling registration what rate limiting has left to cover', async () => {
+    expect((await adr('0010')).replace(/\s+/g, ' ')).not.toMatch(/left is open registration/)
+  })
+
+  it('records a guard for every route that is not a GET, so a new one cannot go unexamined', async () => {
+    const apiDir = fileURLToPath(new URL('../../server/api/', import.meta.url))
+    const files = (await readdir(apiDir, { recursive: true, withFileTypes: true })).filter(f => f.isFile())
+    const routes = files.flatMap((file) => {
+      const name = /^(.*)\.(post|put|delete|patch)\.ts$/.exec(file.name)
+      if (!name) return []
+      const dir = relative(apiDir, file.parentPath)
+      const segments = [...dir.split('/'), name[1]!].filter(segment => segment && segment !== 'index')
+      const path = segments.map(segment => segment.replace(/^\[(.+)\]$/, ':$1')).join('/')
+      return [`${name[2]!.toUpperCase()} /api/${path}`]
+    })
+    // Guard the guard: a walk that matched nothing would pass forever.
+    expect(routes).toContain('POST /api/meetings')
+    expect(routes).toContain('DELETE /api/meetings/:id')
+    expect(routes).toContain('PUT /api/uploads/:token')
+    expect(routes.length).toBeGreaterThanOrEqual(9)
+
+    const table = (await adr('0015')).split('## What guards each route')[1]!.split('\n## ')[0]!
+    const rows = table.split('\n').filter(line => line.startsWith('| `'))
+    const missing = routes.filter(route => !rows.some(row => row.startsWith(`| \`${route}\` |`)))
+    expect(missing).toEqual([])
   })
 })
