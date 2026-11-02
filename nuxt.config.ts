@@ -34,6 +34,11 @@ export default defineNuxtConfig({
     // means those routes answer 404; set means at least 32 characters, or they
     // refuse to run. Generate with `openssl rand -base64 32`.
     adminToken: '', // NUXT_ADMIN_TOKEN
+    // The code POST /api/meetings asks for (ADR-0015). At least 32 characters.
+    // Empty or shorter closes uploads for everyone: this is the one setting whose
+    // absence must not select a stub, and it never belongs under `public`.
+    // Generate with `openssl rand -hex 24`.
+    inviteCode: '', // NUXT_INVITE_CODE
     // Minimum gap between Groq chat requests (extraction chunks and questions)
     // across EVERY server instance, enforced through the slot ledger
     // (ADR-0012). One request a minute fits the free tier's 8,000 tokens per
