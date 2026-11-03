@@ -83,6 +83,22 @@ jobs:
       - uses: actions/checkout@v6
       - run: bash scripts/verify-migrations.sh
 
+  # The real Supabase drivers over the same throwaway Postgres, behind PostgREST. This is what
+  # holds the SQL mirror of the sweeper's rules to the table the TypeScript answers to, since
+  # `pnpm test` runs that table on the local driver alone, and verify-migrations.sh has its own
+  # hand-written subset. No credentials, and no real project.
+  postgrest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:postgrest
+
   # Headless Chromium against a real built server: in-browser extraction,
   # upload, transcription, extraction, then real seeking, focus, scrolling and
   # keyboard input on the player. None of that is observable from unit or e2e
