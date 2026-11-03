@@ -268,6 +268,14 @@ export function classifyReply(reply: { status: number, retryAfter: string | null
   return { kind: 'trouble', cause: 'server', hintMs }
 }
 
+/**
+ * The same without `index.state`, which the clock alone changes when a park runs out. So this
+ * changing means someone took a step, and is what a stopped tab comes back for.
+ */
+function stepsSignature({ status, progress, index }: PipelineResponse): string {
+  return [status, progress.stage, progress.done, progress.total, index.done, index.total].join('|')
+}
+
 /** The figures a page shows, so a change here is what "something moved" means. */
 export function progressSignature({ status, progress, index }: PipelineResponse): string {
   return [status, progress.stage, progress.done, progress.total, index.state, index.done, index.total].join('|')
@@ -387,6 +395,38 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
     rebuilding = false
     releaseTheLock()
     update({ asking: false, pause: null, waitMs: null, nextRequestAt: null, stop, retryFrom, troubleCause, rebuild: null })
+    if (live && retryFrom !== null && (stop === 'failed' || stop === 'finished')) void lookWhileStopped(loop)
+  }
+
+  /**
+   * A retry can still do something here, so another tab may press it and then close, and a
+   * window left in view hears of neither. This looks, slowly, and takes part again if a step
+   * has been taken. It spends nothing itself: only a click retries, and a park running out moves
+   * no figure. A tab left open on this stops looking when {@link LONGEST_NO_PROGRESS_MS} is up.
+   */
+  async function lookWhileStopped(mine: number) {
+    const stoppedAt = state.answer ? stepsSignature(state.answer) : null
+    const until = now() + LONGEST_NO_PROGRESS_MS
+    let delay = SLOW_LOOK_MS
+    while (now() + delay <= until) {
+      await sleep(delay)
+      if (mine !== loop) return
+      // Not an ask by {@link RELOOK_AFTER_MS}: a tab coming back still looks, and may carry on.
+      const askedAt = lastAskAt
+      const reply = classify(await ask('GET', '/pipeline'))
+      lastAskAt = askedAt
+      if (mine !== loop) return
+      delay = SLOW_LOOK_MS
+      if (reply.kind === 'missing') return finish('missing', null)
+      if (reply.kind === 'trouble' && reply.hintMs !== null) {
+        holdOffUntil = now() + reply.hintMs
+        delay = Math.max(delay, reply.hintMs)
+      }
+      if (reply.kind === 'answer' && stepsSignature(reply.answer) !== stoppedAt) {
+        adopt(reply.answer)
+        return begin()
+      }
+    }
   }
 
   /** Asks and gives back what came back, or null if nothing did. Never throws. */
