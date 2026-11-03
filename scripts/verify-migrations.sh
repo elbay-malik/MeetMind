@@ -1519,6 +1519,8 @@ psql -q -c "insert into public.pipeline_runs (meeting_id, stage, step_token, ste
 expect_expired "a live step keeps it, and the next is the answer" "$SW1"
 psql -q -c "update public.pipeline_runs set step_lease_until = now() - interval '1 second' where meeting_id = '$SW2';"
 expect_expired "a lease that has run out does not" "$SW2"
+check "only the 20 oldest are looked at, so a read is bounded however many steps are live" \
+  "select pg_get_functiondef('public.next_expired_meeting(integer, uuid)'::regprocedure) like '%limit 20%'"
 gone "$SW2"
 psql -q -c "update public.meetings set title = 'touched' where id = '$SW1';"
 expect_expired "age is from created_at, however recently it was touched" "$SW1"
@@ -1543,20 +1545,24 @@ check "next_expired_meeting is executable by service_role and not by PUBLIC, ano
 check "next_expired_meeting pins its search_path" \
   "select 'search_path=public' = any(proconfig) from pg_proc where proname = 'next_expired_meeting'"
 
-# What it reads, by Postgres's own count, among as many old meetings as there are.
+# What it reads, by Postgres's own count, among as many old meetings as there are. Each with a
+# run, as a real one has: on a nearly empty table a scan is the cheaper plan, and says nothing.
 psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,created_at)
               select gen_random_uuid(), 'x', 'ready', 'a.mp4', 1, 'purge_read_' || g, 10, now() - interval '400 days' - make_interval(secs => g)
                 from generate_series(1, 20000) g;
-            analyze public.meetings;"
+            insert into public.pipeline_runs (meeting_id, stage)
+              select id, 'search_index' from public.meetings where audio_key like 'purge_read_%';
+            analyze public.meetings; analyze public.pipeline_runs;"
 read_old=$(psql -q -At -c "begin;
     select count(*) from public.next_expired_meeting(30, '$DEMO_ID');
     select coalesce(sum(coalesce(seq_tup_read, 0) + coalesce(idx_tup_fetch, 0)), 0) || ' ' || coalesce(sum(seq_scan), 0)
       from pg_stat_xact_user_tables where relname in ('meetings', 'pipeline_runs');
     rollback;" | tail -1)
 echo "  (rows read to answer, then scans of a whole table, with 20,000 expired meetings: $read_old)"
-[ "${read_old%% *}" -le 10 ] || fail "choosing what to delete read too much: $read_old"
+# 20 meetings and a run each, at the very most. A plpgsql loop fetches ten at a time.
+[ "${read_old%% *}" -le 40 ] || fail "choosing what to delete read too much, which a NOT EXISTS over the runs does: $read_old"
 [ "${read_old##* }" = "0" ] || fail "choosing what to delete scanned a whole table: $read_old"
-echo "  ok: choosing what to delete reads a row or two, however many have expired"
+echo "  ok: choosing what to delete reads a fixed number of rows, however many have expired"
 psql -q -c "delete from public.meetings where audio_key like 'purge_read_%';"
 
 psql -q < "$PURGE_MIGRATION"

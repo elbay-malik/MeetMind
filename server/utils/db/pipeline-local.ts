@@ -75,6 +75,8 @@ const summaryKey = (meetingId: string) => `summaries/${meetingId}`
 const transcriptKey = (meetingId: string) => `transcripts/${meetingId}`
 const windowsKey = (meetingId: string) => `windows/${meetingId}`
 const SWEEP_STATE_KEY = 'sweep/state'
+/** The oldest expired meetings `next_expired_meeting` looks at for one with no live step. */
+const EXPIRED_LOOKED_AT = 20
 
 /** `public.sweep_state`: when a tick last ran, and the meeting the rotation last chose. */
 interface LocalSweepState {
@@ -416,6 +418,7 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
       const expired = items.map(item => item.value).filter((m): m is Meeting => !!m)
         .filter(m => isPastRetention(m.createdAt, days, now) && m.id.toLowerCase() !== excludeId.toLowerCase())
         .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+        .slice(0, EXPIRED_LOOKED_AT)
       for (const meeting of expired) {
         const ledger = await s.getItem<LedgerState>(ledgerKey(meeting.id))
         const live = Object.values(ledger?.runs ?? {}).some(run => run.stepLeaseUntil != null && run.stepLeaseUntil > now)
