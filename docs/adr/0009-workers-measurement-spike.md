@@ -1,6 +1,6 @@
 # ADR-0009: What Workers actually does with this app — a measurement spike before Phase 9
 
-- **Status:** In progress (credential-free half measured; the rest blocked on a Cloudflare token)
+- **Status:** In progress (credential-free half measured; the rest blocked on a Cloudflare token). Finding 3's open question is settled by [ADR-0018](0018-ffmpeg-wasm-from-private-r2.md)
 - **Date:** 2026-10-22
 
 ## Context
@@ -65,6 +65,10 @@ Two things worth knowing beyond "it is over the cap":
   surprise; it is a local hard stop, discoverable and iterable for free.
 - **The cap is identical on Free and Paid.** It is a platform limit, not a plan
   lever, so paying does not move it.
+
+*[ADR-0018](0018-ffmpeg-wasm-from-private-r2.md) settled this: a route serves it from the private
+bucket at the same path. With the wasm gone from a Worker build, this hard stop is gone too, so
+`wrangler dev` at the repo root now reads the real `.env`: never run it there.*
 
 Excluding `ffmpeg/` from the assets directory makes everything else run. That
 is a probe, not the fix: `.output` is generated, so the exclusion has to come

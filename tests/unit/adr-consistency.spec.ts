@@ -258,6 +258,99 @@ describe('ADRs changed by ADR-0015', () => {
   })
 })
 
+describe.each([
+  ['0018', '0018-ffmpeg-wasm-from-private-r2.md', ['0009', '0010']],
+  ['0019', '0019-demo-question-cap.md', ['0012', '0015']],
+])('ADRs changed by ADR-%s', (number, file, amended) => {
+  it('every ADR it names in its header says so in its own status', async () => {
+    const header = /^- \*\*Supersedes:\*\* (.*)$/m.exec(await adr(number))?.[1]
+    expect(header, `could not find the header line of ADR-${number}`).toBeTruthy()
+    const named = [...new Set([...header!.matchAll(/ADR-(\d{4})/g)].map(m => m[1]!))]
+    expect(named).toEqual(expect.arrayContaining(amended))
+    const silent: string[] = []
+    for (const other of named) {
+      const status = /^- \*\*Status:\*\* (.*)$/m.exec(await adr(other))?.[1] ?? ''
+      if (!status.includes(`ADR-${number}`)) silent.push(other)
+    }
+    expect(silent).toEqual([])
+  })
+
+  it('is in the README\'s index', async () => {
+    const readme = await readFile(fileURLToPath(new URL('../../README.md', import.meta.url)), 'utf8')
+    expect(readme.split('\n').some(line => line.startsWith(`| [${number}](docs/adr/${file})`))).toBe(true)
+  })
+
+  it('says what stays unproven, and claims nothing of a deployed Worker', async () => {
+    const text = (await adr(number)).replace(/\s+/g, ' ')
+    expect(text).toContain('## What stays unproven until deployed')
+    expect(text).toContain('**not yet deployed**')
+  })
+})
+
+describe('what ADR-0019 tells a reader about a stopped extraction', () => {
+  it('says a failed one holds the demo\'s questions, in the ADR and the README', async () => {
+    const flat = (text: string) => text.replace(/\s+/g, ' ')
+    expect(flat(await adr('0019'))).toContain('A meeting that failed at extraction holds the demo\'s questions')
+    const readme = await readFile(fileURLToPath(new URL('../../README.md', import.meta.url)), 'utf8')
+    expect(flat(readme)).toContain('including one that failed and has not been retried or deleted')
+  })
+})
+
+describe('the first deploy\'s steps', () => {
+  const inRepo = (path: string) => readFile(fileURLToPath(new URL(`../../${path}`, import.meta.url)), 'utf8')
+  const steps = async () => (await inRepo('README.md')).split('### Deploying the Worker')[1]!.split('\n## ')[0]!.replace(/\s+/g, ' ')
+
+  it('says nothing has been deployed, and nothing claims it has', async () => {
+    const text = await steps()
+    expect(text).toContain('Nothing has been deployed yet.')
+    expect(text).not.toMatch(/is live at|has been deployed to|now deployed/i)
+  })
+
+  it('come in the order that works', async () => {
+    const text = await steps()
+    const order = ['pnpm ci:local', 'pnpm db:migrate', 'pnpm upload:ffmpeg-wasm', 'r2 bucket cors set', 'pnpm secrets:worker', 'pnpm deploy:worker', 'Rate limiting rules', 'reach `ready`', 'wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID']
+    const places = order.map(words => text.indexOf(words))
+    expect(places).not.toContain(-1)
+    expect(places).toEqual([...places].sort((a, b) => a - b))
+  })
+
+  it('name every secret the script sends, and warn off the whole file', async () => {
+    const { WORKER_SECRET_NAMES } = await import('../../scripts/lib/worker-secrets.mjs')
+    const text = await steps()
+    for (const name of WORKER_SECRET_NAMES) expect(text).toContain(`\`${name}\``)
+    expect(text).toContain('Never `wrangler secret bulk .env`')
+  })
+
+  it('say what must not run during acceptance, and that last_tick_at is no proof', async () => {
+    const text = await steps()
+    expect(text).toContain('`pnpm test:services`, and a local server on `.env`, must not run during acceptance')
+    expect(text).toContain('Past Cron Events is the proof')
+    expect(text).toMatch(/`last_tick_at` is not.*`test:services` moves it/)
+  })
+
+  it('say how to roll back, and how to stop the ticks', async () => {
+    const text = await steps()
+    expect(text).toContain('wrangler rollback')
+    expect(text).toContain('"crons": []')
+  })
+
+  it('leave no database backups to configure, and the playbook says why', async () => {
+    const playbook = await inRepo('docs/PLAYBOOK.md')
+    expect(playbook).not.toMatch(/Configure DB backups|automated DB backups/)
+    expect(playbook).toContain('**No database backups for this demo:**')
+    expect(playbook).toContain('the demo can be recreated from its recording')
+  })
+
+  it('say what licence the ffmpeg core has, as the package declares it, and where its source is', async () => {
+    const { FFMPEG_CORE_LICENSE, FFMPEG_CORE_PACKAGE, FFMPEG_CORE_SOURCE_URL, FFMPEG_CORE_VERSION } = await import('../../shared/utils/ffmpeg-core')
+    const license = (await inRepo('README.md')).split('\n## License')[1]!.replace(/\s+/g, ' ')
+    expect(license).toContain(`\`${FFMPEG_CORE_PACKAGE}\` ${FFMPEG_CORE_VERSION}`)
+    expect(license).toContain(`\`${FFMPEG_CORE_LICENSE}\``)
+    expect(license).toContain(FFMPEG_CORE_SOURCE_URL)
+    expect(license).toContain('not legal advice')
+  })
+})
+
 describe('what the docs say about a built server (ADR-0016)', () => {
   const inRepo = (path: string) => readFile(fileURLToPath(new URL(`../../${path}`, import.meta.url)), 'utf8')
 

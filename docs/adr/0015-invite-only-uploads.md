@@ -1,6 +1,6 @@
 # ADR-0015: Visitors get the demo meeting, and uploading takes an invite code
 
-- **Status:** Accepted, amended by [ADR-0016](0016-real-services-or-nothing.md)
+- **Status:** Accepted, amended by [ADR-0016](0016-real-services-or-nothing.md) and [ADR-0019](0019-demo-question-cap.md)
 - **Date:** 2026-11-02
 - **Supersedes:** Nothing whole. Amends ADR-0010 (open registration is no longer what is left for rate limiting to cover), ADR-0012 (a question takes its request slot before it is embedded) and ADR-0013 (registration is closed, and its decision 5's demo meeting can now only be read and asked).
 
@@ -117,7 +117,7 @@ health check also answers 503 when [ADR-0016](0016-real-services-or-nothing.md) 
 | `POST /api/meetings/:id/summarize` | Meeting id, a finished transcript, a claim per step | Groq quota, the chunk ledger, the summary, the row | **Refused, 403** |
 | `POST /api/meetings/:id/search-index` | Meeting id, a finished transcript | Workers AI quota; writes windows, deletes stale ones | **Refused, 403** |
 | `POST /api/meetings/:id/advance` | Meeting id, whatever the step it takes needs, a claim per step. Never replaces an index holding another model's or transcript's work, and never repairs a `ready` meeting with no summary | Whatever its one step spends: Whisper, Groq or Workers AI quota, or nothing | **Refused, 403** |
-| `POST /api/meetings/:id/ask` | Meeting id, a finished transcript, a complete index, a 4 KB body | Workers AI and Groq quota, and the shared Groq slot. Nothing about the meeting | **Open, on purpose** |
+| `POST /api/meetings/:id/ask` | Meeting id, a finished transcript, a complete index, a 4 KB body | Workers AI and Groq quota, and the shared Groq slot. Nothing about the meeting | **Open, on purpose**, and on the demo within a daily count and not while an extraction is pending ([ADR-0019](0019-demo-question-cap.md)) |
 | `DELETE /api/meetings/:id` | `NUXT_ADMIN_TOKEN` (ADR-0011) | Removes everything stored for the meeting | Same. This is how an operator removes it |
 
 ## Creating the demo meeting
@@ -163,13 +163,13 @@ Honest limits, all accepted for a demo:
 - **Whoever holds the code has what any visitor used to have.** SEC-02, SEC-03 and SEC-05 are
   closed to strangers and remain for them, including overwriting their own object with its grant
   for 15 minutes. They are trusted, and the storage budget still applies.
-- **Questions on the demo still spend quota, and nothing limits how many are sent.** A script
-  asking in a loop can take every free slot on the shared Groq chat, which stalls extraction for
-  invited uploads for as long as it runs (SEC-04). A question takes its slot before it is embedded,
-  so a refused one spends nothing, and Workers AI spend follows the slot's pace: at the default of
-  one a minute, 1,440 questions of at most 500 tokens, about 8% of the day's allocation. No rate
-  limiter is added here (SEC-07). A Cloudflare rate-limit rule on this route is the cheapest bound
-  to add at deployment.
+- **Questions on the demo still spend quota.** [ADR-0019](0019-demo-question-cap.md) now limits
+  how many, and refuses them while an extraction is pending, which is what closes SEC-04 and the
+  demo's side of SEC-05. A question takes its slot before it is embedded, so a refused one spends
+  nothing, and Workers AI spend follows the slot's pace: at the default of one a minute, 1,440
+  questions of at most 500 tokens, about 8% of the day's allocation. No rate limiter is added here
+  (SEC-07). A Cloudflare rate-limit rule is the cheapest bound on a flood, and the README's
+  deployment steps add one.
 - **What a visitor types goes to Cloudflare and Groq.** The question form says so before it is
   sent. Groq's section 6.2 applies to it too, and nobody can vouch for what a stranger types.
 - **Guessing is limited only by the code's length.** Each attempt costs one MAC and nothing locks
