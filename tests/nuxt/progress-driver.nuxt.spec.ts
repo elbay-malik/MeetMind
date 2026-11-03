@@ -433,7 +433,7 @@ describe('a failure', () => {
     const page = await open(id)
     await vi.waitFor(() => expect(sent.advance).toBe(2))
     await vi.waitFor(() => expect(page.find('[role="alert"]').text()).toContain('Extraction did not finish'))
-    expect(links(page)).toContain('Ask on the meeting page')
+    await vi.waitFor(() => expect(links(page)).toContain('Ask on the meeting page'))
   })
 })
 
