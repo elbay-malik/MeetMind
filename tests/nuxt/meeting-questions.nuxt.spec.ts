@@ -78,3 +78,74 @@ describe('the question card when the index status cannot be read', () => {
     expect(wrapper.text()).not.toContain('once the transcript is ready')
   })
 })
+
+describe('the question card when the index is not finished', () => {
+  const pipelineWith = (state: string) => ({
+    status: 'ready',
+    progress: { stage: 'search_index', done: 0, total: null, etaSeconds: null },
+    index: { state, done: 0, total: null, retryAt: null },
+    next: 'done',
+    retryAt: null,
+    retryAfterMs: null,
+  })
+  const notFinished = (id: string, state: 'none' | 'incomplete', pipeline: string | null) => {
+    registerEndpoint(`/api/meetings/${id}/search-index`, () => ({ index: { state, windowCount: 3, indexedCount: 1, model: 'stub' } }))
+    registerEndpoint(`/api/meetings/${id}/pipeline`, (event: { node: { res: { statusCode: number } } }) => {
+      if (pipeline) return pipelineWith(pipeline)
+      event.node.res.statusCode = 500
+      return { error: true, statusCode: 500 }
+    })
+    return mountSuspended(MeetingQuestions, { props: { meetingId: id } })
+  }
+  const button = (wrapper: Awaited<ReturnType<typeof notFinished>>) => wrapper.findAll('a').map(a => a.text()).join(' ')
+
+  it.each<[string, string, RegExp, string]>([
+    ['b1000000-0000-4000-8000-000000000001', 'building', /moves only while its pipeline page is open/, 'Finish the index on the pipeline page'],
+    ['b1000000-0000-4000-8000-000000000002', 'parked', /stopped for now.*daily limit/, 'See when it can carry on'],
+    ['b1000000-0000-4000-8000-000000000003', 'held', /another embedding model or an older transcript/, 'Rebuild it on the pipeline page'],
+    ['b1000000-0000-4000-8000-000000000004', 'stopped', /will not be tried again by itself/, 'Try again on the pipeline page'],
+  ])('%s: says why when the index is %s', async (id, state, words, action) => {
+    const wrapper = await notFinished(id, 'incomplete', state)
+    await flushPromises()
+    expect(wrapper.text()).toMatch(words)
+    expect(button(wrapper)).toContain(action)
+    expect(wrapper.find('form').exists()).toBe(false)
+  })
+
+  it('says one that has not started happens by itself on the pipeline page', async () => {
+    const wrapper = await notFinished('b1000000-0000-4000-8000-000000000005', 'none', 'building')
+    await flushPromises()
+    expect(wrapper.text()).toMatch(/happens by itself while its pipeline page is open/)
+    expect(button(wrapper)).toContain('Index it on the pipeline page')
+  })
+
+  it('still says what it can when the reason cannot be read', async () => {
+    const wrapper = await notFinished('b1000000-0000-4000-8000-000000000006', 'incomplete', null)
+    await flushPromises()
+    expect(wrapper.text()).toMatch(/index is not finished/)
+    expect(button(wrapper)).toContain('Finish the index on the pipeline page')
+  })
+
+  it('sends nobody to a page that cannot help, on the public demo', async () => {
+    const id = 'b1000000-0000-4000-8000-000000000007'
+    useRuntimeConfig().public.demoMeetingId = id
+    const wrapper = await notFinished(id, 'incomplete', 'held')
+    await flushPromises()
+    useRuntimeConfig().public.demoMeetingId = ''
+    expect(wrapper.text()).toMatch(/demo meeting's index is not finished/)
+    expect(wrapper.findAll('a').length).toBe(0)
+  })
+
+  it('reads nothing more for a finished index', async () => {
+    const id = 'b1000000-0000-4000-8000-000000000008'
+    let reads = 0
+    registerEndpoint(`/api/meetings/${id}/search-index`, () => ({ index: { state: 'ready', windowCount: 3, indexedCount: 3, model: 'stub' } }))
+    registerEndpoint(`/api/meetings/${id}/pipeline`, () => {
+      reads++
+      return pipelineWith('complete')
+    })
+    await mountSuspended(MeetingQuestions, { props: { meetingId: id } })
+    await flushPromises()
+    expect(reads).toBe(0)
+  })
+})
