@@ -30,6 +30,25 @@ export interface AskInput {
   embedder: Embedder
   repo: Pick<TranscriptIndexRepository, 'readState' | 'search'>
   answerer: Answerer
+  /** What this meeting allows beyond the provider's own limits. Only the public demo has one. */
+  allowance?: QuestionAllowance
+}
+
+/**
+ * Whether a question may go on, for a meeting that limits them (ADR-0019). Each refuses by
+ * throwing. Two steps, in this order around the provider's slot, each for its own reason.
+ */
+export interface QuestionAllowance {
+  /**
+   * Before the slot, and reading only. Reserving a slot is itself what stalls extraction, as a
+   * question can claim one up to 20 seconds ahead, so a refused question must not get as far.
+   */
+  check(): Promise<void>
+  /**
+   * After the slot, right before anything is spent. Counted here and not earlier, so a loop
+   * refused its slot cannot burn the day's questions for everyone.
+   */
+  take(): Promise<void>
 }
 
 /**
@@ -68,6 +87,9 @@ export async function askMeeting(input: AskInput): Promise<QuestionAnswer> {
     throw new QuestionError('Ask a question that contains words.', 400)
   }
 
+  // First, as a refusal here also saves the hashing of the whole transcript below.
+  await input.allowance?.check()
+
   // The marker, not a plan of the transcript: the cost of this check does not grow with
   // the meeting, and a run in progress is refused however much of it is stored.
   const state = await repo.readState(meetingId, embedder.model)
@@ -86,6 +108,7 @@ export async function askMeeting(input: AskInput): Promise<QuestionAnswer> {
   // nothing, so slot pacing also limits how fast this open route can spend Workers AI:
   // the other way round, a loop refused every slot still spends an embedding per request.
   await answerer.reserveSlot()
+  await input.allowance?.take()
 
   const matches = await repo.search(meetingId, await embedder.embedQuery(question), {
     model: embedder.model,

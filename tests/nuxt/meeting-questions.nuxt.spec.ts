@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import MeetingQuestions from '~/components/MeetingQuestions.vue'
+import { DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE } from '../../shared/utils/meeting'
 import { fixedSentence } from '../../server/utils/public-errors'
 
 const ID = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
@@ -35,6 +36,27 @@ describe('the question form', () => {
   it('says where a question goes, before it is sent', async () => {
     const wrapper = await mountSuspended(MeetingQuestions, { props: { meetingId: ID } })
     expect(wrapper.find('form').text()).toContain('Your question is sent to Cloudflare to search this meeting and to Groq to answer it.')
+  })
+})
+
+// ADR-0019. The sentences come from the code, and the form adds when.
+describe.each([
+  ['over the day\'s count', DEMO_QUESTIONS_USED_MESSAGE, 3_600],
+  ['while an extraction is pending', DEMO_QUESTIONS_PAUSED_MESSAGE, 60],
+])('the question form on the demo, refused %s', (_name, message, retryAfterSec) => {
+  const REFUSED = { statusCode: 429, message, data: { retryAt: '2026-11-05T00:00:00.000Z', retryAfterSec } }
+
+  it('reads as one plain thought with the form\'s own time', async () => {
+    const wrapper = await askWith(REFUSED)
+    expect(wrapper.find('[role="alert"]').text()).toMatch(new RegExp(`${message.replace('.', '\\.')} Try again at \\d`))
+    expect(message.endsWith('.')).toBe(true)
+    expect(message).not.toMatch(/try again|later|shortly|tomorrow/i)
+  })
+
+  it('holds the button until then', async () => {
+    const wrapper = await askWith(REFUSED)
+    expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toMatch(/Questions can be asked again at/)
   })
 })
 
