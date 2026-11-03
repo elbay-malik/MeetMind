@@ -593,6 +593,17 @@ describe('a meeting with no audio yet', () => {
     expect(page.text()).toContain('Waiting for audio')
     expect(sent.advance).toBe(0)
   })
+
+  it('does not say this page is doing work that no page can do', async () => {
+    const pending = answer({ status: 'pending_upload', next: 'wait', progress: { stage: 'upload', done: 0, total: null, etaSeconds: null } })
+    const { id, sent } = aMeeting({ row: { status: 'pending_upload' }, pipeline: [ok(pending)] })
+    const page = await open(id)
+    // The driver's own read, after the page's: it is only then that it is driving.
+    await vi.waitFor(() => expect(sent.pipeline).toBe(2))
+    await readsSettled()
+    expect(announced(page)).toContain('Waiting for the upload to be confirmed.')
+    expect(page.text()).not.toContain('is doing the work')
+  })
 })
 
 describe('trouble that is not the meeting', () => {
