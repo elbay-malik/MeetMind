@@ -1,6 +1,6 @@
 # ADR-0011: Deleting a meeting is an admin operation
 
-- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md)
+- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md) and [ADR-0017](0017-retention-purge.md)
 - **Date:** 2026-10-25
 
 ## Context

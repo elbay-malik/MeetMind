@@ -45,6 +45,32 @@ describe('ADRs changed by ADR-0013', () => {
   })
 })
 
+describe('ADRs changed by ADR-0017', () => {
+  it('every ADR it names in its header says so in its own status', async () => {
+    const header = /^- \*\*Supersedes:\*\* (.*)$/m.exec(await adr('0017'))?.[1]
+    expect(header, 'could not find the header line of ADR-0017').toBeTruthy()
+    const named = [...new Set([...header!.matchAll(/ADR-(\d{4})/g)].map(m => m[1]!))]
+    expect(named).toEqual(expect.arrayContaining(['0011', '0012', '0013']))
+    const silent: string[] = []
+    for (const number of named) {
+      const status = /^- \*\*Status:\*\* (.*)$/m.exec(await adr(number))?.[1] ?? ''
+      if (!status.includes('ADR-0017')) silent.push(number)
+    }
+    expect(silent).toEqual([])
+  })
+
+  it('marks what it changes where a reader of ADR-0013 will land', async () => {
+    const decision = (await adr('0013')).split('### 4.')[1]!.split('### 5.')[0]!.replace(/\s+/g, ' ')
+    expect(decision).toContain('Amended by [ADR-0017]')
+  })
+
+  it('says it stays off, and what waits for Phase 13', async () => {
+    const text = (await adr('0017')).replace(/\s+/g, ' ')
+    expect(text).toContain('off until the user turns it on')
+    expect(text).toContain('## What stays unproven until Phase 13')
+  })
+})
+
 describe('ADRs changed by ADR-0014', () => {
   it('every ADR it names in its header says so in its own status', async () => {
     const header = /^- \*\*Supersedes:\*\* (.*)$/m.exec(await adr('0014'))?.[1]

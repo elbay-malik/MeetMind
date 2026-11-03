@@ -1,6 +1,6 @@
 # ADR-0013: A meeting is reached only through its unguessable link
 
-- **Status:** Accepted, amended by [ADR-0014](0014-workers-ai-embeddings.md) and [ADR-0015](0015-invite-only-uploads.md)
+- **Status:** Accepted, amended by [ADR-0014](0014-workers-ai-embeddings.md), [ADR-0015](0015-invite-only-uploads.md) and [ADR-0017](0017-retention-purge.md)
 - **Date:** 2026-11-02
 - **Supersedes:** ADR-0008 decisions 1, 3, 4, 5, 6 and 7 (cross-meeting search is gone, along with its route, repository method and UI) and PLAYBOOK Phase 8's archive and cross-meeting search. ADR-0008's decision 2 no longer has anything to apply to. Amends ADR-0010 (the search endpoint was its pressing case for rate limiting), ADR-0011 (how an operator finds a meeting, and what a leaked link means) and ADR-0012's note that cross-meeting search reads `meeting_index_state`.
 
@@ -86,6 +86,9 @@ sent for transcription", was true of the video and read as if nothing else left.
 
 It does not promise deletion. The R2 lifecycle rule expires audio, but nothing purges
 transcripts, summaries or embeddings yet (SEC-11), so a retention claim would be false.
+*Amended by [ADR-0017](0017-retention-purge.md): an optional purge does, and with it really
+running, on a Worker, the page says after how many days. It is off until someone turns it
+on, and until then this stands.*
 
 The meeting and progress pages tell the holder to keep the link, offer to copy it, and
 repeat who can read it. The link copied is always the meeting page's, with no query
