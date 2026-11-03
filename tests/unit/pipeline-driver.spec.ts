@@ -20,6 +20,7 @@ import {
   SLOW_LOOK_MS,
   SPIN_PAUSE_MS,
   WATCH_POLL_MS,
+  WATCH_STALL_MS,
   classifyReply,
   createPipelineDriver,
   initialDriverState,
@@ -126,7 +127,9 @@ function fakeLocks() {
   type Waiter = { name: string, run: () => void }
   const waiting: Waiter[] = []
   const held = new Set<string>()
-  const requests: Array<{ name: string, options: { ifAvailable?: boolean, signal?: AbortSignal } }> = []
+  const requests: Array<{ name: string, options: { ifAvailable?: boolean, signal?: AbortSignal, steal?: boolean } }> = []
+  /** Whoever holds each lock, and how to tell them it was taken. */
+  const holders = new Map<string, { lose: (reason: unknown) => void }>()
   const next = (name: string) => {
     if (held.has(name)) return
     const index = waiting.findIndex(waiter => waiter.name === name)
@@ -139,15 +142,26 @@ function fakeLocks() {
     request(name, options, callback) {
       requests.push({ name, options })
       if (options.ifAvailable && options.signal) throw new DOMException('Cannot use both', 'NotSupportedError')
+      if (options.steal && (options.ifAvailable || options.signal)) throw new DOMException('Cannot use both', 'NotSupportedError')
       return new Promise((resolve, reject) => {
         const grant = () => {
+          const holder = { lose: reject }
           held.add(name)
+          holders.set(name, holder)
           void Promise.resolve(callback({ name, mode: 'exclusive' }))
             .then(resolve, reject)
             .finally(() => {
+              // A lock stolen from this one is someone else's now.
+              if (holders.get(name) !== holder) return
+              holders.delete(name)
               held.delete(name)
               next(name)
             })
+        }
+        if (options.steal) {
+          holders.get(name)?.lose(new DOMException('Lock broken by steal', 'AbortError'))
+          grant()
+          return
         }
         if (options.ifAvailable) {
           if (held.has(name)) void Promise.resolve(callback(null)).then(resolve, reject)
@@ -1430,6 +1444,96 @@ describe('a hidden tab', () => {
     driver.wake('visible')
     await settle()
     expect(server.count(READ)).toBe(1)
+  })
+})
+
+describe('a watching tab whose driver has gone quiet', () => {
+  /** What a tab suspended with the lock looks like from here: nothing ever gives it back. */
+  function suspendedHolder(locks: ReturnType<typeof fakeLocks>) {
+    const lost = vi.fn()
+    locks.request(LOCK, { ifAvailable: true }, () => new Promise<void>(() => {})).catch(lost)
+    return lost
+  }
+
+  it('takes the lock after that long with `continue` and nothing moving, and drives', async () => {
+    const locks = fakeLocks()
+    const lost = suspendedHolder(locks)
+    const server = fakeServer({ [READ]: [ok(atByte(1))], [ADVANCE]: [ok(READY)] })
+    const watcher = tab(server, { locks, initial: atByte(1) })
+    watcher.start()
+    await settle()
+
+    await pass(WATCH_STALL_MS - WATCH_POLL_MS)
+    expect(watcher.state().role).toBe('watching')
+    expect(server.count(ADVANCE)).toBe(0)
+    expect(lost).not.toHaveBeenCalled()
+
+    await pass(2 * WATCH_POLL_MS)
+    expect(lost).toHaveBeenCalled()
+    expect(watcher.state()).toMatchObject({ role: 'driving', stop: 'finished', answer: READY })
+    expect(server.count(ADVANCE)).toBe(1)
+  })
+
+  it('leaves it alone for as long as the figures move', async () => {
+    const locks = fakeLocks()
+    const lost = suspendedHolder(locks)
+    const moving = Array.from({ length: 400 }, (_, byte) => ok(atByte(byte)))
+    const server = fakeServer({ [READ]: moving })
+    const watcher = tab(server, { locks, initial: answer() })
+    watcher.start()
+    await settle()
+    await pass(3 * WATCH_STALL_MS)
+    expect(watcher.state().role).toBe('watching')
+    expect(lost).not.toHaveBeenCalled()
+  })
+
+  it('starts over on a `wait`, which is the driver or the server having said why', async () => {
+    const locks = fakeLocks()
+    const lost = suspendedHolder(locks)
+    const turns = Array.from({ length: 400 }, (_, look) => ok(look % 30 === 29 ? atByte(1, { next: 'wait', retryAfterMs: 1_000 }) : atByte(1)))
+    const server = fakeServer({ [READ]: turns })
+    const watcher = tab(server, { locks, initial: answer() })
+    watcher.start()
+    await settle()
+    await pass(3 * WATCH_STALL_MS)
+    expect(watcher.state().role).toBe('watching')
+    expect(lost).not.toHaveBeenCalled()
+  })
+
+  it('sends a driver that was only slow back to watching, ignoring the step it had out', async () => {
+    const locks = fakeLocks()
+    const slowServer = fakeServer({ [READ]: [ok(atByte(1))], [ADVANCE]: [NOT_ANSWERED] })
+    const slow = tab(slowServer, { locks })
+    slow.start()
+    await settle()
+    const server = fakeServer({ [READ]: [ok(atByte(1))], [ADVANCE]: [NOT_ANSWERED] })
+    const watcher = tab(server, { locks, initial: atByte(1) })
+    watcher.start()
+    await settle()
+
+    await pass(WATCH_STALL_MS + WATCH_POLL_MS)
+    expect(watcher.state().role).toBe('driving')
+    expect(slow.state().role).toBe('watching')
+    expect(locks.held.has(LOCK)).toBe(true)
+    expect(locks.queued()).toBe(1)
+
+    slowServer.answerHeld()
+    await settle()
+    expect(slow.state().role).toBe('watching')
+    expect(slowServer.count(ADVANCE)).toBe(1)
+  })
+
+  it('does not take it after leaving', async () => {
+    const locks = fakeLocks()
+    suspendedHolder(locks)
+    const server = fakeServer({ [READ]: [ok(atByte(1))] })
+    const watcher = tab(server, { locks, initial: atByte(1) })
+    watcher.start()
+    await settle()
+    await pass(WATCH_STALL_MS - WATCH_POLL_MS)
+    watcher.stop()
+    await pass(HOUR)
+    expect(locks.requests.filter(request => request.options.steal)).toEqual([])
   })
 })
 

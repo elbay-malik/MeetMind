@@ -44,6 +44,26 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+describe('softLocks, taking a lock from a tab that has gone quiet', () => {
+  it('gives it at once, and the old holder stops renewing rather than take it back', async () => {
+    const storage = memory()
+    const oldest = holder()
+    void tab(storage).request(NAME, { ifAvailable: true }, oldest.callback)
+    await pass(SOFT_SETTLE_MS)
+    expect(oldest.callback).toHaveBeenCalled()
+
+    const next = holder()
+    void tab(storage).request(NAME, { steal: true }, next.callback)
+    await pass(0)
+    expect(next.callback).toHaveBeenCalled()
+    const lease = [...storage.map.values()][0]
+
+    await pass(2 * SOFT_RENEW_MS - 1)
+    const renewed = JSON.parse([...storage.map.values()][0]!) as { owner: string }
+    expect(renewed.owner).toBe((JSON.parse(lease!) as { owner: string }).owner)
+  })
+})
+
 describe('softLocks', () => {
   it('gives a free lock, once its claim has settled', async () => {
     const first = holder()

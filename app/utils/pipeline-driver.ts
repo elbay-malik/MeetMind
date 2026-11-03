@@ -13,6 +13,13 @@ import { DEMO_READ_ONLY_MESSAGE } from '#shared/utils/meeting'
 
 /** How often a tab that is not driving looks (ADR-0012 §1). */
 export const WATCH_POLL_MS = 5_000
+/**
+ * `continue` with nothing moving for this long, seen from a watching tab, means the tab with
+ * the lock is not asking. Any driver's own bounds end long before it (see the spin bound, and
+ * the backoff's four tries), and one waiting on a step or a provider makes the answer `wait`.
+ * What is left is a tab suspended with the lock, which a browser does not take back.
+ */
+export const WATCH_STALL_MS = 5 * 60_000
 /** How often to look when nothing this tab can do moves the meeting, or a block is hours off. */
 export const SLOW_LOOK_MS = 60_000
 /** ADR-0012 §1: keeps two tabs told the same moment from arriving together. */
@@ -61,11 +68,11 @@ export type DriverFetch = (url: string, init: { method: 'GET' | 'POST', signal: 
   json: () => Promise<unknown>
 }>
 
-/** What this needs of `navigator.locks`. `signal` and `ifAvailable` cannot be used together. */
+/** What this needs of `navigator.locks`. `signal`, `ifAvailable` and `steal` cannot be used together. */
 export interface DriverLocks {
   request: (
     name: string,
-    options: { ifAvailable?: boolean, signal?: AbortSignal },
+    options: { ifAvailable?: boolean, signal?: AbortSignal, steal?: boolean },
     callback: (lock: unknown) => Promise<void> | void,
   ) => Promise<unknown>
 }
@@ -591,6 +598,8 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
   async function watch(mine: number) {
     update({ role: 'watching' })
     let delay = state.answer ? WATCH_POLL_MS : 0
+    /** The figures of the `continue` answers in a row, and when they were first seen. */
+    let quiet: { figures: string, since: number } | null = null
     for (;;) {
       if (delay > 0) {
         await sleep(delay)
@@ -621,15 +630,23 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
       }
       adopt(answer)
       if (move.kind === 'sleep') {
+        quiet = null
         update({ pause: 'wait', waitMs: move.ms, nextRequestAt: now() + move.ms })
         delay = move.ms >= LONG_WAIT_MS ? SLOW_LOOK_MS : WATCH_POLL_MS
       }
       else if (move.kind === 'look') {
+        quiet = null
         update({ pause: 'look' })
         delay = SLOW_LOOK_MS
       }
       else {
         delay = WATCH_POLL_MS
+        const figures = progressSignature(answer)
+        if (quiet?.figures !== figures) quiet = { figures, since: now() }
+        else if (now() - quiet.since >= WATCH_STALL_MS) {
+          stealLock()
+          quiet = null
+        }
       }
     }
   }
@@ -674,6 +691,21 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
     void drive(nextLoop())
   }
 
+  /**
+   * A request that did not end in the lock, or a lock that ended early. Refused for a reason of
+   * its own (an opaque origin, say): the server's claim is the authority, so driving unlocked is
+   * safe, and a tab that can only watch never finishes. Aborted: if this tab holds the lock,
+   * then another tab took it and this one drives no longer, and if not, it was cancelled.
+   */
+  function lockEnded(mine: number, err: unknown) {
+    if (mine !== seek || !live) return
+    if ((err as { name?: string })?.name !== 'AbortError') return driveWithoutLock()
+    if (!releaseLock) return
+    releaseLock()
+    releaseLock = null
+    seekLock()
+  }
+
   /** Queue for the lock, watching in the meantime. It comes when the driver's tab closes. */
   function queue(mine: number) {
     if (!locks) return
@@ -687,11 +719,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
       if (mine !== seek || !live) return
       queued = null
       return holdLock()
-    }).catch((err: unknown) => {
-      // Refused for a reason of its own (an opaque origin, say). The server's claim is the
-      // authority, so driving unlocked is safe, and a tab that can only watch never finishes.
-      if (mine === seek && live && (err as { name?: string })?.name !== 'AbortError') driveWithoutLock()
-    })
+    }).catch((err: unknown) => lockEnded(mine, err))
   }
 
   function seekLock() {
@@ -703,9 +731,19 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
       if (mine !== seek || !live) return
       if (lock) return holdLock()
       queue(mine)
-    }).catch(() => {
-      if (mine === seek && live) driveWithoutLock()
-    })
+    }).catch((err: unknown) => lockEnded(mine, err))
+  }
+
+  /** Past {@link WATCH_STALL_MS}. Two tabs driving is safe, since the server's claim decides. */
+  function stealLock() {
+    if (!locks) return
+    queued?.abort()
+    queued = null
+    const mine = ++seek
+    locks.request(lockName, { steal: true }, () => {
+      if (mine !== seek || !live) return
+      return holdLock()
+    }).catch((err: unknown) => lockEnded(mine, err))
   }
 
   /** Start over from a read. A tab that already holds the lock keeps it. */
