@@ -365,6 +365,10 @@ describe('the failure alert', () => {
     expect(failureOf(state(), facts())).toBeNull()
   })
 
+  it.each<DriverState['pause']>(['network', 'server', 'unavailable', 'rate-limited'])('says nothing of a failure during a pause for %s, which is not the meeting', (pause) => {
+    expect(failureOf(state({ pause }), facts())).toBeNull()
+  })
+
   it.each<[string, PipelineResponse, Partial<PipelineFacts>, RegExp]>([
     ['a retryable transcription', failed('transcription', 'x'), {}, /Transcription did not finish/],
     ['a retryable extraction', failed('summarization', 'x'), {}, /Extraction did not finish/],
