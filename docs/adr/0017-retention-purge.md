@@ -54,7 +54,7 @@ Checked on 2026-11-03, on this machine, and on nothing real.
 | Where | How | What it showed |
 | --- | --- | --- |
 | A Worker build under local workerd | `scripts/verify-worker-sweep.mjs`, against real SQL on a throwaway Postgres and a fake bucket | Off: nothing deleted at 400 days, no promise on the page. At 30 days: a bucket answering 500 leaving the oldest meeting's row, and the next tick finishing it, the oldest meeting gone from every table and the bucket, the next untouched until the next tick, a meeting inside its days, the demo at 400 days and one with a live lease all left, the last gone once its lease ended, the page saying 30. Set wrongly, or with a mistyped demo: nothing deleted, one line saying why, with no value |
-| The real Supabase driver over real SQL | `pnpm test:postgrest` | The same questions of the selection as the local driver |
+| The real Supabase driver over real SQL | `pnpm test:postgrest`, in `pnpm ci:local` | The same questions of the selection as the local driver |
 | A plain Postgres | `verify-migrations.sh`, in `pnpm ci:local` | Age, the demo, leases, refusals, who may run it, how much it reads, running it twice |
 | Local drivers | `tests/unit/purge.spec.ts` | Everything in decision 4, including a database that answers wrongly, and a claim landing mid-delete. An object that cannot be removed, and an invocation killed before the row, each finished on the next tick |
 | A Node build with the setting on | `tests/e2e/retention-notice.spec.ts` | No promise, and nothing deleted |

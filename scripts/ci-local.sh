@@ -23,7 +23,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-JOBS=(lint typecheck test audit e2e migrations browser)
+JOBS=(lint typecheck test audit e2e migrations postgrest browser)
 LOG_DIR=.data/ci-local
 PORT_BASE=3000
 
@@ -40,6 +40,7 @@ job_command() {
     audit)      echo 'pnpm audit --prod --audit-level=high' ;;
     e2e)        echo 'pnpm test:e2e' ;;
     migrations) echo 'bash scripts/verify-migrations.sh' ;;
+    postgrest)  echo 'pnpm test:postgrest' ;;
     browser)    echo '(multi-step: make-fixture.sh, pnpm build, drive-upload.mjs, drive-player.mjs)' ;;
   esac
 }
@@ -197,6 +198,9 @@ run_job() {
     migrations)
       require migrations Docker 'docker info' 'open -a OrbStack, then wait for it to start' || return 1
       bash scripts/verify-migrations.sh ;;
+    postgrest)
+      require postgrest Docker 'docker info' 'open -a OrbStack, then wait for it to start' || return 1
+      pnpm test:postgrest ;;
     browser) run_browser_job ;;
     *) eval "$(job_command "$1")" ;;
   esac

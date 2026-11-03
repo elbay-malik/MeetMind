@@ -196,6 +196,16 @@ describe('ci:local parity with ci.yml', () => {
     }
   })
 
+  // The shared table in tests/unit/helpers/sweep-cases.ts is what holds the SQL's mirror to
+  // `unattendedStep`, and `pnpm test` runs it on the local driver alone: a rule added to the
+  // TypeScript and the table, and not to the SQL, is only caught here.
+  it('holds the sweeper\'s SQL to the shared table, in both', async () => {
+    const [yaml, script] = await Promise.all([readFile(workflowPath, 'utf8'), readFile(scriptPath, 'utf8')])
+    expect(yaml).toMatch(/^ {6}- run: pnpm test:postgrest$/m)
+    expect(/^JOBS=\(([^)]+)\)/m.exec(script)?.[1]?.split(/\s+/)).toContain('postgrest')
+    expect(script).toMatch(/^\s*postgrest\)\s+echo 'pnpm test:postgrest' ;;$/m)
+  })
+
   it('declares a command for every job it claims to run', async () => {
     const script = await readFile(scriptPath, 'utf8')
     const declared = /^JOBS=\(([^)]+)\)/m.exec(script)
