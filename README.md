@@ -288,10 +288,7 @@ moves a meeting with no tab open, rate limiting, Cloudflare Workers.
 
 ## Acknowledgements
 
-MeetMind is built with the help of [Claude](https://www.anthropic.com/claude), Anthropic's
-AI model, working through [Claude Code](https://claude.com/claude-code) on design,
-implementation, reviews and documentation throughout the project. This note stands in
-for per-commit co-author credits.
+Claude, Anthropic's AI model, was also used for building DevSprint. Claude worked on some commits in this repository.
 
 ## License
 
