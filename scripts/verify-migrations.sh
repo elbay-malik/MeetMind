@@ -9,13 +9,14 @@ cd "$(dirname "$0")/.."
 
 CONTAINER=meetmind-migration-check
 PORT=55432
+TMPDIR_SWEEP=$(mktemp -d)
 # pgvector's image, not stock Postgres: transcript_windows has a vector column,
 # and the stock image has no `vector` type to create it with.
 IMAGE=pgvector/pgvector:pg17
 
-cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
+cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; rm -rf "$TMPDIR_SWEEP"; }
 trap cleanup EXIT
-cleanup
+docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 
 echo "starting ${IMAGE} ..."
 docker run -d --name "$CONTAINER" -e POSTGRES_PASSWORD=pg -p "$PORT:5432" "$IMAGE" >/dev/null
@@ -1265,6 +1266,230 @@ check "deleting a meeting removes its runs and chunks" \
   "select not exists (select 1 from public.pipeline_runs where meeting_id in ('$L1', '$L3', '$L4'))
           and not exists (select 1 from public.summary_chunks where meeting_id in ('$L3', '$L4'))"
 psql -q -c "drop table vl_c; drop table vl_m;"
+
+echo "checking the sweeper (ADR-0012, step 11) ..."
+SWEEP_MIGRATION=supabase/migrations/20261103180000_sweeper.sql
+LIMIT_ERROR='the daily limit'
+# Everything above has left meetings of its own, and this is about which of them gets chosen.
+psql -q -c "delete from public.meetings; delete from public.provider_slots;
+            update public.sweep_state set last_created_at = null, last_meeting_id = null;"
+pick() { # pick [exclude]: the meeting a tick chooses, or none
+  psql -At -c "select coalesce(meeting_id::text, 'none') from public.sweep_next_meeting('model-a', ${1:-null}, '$LIMIT_ERROR');"
+}
+busy() { psql -At -c "select busy from public.sweep_next_meeting('model-a', null, '$LIMIT_ERROR');"; }
+mk() { # mk <id> <status> [failed stage] [seconds old]
+  psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,failed_stage,created_at)
+              values ('$1','x','$2','a.mp4',1,'sweep_$1',10,${3:-null},now() - make_interval(secs => ${4:-0}));"
+}
+lines() { psql -q -c "insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text) values ('$1', 0, 0, 1000, 'hello');"; }
+gone() { psql -q -c "delete from public.meetings where id = '$1';"; }
+expect_pick() { # expect_pick <description> <id or none> [exclude]
+  local got
+  got=$(pick "${3:-null}")
+  [ "$got" = "$2" ] || fail "$1 (got '$got')"
+  echo "  ok: $1"
+}
+SW1=11111111-1111-4111-8111-111111111111
+SW2=22222222-2222-4222-8222-222222222222
+SW3=33333333-3333-4333-8333-333333333333
+
+check "there is one sweep_state row, and RLS is on with no policies" \
+  "select count(*) = 1 from public.sweep_state where id"
+check "row-level security is on the sweep state, with no policy" \
+  "select relrowsecurity and (select count(*) from pg_policies where tablename = 'sweep_state') = 0
+   from pg_class where relname = 'sweep_state'"
+reject "a second sweep_state row is refused" "insert into public.sweep_state (id) values (false);" "violates check constraint"
+reject "a model is required" "select public.sweep_next_meeting(null, null, 'x');" "a model is required"
+
+# The keep-alive: with nothing at all to do, a real write still reaches Postgres.
+psql -q -c "update public.sweep_state set last_tick_at = now() - interval '1 day';"
+expect_pick "nothing to do answers no meeting" none
+check "a tick with nothing to do still moves last_tick_at, which is what keeps the project awake" \
+  "select last_tick_at > now() - interval '1 minute' from public.sweep_state"
+check "it answers exactly one row, meeting or not" \
+  "select count(*) = 1 from public.sweep_next_meeting('model-a', null, '$LIMIT_ERROR')"
+
+# The cases that matter most, as SQL. Every one of them, through PostgREST and the real driver and
+# beside the local driver and the step decision: `pnpm test:postgrest`.
+mk "$SW1" pending_upload
+expect_pick "a pending upload cannot move" none
+gone "$SW1"
+mk "$SW1" uploaded
+expect_pick "an uploaded meeting can" "$SW1"
+expect_pick "the demo is left out, however ready" none "'$SW1'"
+psql -q -c "select public.note_rate_limit('groq-whisper', 60000);" >/dev/null
+expect_pick "an uploaded meeting cannot move while Whisper is blocked" none
+check "and the block is named" "select 'groq-whisper' = any(busy) from public.sweep_next_meeting('model-a', null, '$LIMIT_ERROR')"
+psql -q -c "delete from public.provider_slots;"
+gone "$SW1"
+
+mk "$SW1" failed "'transcription'" 3600
+expect_pick "a failed transcription is not retried, however long ago" none
+gone "$SW1"
+mk "$SW1" failed "'upload'" 3600
+expect_pick "a rejected upload is not moved" none
+gone "$SW1"
+
+mk "$SW1" summarizing
+lines "$SW1"
+expect_pick "a transcript with no plan is planned" "$SW1"
+psql -q -c "select public.reserve_slot('groq-chat', 60000, 0);" >/dev/null
+expect_pick "planning asks no provider, so a taken slot does not stop it" "$SW1"
+psql -q -c "insert into public.pipeline_runs (meeting_id, stage) values ('$SW1', 'summarization');
+            insert into public.summary_chunks (meeting_id, chunk_no, run_id, seg_from, seg_to, est_tokens)
+              select '$SW1', 0, run_id, 0, 0, 1 from public.pipeline_runs where meeting_id = '$SW1' and stage = 'summarization';
+            insert into public.pipeline_runs (meeting_id, stage, retry_at) values ('$SW1', 'search_index', now() + interval '1 minute');"
+expect_pick "a chunk is not chosen with its slot taken, and the index parked" none
+psql -q -c "update public.pipeline_runs set retry_at = null where meeting_id = '$SW1' and stage = 'search_index';"
+expect_pick "with its slot taken and the index free, the meeting can still move" "$SW1"
+psql -q -c "delete from public.provider_slots;
+            update public.pipeline_runs set retry_at = now() + interval '1 minute' where meeting_id = '$SW1' and stage = 'summarization';
+            update public.pipeline_runs set step_token = gen_random_uuid(), step_lease_until = now() + interval '1 minute' where meeting_id = '$SW1' and stage = 'search_index';"
+expect_pick "a parked chunk and a live index step cannot move" none
+psql -q -c "update public.pipeline_runs set retry_at = null where meeting_id = '$SW1' and stage = 'summarization';"
+expect_pick "a chunk with its slot free can, beside a live index step" "$SW1"
+psql -q -c "update public.summary_chunks set result = '{}' where meeting_id = '$SW1';
+            update public.provider_slots set blocked_until = now() + interval '1 hour';
+            select public.reserve_slot('groq-chat', 60000, 0);
+            select public.note_rate_limit('groq-chat', 60000);
+            select public.note_rate_limit('workers-ai-embed', 60000);" >/dev/null
+expect_pick "every chunk done, the summary is written with both providers blocked" "$SW1"
+psql -q -c "delete from public.provider_slots;"
+gone "$SW1"
+
+mk "$SW1" failed "'summarization'" 3600
+lines "$SW1"
+expect_pick "a failed extraction's index goes on" "$SW1"
+gone "$SW1"
+mk "$SW1" ready
+expect_pick "a finished meeting with no lines has nothing left" none
+lines "$SW1"
+expect_pick "a finished meeting whose index never started can move" "$SW1"
+psql -q -c "select public.note_rate_limit('workers-ai-embed', 60000);" >/dev/null
+expect_pick "not while Workers AI is blocked" none
+psql -q -c "delete from public.provider_slots;
+            insert into public.pipeline_runs (meeting_id, stage, last_error, retry_at) values ('$SW1', 'search_index', 'it broke', now() - interval '1 hour');"
+expect_pick "not after a failure, however long ago: an index has no failed to stop in" none
+psql -q -c "update public.pipeline_runs set last_error = '$LIMIT_ERROR', retry_at = now() + interval '1 hour' where meeting_id = '$SW1';"
+expect_pick "not during the daily limit" none
+psql -q -c "update public.pipeline_runs set retry_at = now() - interval '1 second' where meeting_id = '$SW1';"
+expect_pick "but once it has passed" "$SW1"
+psql -q -c "update public.pipeline_runs set retry_at = null where meeting_id = '$SW1';"
+expect_pick "and not when the limit has no time to end at" none
+psql -q -c "update public.pipeline_runs set last_error = null, cursor = '{\"pass\":{\"model\":\"model-b\"}}' where meeting_id = '$SW1';"
+expect_pick "not with a pass of another model on the run" none
+psql -q -c "delete from public.pipeline_runs where meeting_id = '$SW1';
+            insert into public.meeting_index_state (meeting_id, text_hash, model, complete) values ('$SW1', '$(printf 'a%.0s' $(seq 1 64))', 'model-b', false);"
+expect_pick "not with a marker of another model" none
+psql -q -c "update public.meeting_index_state set model = 'model-a', complete = true where meeting_id = '$SW1';"
+expect_pick "not with a complete marker" none
+psql -q -c "update public.meeting_index_state set complete = false where meeting_id = '$SW1';"
+expect_pick "but part way under this model, it can" "$SW1"
+psql -q -c "insert into public.transcript_windows (meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, model, embedding)
+            values ('$SW1', 0, 0, 0, 0, 1, 'w', '$(printf 'a%.0s' $(seq 1 64))', 'model-b', array_fill(0.1::real, array[1024])::extensions.vector);"
+expect_pick "not with another model's window stored" none
+gone "$SW1"
+
+# Whisper reserves no slot, so a slot taken on it is no reason, and only a block is.
+check "busy names no provider that can be asked" \
+  "select busy = '{}' from public.sweep_next_meeting('model-a', null, '$LIMIT_ERROR')"
+psql -q -c "select public.reserve_slot('groq-whisper', 60000, 0); select public.reserve_slot('workers-ai-embed', 60000, 0);" >/dev/null
+[ "$(busy)" = "{workers-ai-embed}" ] || fail "only a block counts for Whisper, and a slot for the others (got '$(busy)')"
+echo "  ok: only a block counts for Whisper, and a taken slot for the others"
+psql -q -c "delete from public.provider_slots; update public.sweep_state set last_created_at = null, last_meeting_id = null;"
+
+# Rotation, from what is stored, whichever session asks.
+mk "$SW1" uploaded null 300
+mk "$SW2" uploaded null 200
+mk "$SW3" uploaded null 100
+expect_pick "the first meeting first" "$SW1"
+expect_pick "then the next, with nothing done to the first" "$SW2"
+expect_pick "then the last" "$SW3"
+expect_pick "then back to the first" "$SW1"
+gone "$SW2"
+expect_pick "a meeting deleted out of the rotation does not stop it" "$SW3"
+gone "$SW3"
+expect_pick "nor one deleted as the last chosen" "$SW1"
+mk "$SW2" uploaded null 200
+expect_pick "a new meeting takes its turn" "$SW2"
+
+# Two ticks at once. Each waits for the other's row lock, then chooses from where it left off.
+for tries in 1 2 3; do
+  pick > "$TMPDIR_SWEEP/a" & pid=$!
+  pick > "$TMPDIR_SWEEP/b"
+  wait "$pid"
+  [ "$(cat "$TMPDIR_SWEEP/a")" != "$(cat "$TMPDIR_SWEEP/b")" ] || fail "two ticks at once chose the same meeting: $(cat "$TMPDIR_SWEEP/a")"
+done
+echo "  ok: two ticks at once choose different meetings"
+gone "$SW1"
+gone "$SW2"
+
+# What a tick reads. Counted by Postgres itself, in the tick's own transaction, on the tables a
+# tick reads rather than the two rows it locks, once with many meetings and once with more. Not
+# with few: on a table of a few hundred rows a scan is the cheaper plan, and Postgres takes it.
+rows_read() {
+  psql -q -At -c "begin;
+    select count(*) from public.sweep_next_meeting('model-a', null, '$LIMIT_ERROR');
+    select coalesce(sum(coalesce(seq_tup_read, 0) + coalesce(idx_tup_fetch, 0)), 0) || ' ' || coalesce(sum(seq_scan), 0)
+      from pg_stat_xact_user_tables
+     where relname in ('meetings', 'pipeline_runs', 'meeting_index_state', 'summary_chunks', 'transcript_windows', 'transcript_segments');
+    rollback;" | tail -1
+}
+finished_meetings() { # finished_meetings <from> <to>: each ready, with a complete marker
+  psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+                select gen_random_uuid(), 'x', 'ready', 'a.mp4', 1, 'sweep_read_' || g, 10 from generate_series($1, $2) g;
+              insert into public.meeting_index_state (meeting_id, text_hash, model, window_count, complete)
+                select m.id, '$(printf 'a%.0s' $(seq 1 64))', 'model-a', 0, true from public.meetings m
+                 where m.audio_key like 'sweep_read_%' and not exists (select 1 from public.meeting_index_state x where x.meeting_id = m.id);
+              analyze public.meetings; analyze public.meeting_index_state;"
+}
+finished_meetings 1 5000
+read_few=$(rows_read)
+finished_meetings 5001 20000
+read_many=$(rows_read)
+echo "  (rows read by a tick, then scans of a whole table: with 5,000 finished meetings $read_few; with 20,000 $read_many)"
+[ "${read_few%% *}" = "${read_many%% *}" ] || fail "a tick reads more with more finished meetings: $read_few, then $read_many"
+[ "${read_many%% *}" -le 200 ] || fail "a tick reads more than it should, with nothing to do: $read_many"
+[ "${read_many##* }" = "0" ] || fail "a tick scanned a whole table: $read_many"
+echo "  ok: a tick reads the same rows with 20,000 finished meetings as with 5,000"
+# The worst it can be: a full pool of each, every one of them looked at all the way down.
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+              select gen_random_uuid(), 'x', 'indexing', 'a.mp4', 1, 'sweep_busy_' || g, 10 from generate_series(1, 2000) g;
+            insert into public.pipeline_runs (meeting_id, stage, retry_at)
+              select m.id, s.stage, now() + interval '1 hour' from public.meetings m,
+                     (values ('transcription'), ('summarization'), ('search_index')) s(stage)
+               where m.audio_key like 'sweep_busy_%';
+            analyze public.meetings; analyze public.pipeline_runs;"
+read_busy=$(rows_read)
+echo "  (with 2,000 meetings in progress that cannot move as well: $read_busy)"
+[ "${read_busy%% *}" -le 1000 ] || fail "a tick read more than the pool allows: $read_busy"
+[ "${read_busy##* }" = "0" ] || fail "a tick scanned a whole table: $read_busy"
+echo "  ok: a pool of meetings that cannot move costs a fixed number of rows too"
+psql -q -c "delete from public.meetings where audio_key like 'sweep_read_%' or audio_key like 'sweep_busy_%';"
+
+# Who may run it, and what it runs as.
+for fn in 'public.sweep_next_meeting(text, uuid, text)' 'public.sweep_can_move(uuid, text, text, text, text, text[], timestamptz)'; do
+  check "$fn is executable by service_role and not by PUBLIC, anon or authenticated" \
+    "select has_function_privilege('service_role', '$fn', 'execute')
+            and not has_function_privilege('anon', '$fn', 'execute')
+            and not has_function_privilege('authenticated', '$fn', 'execute')
+            and not exists (select 1 from pg_proc p, aclexplode(p.proacl) a
+                             where p.oid = '$fn'::regprocedure and a.grantee = 0)"
+done
+check "the sweeper's functions pin their search_path" \
+  "select bool_and('search_path=public' = any(proconfig)) and count(*) = 2 from pg_proc
+    where proname in ('sweep_next_meeting', 'sweep_can_move')"
+
+# Repeatable: a second apply fails on nothing and loses no rotation.
+mk "$SW1" uploaded
+pick >/dev/null
+psql -q < "$SWEEP_MIGRATION"
+check "applying the sweeper's migration again keeps the rotation, and its posture" \
+  "select last_meeting_id = '$SW1' and (select count(*) = 1 from public.sweep_state)
+          and not has_function_privilege('anon', 'public.sweep_next_meeting(text, uuid, text)', 'execute')
+          and has_function_privilege('service_role', 'public.sweep_next_meeting(text, uuid, text)', 'execute')
+     from public.sweep_state"
+gone "$SW1"
 
 echo
 echo "RESULT: PASS — $(ls supabase/migrations/*.sql | wc -l | tr -d ' ') migrations applied, all invariants hold"
