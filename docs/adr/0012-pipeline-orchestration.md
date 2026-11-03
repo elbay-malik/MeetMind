@@ -457,7 +457,7 @@ Step 5 (`20261026120000_pipeline_runs.sql`) differs from §3 in these ways:
 - **Nothing here has run against real services.** The new `test:services` cases (the two functions through `advanceTranscription`; a PUT and a range read reporting the same R2 validator) were not run, because the migration has not been applied. The R2 validator check matters most: if a PUT's ETag and a range read's differed beyond their quotes, every page would fail. `sameBytes` ignores quotes, and the case exists to catch anything else.
 - **No real Whisper reply has been through the scanner.** The fixtures follow Groq's documented segment fields and the envelope the old route's schema accepted.
 - **`TranscriptRepository.replaceForMeeting` still exists**, with no caller left in production code. Specs and `test:services` seed with it, and removing it was left out of this step.
-- **A transcript is partly visible while it is written.** `GET .../transcript` returns the rows so far during `transcribing`, and after a failed attempt until the retry's Whisper step clears them. The meeting page says so above the lines, and sends the reader to the progress page, the only thing that moves the run. The "Transcribed" tick still waits for the status.
+- **A transcript is partly visible while it is written.** `GET .../transcript` returns the rows so far during `transcribing`, and after a failed attempt until the retry's Whisper step clears them. The meeting page says so above the lines, and sends the reader to the progress page, the only thing that moves the run until step 11, and the only thing that moves it quickly since. The "Transcribed" tick still waits for the status.
 
 ## Addendum: step-wise indexing as built (step 8, 2026-11-02)
 
