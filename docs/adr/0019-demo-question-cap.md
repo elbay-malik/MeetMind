@@ -44,25 +44,29 @@ Both sentences go through `server/utils/public-errors.ts`, and the question form
 
 ## Consequences
 
-- **A meeting that failed at extraction holds the demo's questions until someone retries or deletes it.** That is what `extractionInProgress` means, and it is deliberate that a stopped extraction counts as still wanting its slots. An invite holder's stuck meeting therefore shows up as a demo that says it is paused, with a retry about a minute away, for as long as it lasts. If the demo says so with nothing processing, this is the first place to look: find the row in Supabase, then retry or delete it.
+- **A meeting that failed at extraction holds the demo's questions, with no end and nothing logged.** This is the decided meaning, `extractionInProgress`, applied to a row that may never ask for a slot again. Nothing clears one by itself: a tick retries no failed stage, and the retention purge is off by default. An ordinary outage gets a meeting there, if a chunk fails twice or takes three 429s in a row, and Groq's daily limit does that too. Only an invite holder can upload one. The demo then says it is paused, with a retry about a minute away, for days if nobody acts, and the only sign is asking it.
+  - If the demo says so with nothing processing, this is the first place to look: `select id, error_message, updated_at from meetings where status = 'failed' and failed_stage = 'summarization';`
+  - An ordinary failure ends when someone opens that meeting's page and presses retry, and the retry gets through, or when it is deleted with the admin token. Opening the page alone does not do it.
+  - A row refused as too long (`This transcript would need N sequential requests`, `refusedAsTooLong`) cannot be retried, as planning it again refuses it again, so only the admin delete ends that pause.
+  - This stays a limit, and is written down instead of fixed. Leaving stopped rows out of the gate, or the permanent ones, or giving them an age limit, would end it, and each changes the decided meaning.
 - **One person can use all 25.** The count is across everyone, because there is no identity to count by and an IP header is not something a Worker should store for this. That costs a day of the demo's questions and nothing else, which is the trade.
 - **A question that fails at the provider has still used its count,** since something was spent. A retried attempt inside one question does not take a second one.
 - **A question can pass the gate just as an extraction starts,** and take one slot. A loop cannot keep doing that: the next gate refuses.
 - **Refused requests are not free.** Each costs a Worker request and two Supabase calls, the meeting and the gate. Flooding is the rate rule's job, and the free plan's 100,000 requests a day is the bound.
+- **A rollback can drop the cap.** Secrets belong to a version, so rolling back past `wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID` leaves a version with no demo id, and so no count, no pause and no read-only guard. README's rollback steps say to name a version created after it. This comes from wrangler's code and Cloudflare's docs, and has not been run.
 - Two more subrequests on a demo question, out of about 11 of 50.
 
 ## What stays unproven until deployed
 
-- **A rollback can drop the cap.** Secrets belong to a version, so rolling back past `wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID` leaves a version with no demo id, and so no count, no pause and no read-only guard. README's rollback steps say to name a version created after it. This comes from wrangler's code and Cloudflare's docs, and has not been run.
 - Real tokens per question, so whether 25 is the right number. Read Groq's dashboard after the first days.
 - The SQL and both drivers have run against a throwaway Postgres behind PostgREST and the local driver, not against Supabase. `pnpm db:migrate` has not applied this migration.
 - That a real extraction and a real question loop do what the order above says on a deployed Worker, as this has run only with a staged slot ledger.
+- That the rate rule and `run_worker_first` hold one address to about 86,000 requests a day at the edge. Nothing under `/_nuxt/` ran the Worker under local `wrangler dev`, and the rule has never run. An encoded `/%5Fnuxt/` path does run the Worker there, and README's step 8 says how to check it at the edge.
 
 ## Alternatives considered
 
 - **Workers' rate limit binding.** The request has already run by then, its counts are per location, and it knows nothing of a day.
 - **A rate rule on the route.** Sees 10 seconds at a time. Both harms here need a request a minute.
-- That the rate rule and `run_worker_first` hold one address to about 86,000 requests a day at the edge. Nothing under `/_nuxt/` ran the Worker under local `wrangler dev`, and the rule has never run. An encoded `/%5Fnuxt/` path does run the Worker there, and README's step 8 says how to check it at the edge.
 - **A separate Groq key for questions.** Limits are per account, so it would be a second account, and it would not stop the slot stall.
 - **Counting before the slot.** Simpler, and burns the day's questions on refused requests.
 - **Counting tokens rather than questions.** Nothing here keeps a count of tokens, and a question's bound is known.

@@ -71,7 +71,8 @@ export function transcribedButEmpty(
 
 /**
  * Extraction is going on or stopped: it has a plan worth counting, and until it is finished
- * or the meeting deleted, it can still want Groq's slots. A deliberate mirror of the partial
+ * or the meeting deleted, it can still want Groq's slots, unless it was refused as too long,
+ * which no retry gets past (ADR-0019 says what that costs the demo). A deliberate mirror of the partial
  * index and `demo_question_gate` in supabase/migrations/20261104120000_demo_question_cap.sql,
  * which the same cases in tests/unit/helpers/demo-question-cases.ts hold together.
  */

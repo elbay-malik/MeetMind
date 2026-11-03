@@ -295,6 +295,19 @@ describe('what ADR-0019 tells a reader about a stopped extraction', () => {
     expect(flat(readme)).toContain('including one that failed and has not been retried or deleted')
   })
 
+  it('does not claim a stopped row always wants its slots, or that a retry always ends the pause', async () => {
+    const flat = (text: string) => text.replace(/\s+/g, ' ')
+    const text = flat(await adr('0019'))
+    expect(text).not.toMatch(/still wanting its slots/)
+    expect(text).not.toContain('then retry or delete it')
+    const { tooManyChunksMessage } = await import('../../server/utils/summary/steps')
+    expect(tooManyChunksMessage(41)).toContain('This transcript would need')
+    expect(text).toContain('`This transcript would need N sequential requests`, `refusedAsTooLong`) cannot be retried')
+    expect(text).toContain('only the admin delete ends that pause')
+    expect(text).toContain('a tick retries no failed stage')
+    expect(text).toContain('with no end and nothing logged')
+    const readme = flat(await readFile(fileURLToPath(new URL('../../README.md', import.meta.url)), 'utf8'))
+    expect(readme).toContain('No tick retries that one, nothing logs the pause, and a meeting refused as too long can only be deleted.')
   })
 })
 
