@@ -28,9 +28,16 @@ describe('wrangler.jsonc', () => {
     expect(text).toContain('Do not run `wrangler dev` at the repo root')
   })
 
+  it('runs the Worker for nothing under /_nuxt/, which is the one path the rate rule does not count', async () => {
+    const { assets } = await wranglerConfig() as { assets: { run_worker_first?: string[] } }
+    expect(assets.run_worker_first).toEqual(['/*', '!/_nuxt/*'])
+    const rule = (await inRepo('README.md')).replace(/\s+/g, ' ')
+    expect(rule).toContain('on any path not starting with `/_nuxt/`')
+  })
+
   it('uses keys wrangler knows', async () => {
     const schema = await inRepo('node_modules/wrangler/config-schema.json')
-    for (const key of ['routes', 'workers_dev', 'preview_urls', 'custom_domain']) expect(schema).toContain(`"${key}"`)
+    for (const key of ['routes', 'workers_dev', 'preview_urls', 'custom_domain', 'run_worker_first']) expect(schema).toContain(`"${key}"`)
   })
 })
 

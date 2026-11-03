@@ -61,6 +61,7 @@ Both sentences go through `server/utils/public-errors.ts`, and the question form
 
 - **Workers' rate limit binding.** The request has already run by then, its counts are per location, and it knows nothing of a day.
 - **A rate rule on the route.** Sees 10 seconds at a time. Both harms here need a request a minute.
+- That the rate rule and `run_worker_first` hold one address to about 86,000 requests a day at the edge. Nothing under `/_nuxt/` ran the Worker under local `wrangler dev`, and the rule has never run. An encoded `/%5Fnuxt/` path does run the Worker there, and README's step 8 says how to check it at the edge.
 - **A separate Groq key for questions.** Limits are per account, so it would be a second account, and it would not stop the slot stall.
 - **Counting before the slot.** Simpler, and burns the day's questions on refused requests.
 - **Counting tokens rather than questions.** Nothing here keeps a count of tokens, and a question's bound is known.

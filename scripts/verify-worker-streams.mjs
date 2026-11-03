@@ -2,7 +2,8 @@
 // dev`, on this machine: a meeting's audio with and without Range, and ffmpeg's wasm. Nothing
 // here is deployed and no real service is called. Supabase and R2 are fakes in this process, and
 // the fake R2 stops part way through an object until it is told to go on, which is what shows
-// bytes arriving as a stream, before R2 has finished. Also reads the headers a static asset gets.
+// bytes arriving as a stream, before R2 has finished. Also reads the headers a static asset gets,
+// and which paths run the Worker at all, under wrangler.jsonc's own routing.
 //
 // Usage:
 //   NITRO_PRESET=cloudflare_module pnpm build
@@ -17,7 +18,7 @@
 // on a Worker build: nothing stops it there now the wasm is gone, and it reads the real .env.
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { access, cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -183,17 +184,24 @@ globalThis.fetch = (input, init) => {
   if (!url.hostname.endsWith('.r2.cloudflarestorage.com')) return realFetch(request)
   return realFetch(new Request('http://127.0.0.1:${outsidePort}/r2' + url.pathname + url.search, request))
 }
-export default built
+export default {
+  ...built,
+  fetch(request, env, context) {
+    console.log('WORKER-INVOKED ' + new URL(request.url).pathname)
+    return built.fetch(request, env, context)
+  },
+}
 `)
 const config = (await readFile(join(rootDir, 'wrangler.jsonc'), 'utf8'))
   .split('\n').filter(line => !line.trim().startsWith('//')).join('\n')
-const { compatibility_date, compatibility_flags } = JSON.parse(config)
+const { compatibility_date, compatibility_flags, assets: realAssets } = JSON.parse(config)
 await writeFile(join(dir, 'wrangler.json'), JSON.stringify({
   name: 'meetmind-streams-check',
   main: 'entry.mjs',
   compatibility_date,
   compatibility_flags,
-  assets: { directory: 'public', binding: 'ASSETS' },
+  // The real one's routing, since that decides what runs the Worker.
+  assets: { ...realAssets, directory: 'public' },
 }))
 await writeFile(join(dir, '.dev.vars'), Object.entries({
   NUXT_GROQ_API_KEY: 'fake-value-groq',
@@ -352,6 +360,33 @@ try {
     const said = ['x-content-type-options', 'x-frame-options', 'content-security-policy'].map(name => res.headers.get(name)).join(' | ')
     check(said === 'nosniff | DENY | frame-ancestors \'none\'', `${path} says all three, once each (${said})`)
   }
+
+  console.log('\n# What runs the Worker, which is what the 100,000 requests a day count')
+  // This is only ever said once, a moment after the response, as it comes through wrangler.
+  const invocations = async (path) => {
+    const before = logs.length
+    const res = await fetch(`${base}${path}`)
+    await res.body?.cancel()
+    await sleep(700)
+    return { status: res.status, ran: logs.slice(before).includes('WORKER-INVOKED') }
+  }
+  const realAsset = (await readdir(join(rootDir, '.output/public/_nuxt'))).find(name => name.endsWith('.js'))
+  for (const [path, status, ran, why] of [
+    [`/_nuxt/${realAsset}`, 200, false, 'a real asset under the path the rate rule leaves out'],
+    ['/_nuxt/anything-xyz', 404, false, 'a miss under that path, which the rule would not count'],
+    ['/_nuxt/missing-abc.js', 404, false, 'and another'],
+    ['/_nuxt/a/b/c', 404, false, 'and one deeper down'],
+    ['/_NUXT/anything-xyz', 404, true, 'a path the rule does count, as it is not that path'],
+    ['/', 200, true, 'a page'],
+    ['/robots.txt', 200, true, 'an asset the rule counts, which the Worker hands on'],
+    ['/ffmpeg/ffmpeg-core.js', 200, true, 'and another'],
+  ]) {
+    const seen = await invocations(path)
+    check(seen.status === status && seen.ran === ran, `${path}, ${why}: ${status}, and ${ran ? 'runs' : 'never runs'} the Worker (got ${seen.status}, ${seen.ran ? 'ran' : 'did not run'})`)
+  }
+  const encoded = await invocations('/%5Fnuxt/anything-xyz')
+  console.log(`  (/%5Fnuxt/anything-xyz, which the edge may read as under /_nuxt/: ${encoded.status}, ${encoded.ran ? 'ran' : 'did not run'} the Worker)`)
+
   check(!logs.includes('fake-value'), 'logged no value')
 }
 finally {
