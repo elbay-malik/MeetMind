@@ -117,6 +117,21 @@ describe('ci:local parity with ci.yml', () => {
     expect(unguarded(failableSteps(`  ${step}\n`))).toEqual([])
   })
 
+  it('runs only browser drivers whose `fail` fails the run', async () => {
+    // Each reports failure by setting the exit code, so without that line every check in it
+    // prints FAIL under a job that passes.
+    const script = await readFile(scriptPath, 'utf8')
+    const body = /^run_browser_job\(\) \{\n([\s\S]*?)^\}$/m.exec(script)![1]!
+    const drivers = [...body.matchAll(/^\s*node (scripts\/[\w.-]+\.mjs)/gm)].map(m => m[1]!)
+    expect(drivers, 'found no drivers in run_browser_job').toContain('scripts/drive-upload.mjs')
+    const advisory: string[] = []
+    for (const driver of drivers) {
+      const source = await readFile(fileURLToPath(new URL(`../../${driver}`, import.meta.url)), 'utf8')
+      if (!/const fail = [^\n]*\n?[^\n]*\n?[^\n]*process\.exitCode = 1/.test(source)) advisory.push(driver)
+    }
+    expect(advisory).toEqual([])
+  })
+
   it('runs only browser drivers that fail on an uncaught page error', async () => {
     // A page can throw and still render what a driver looks for, so a driver that
     // only logs page errors reports a pass over a broken page.
