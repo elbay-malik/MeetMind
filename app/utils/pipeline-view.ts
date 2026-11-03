@@ -160,6 +160,13 @@ export function stagesOf(state: DriverState, facts: PipelineFacts): StageView[] 
     { key: 'summarize', label: 'Summarized', ...summarize() },
     { key: 'index', label: 'Indexed for questions', ...indexed() },
   ]
+  // Nothing is happening to a meeting that is gone, and nothing will. What it had done it did.
+  if (state.stop === 'missing') {
+    return stages.map((stage) => {
+      const final = stage.state === 'done' ? stage : { ...stage, state: 'unfinished' as const, detail: 'This meeting no longer exists.' }
+      return { ...final, stateText: STAGE_STATE_TEXT[final.state], current: false }
+    })
+  }
   const current = stages.find(stage => stage.state !== 'done' && stage.state !== 'pending')
   return stages.map(stage => ({ ...stage, stateText: STAGE_STATE_TEXT[stage.state], current: stage === current }))
 }
@@ -277,7 +284,7 @@ export interface FailureView {
  * here comes from the stored error.
  */
 export function failureOf(state: DriverState, facts: PipelineFacts): FailureView | null {
-  if (statusOf(state, facts) !== 'failed' || state.role === 'read-only') return null
+  if (statusOf(state, facts) !== 'failed' || state.role === 'read-only' || state.stop === 'missing') return null
   const stage = failedAt(state, facts)
   const forGood = state.answer?.next === 'failed' && state.answer.retryAt === null
   if (stage === 'upload') {
@@ -338,6 +345,7 @@ export interface QuestionsView {
 
 /** What the Questions card says, which comes down to what `index.state` says. */
 export function questionsOf(state: DriverState, now: number): QuestionsView {
+  if (state.stop === 'missing') return { text: 'This meeting no longer exists, so it cannot be asked questions.', link: null, rebuildLabel: null }
   const readOnly = state.role === 'read-only'
   // A tab that only watches has no lock to rebuild under, and the tab that has one can do it.
   const elsewhere = state.role === 'watching' && !state.stop

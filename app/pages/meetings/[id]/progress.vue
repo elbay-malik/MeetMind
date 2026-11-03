@@ -165,6 +165,7 @@ function rebuild() {
         </p>
       </div>
       <UBadge
+        v-if="state.stop !== 'missing'"
         :color="statusColor"
         variant="subtle"
         class="capitalize"
@@ -337,7 +338,7 @@ function rebuild() {
       :description="failure.description"
     />
     <UAlert
-      v-else-if="status === 'pending_upload'"
+      v-else-if="status === 'pending_upload' && state.stop !== 'missing'"
       color="warning"
       variant="subtle"
       icon="i-lucide-clock"
@@ -384,6 +385,7 @@ function rebuild() {
 
     <div class="flex gap-3">
       <UButton
+        v-if="state.stop !== 'missing'"
         :to="`/meetings/${meetingId}`"
         variant="ghost"
         color="neutral"
