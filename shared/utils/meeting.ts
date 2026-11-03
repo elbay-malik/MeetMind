@@ -1,4 +1,4 @@
-import type { Meeting, TranscriptionStepResponse } from '#shared/types/meeting'
+import type { Meeting } from '#shared/types/meeting'
 
 /**
  * Limits and naming rules for meeting audio, shared by client and server so
@@ -103,24 +103,14 @@ export function uploadWasRejected(meeting: Pick<Meeting, 'status' | 'failedStage
 /** Why a Whisper step is parked when the account's allowance is used up, by this meeting or another. */
 export const PROVIDER_BLOCKED_ERROR = 'The transcription provider\'s quota is used up for now.'
 
-function roughly(ms: number): string {
-  const unit = (count: number, name: string) => `about ${count} ${name}${count === 1 ? '' : 's'}`
-  const minutes = Math.ceil(ms / 60_000)
-  if (ms < 60_000) return unit(Math.max(1, Math.ceil(ms / 1000)), 'second')
-  return minutes < 120 ? unit(minutes, 'minute') : unit(Math.ceil(minutes / 60), 'hour')
-}
-
 /**
- * What the progress page says while it is driving transcription.
- *
- * @param retryAfterMs how long the page is waiting before it asks again, if it is
+ * Whether this id is the public demo's (ADR-0015), for the guard on the server and for a page
+ * deciding not to drive. Compared in lower case: `requireMeetingId` accepts a UUID in capitals,
+ * which is the same row to Postgres, and the configured id may be written either way. Trimmed,
+ * as the invite code is: a secret store that kept a pasted newline would otherwise turn the
+ * guard off with no warning.
  */
-export function transcriptionActivity(progress: TranscriptionStepResponse['progress'] | null, retryAfterMs: number | null): string {
-  if (progress?.lastError === PROVIDER_BLOCKED_ERROR) {
-    const when = retryAfterMs === null ? 'later' : `in ${roughly(retryAfterMs)}`
-    return `Transcription is waiting. ${PROVIDER_BLOCKED_ERROR} It carries on ${when}, while this page stays open.`
-  }
-  const retrying = progress?.lastError ? ' The last attempt did not finish; it will be retried.' : ''
-  if (!progress?.total) return retrying ? `Transcribing.${retrying}` : 'Transcribing. This can take a moment.'
-  return `Transcribing: ${progress.segments} segments stored so far.${retrying}`
+export function isDemoMeetingId(configured: unknown, id: string): boolean {
+  const demoId = String(configured ?? '').trim()
+  return demoId !== '' && demoId.toLowerCase() === id.toLowerCase()
 }

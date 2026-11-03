@@ -1,14 +1,9 @@
 import type { H3Event } from 'h3'
+import { isDemoMeetingId } from '#shared/utils/meeting'
 
-/**
- * Whether this id is the public demo's. Compared in lower case: `requireMeetingId` accepts a
- * UUID in capitals, which is the same row to Postgres, and the configured id may be written
- * either way. Trimmed, as `requireInviteCode` trims its setting: a secret store that kept a
- * pasted newline would otherwise turn the guard off with no warning.
- */
+/** Whether this id is the public demo's: see {@link isDemoMeetingId}. */
 export function isPublicDemo(event: H3Event, id: string): boolean {
-  const demoId = String(useRuntimeConfig(event).public.demoMeetingId ?? '').trim()
-  return demoId !== '' && demoId.toLowerCase() === id.toLowerCase()
+  return isDemoMeetingId(useRuntimeConfig(event).public.demoMeetingId, id)
 }
 
 /**
