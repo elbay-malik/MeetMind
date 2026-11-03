@@ -7,7 +7,7 @@ import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { SlotState } from '../../server/utils/db/slots'
-import type { CreateMeetingResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, PublicMeeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
 import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
@@ -48,7 +48,7 @@ const DISCUSSION: TranscriptSegment[] = Array.from({ length: 40 }, (_, i) => ({
     : `general update number ${i} with nothing notable`,
 }))
 
-async function indexedMeeting(): Promise<Meeting> {
+async function indexedMeeting(): Promise<PublicMeeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
     headers: inviteHeaders,

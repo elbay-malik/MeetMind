@@ -8,7 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { createLocalMeetingRepository } from '../../server/utils/db/local'
 import { quoteStartsAt } from '../../server/utils/summary/reconcile'
-import type { CreateMeetingResponse, ExtractionStepResponse, Meeting, MeetingSummary, TranscriptSegment } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, ExtractionStepResponse, Meeting, MeetingSummary, PublicMeeting, TranscriptSegment } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 import { LOCAL_DRIVERS } from './helpers/local-drivers'
@@ -36,7 +36,7 @@ await setup({
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 
 /** Take a meeting all the way to transcribed, which is what extraction needs. */
-async function transcribedMeeting(): Promise<Meeting> {
+async function transcribedMeeting(): Promise<PublicMeeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
     headers: inviteHeaders,
@@ -66,10 +66,10 @@ async function step(id: string): Promise<{ status: number, body: unknown }> {
  * request, waiting (shortened here) when told to. A refusal or failure rejects
  * with its status code, like `$fetch` would.
  */
-async function summarize(id: string): Promise<{ meeting: Meeting, summary: MeetingSummary }> {
+async function summarize(id: string): Promise<{ meeting: PublicMeeting, summary: MeetingSummary }> {
   for (let i = 0; i < 50; i++) {
     const { status, body } = await step(id)
-    if (status === 200) return body as { meeting: Meeting, summary: MeetingSummary }
+    if (status === 200) return body as { meeting: PublicMeeting, summary: MeetingSummary }
     if (status !== 202) throw Object.assign(new Error(JSON.stringify(body)), { statusCode: status })
     const progress = body as ExtractionStepResponse
     if (progress.next === 'wait') await new Promise(resolve => setTimeout(resolve, Math.min(progress.retryAfterMs ?? 0, 6000) + 20))
@@ -116,7 +116,7 @@ describe('POST /api/meetings/:id/summarize', () => {
     expect(status).toBe(202)
     const progress = body as ExtractionStepResponse
     expect(progress.meeting.status).toBe('indexing')
-    expect(progress.progress).toEqual({ done: 1, total: 1, lastError: null })
+    expect(progress.progress).toEqual({ done: 1, total: 1 })
     expect(progress.next).toBe('continue')
     expect(progress.retryAt).toBeNull()
     expect(progress.retryAfterMs).toBeNull()
@@ -129,7 +129,7 @@ describe('POST /api/meetings/:id/summarize', () => {
     const { meeting: after, summary } = await summarize(meeting.id)
 
     expect(after.status).toBe('ready')
-    expect(after.errorMessage).toBeNull()
+    expect((await createLocalMeetingRepository({ dataDir }).get(meeting.id))!.errorMessage).toBeNull()
     expect(summary.summary).not.toBe('')
     // Without a key the stub runs, and it must say so rather than pass as real.
     expect(summary.provider).toBe('stub')
@@ -233,9 +233,9 @@ describe('POST /api/meetings/:id/summarize', () => {
     const res = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
     expect(res.status).toBe(409)
 
-    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: after } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('pending_upload')
-    expect(after.errorMessage).toBeNull()
+    expect((await createLocalMeetingRepository({ dataDir }).get(meeting.id))!.errorMessage).toBeNull()
   })
 
   it('converges concurrent drivers on one stored summary', async () => {
@@ -245,7 +245,7 @@ describe('POST /api/meetings/:id/summarize', () => {
     // can be counted, in extraction-steps.spec.ts.
     const meeting = await transcribedMeeting()
     const results = await Promise.all([summarize(meeting.id), summarize(meeting.id), summarize(meeting.id)])
-    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: after } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('ready')
     const { summary: stored } = await $fetch<{ summary: MeetingSummary }>(`/api/meetings/${meeting.id}/summary`)
     for (const result of results) expect(result.summary).toEqual(stored)
@@ -304,10 +304,10 @@ describe('POST /api/meetings/:id/summarize', () => {
     const res = await fetch(`/api/meetings/${meeting.id}/summarize`, { method: 'POST' })
     expect(res.status).toBe(413)
 
-    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: after } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('failed')
     expect(after.failedStage).toBe('summarization')
-    expect(after.errorMessage).toMatch(/too long|sequential requests/i)
+    expect((await createLocalMeetingRepository({ dataDir }).get(meeting.id))!.errorMessage).toMatch(/too long|sequential requests/i)
   })
 
   it('repairs a ready meeting whose summary row is missing rather than getting stuck', async () => {

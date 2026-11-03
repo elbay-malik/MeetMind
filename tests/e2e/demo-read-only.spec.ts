@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup, startServer } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, ExtractionStepResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, ExtractionStepResponse, Meeting, PublicMeeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
 import { DEMO_READ_ONLY_MESSAGE } from '../../shared/utils/meeting'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 import { driveIndexing } from './helpers/indexing'
@@ -122,7 +122,7 @@ describe('the demo meeting', () => {
     await driveIndexing(demoId)
     const { index } = await $fetch<{ index: { state: string } }>(`/api/meetings/${demoId}/search-index`)
     expect(index.state).toBe('ready')
-    expect((await $fetch<{ meeting: Meeting }>(`/api/meetings/${demoId}`)).meeting.status).toBe('ready')
+    expect((await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${demoId}`)).meeting.status).toBe('ready')
 
     await startServer({ env: { NUXT_PUBLIC_DEMO_MEETING_ID: demoId } })
     expect(await (await fetch('/')).text()).toContain(`href="/meetings/${demoId}"`)
@@ -247,7 +247,7 @@ describe('the demo meeting', () => {
     await driveExtraction(id)
     expect((await post(id, 'search-index')).status).toBe(202)
     expect((await driveIndexing(id)).index.state).toBe('ready')
-    expect((await $fetch<{ meeting: Meeting }>(`/api/meetings/${id}`)).meeting.status).toBe('ready')
+    expect((await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${id}`)).meeting.status).toBe('ready')
   })
 
   it('cannot be overwritten by registering a meeting under its id', async () => {

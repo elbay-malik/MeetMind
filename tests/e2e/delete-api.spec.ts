@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { fetch, setup } from '@nuxt/test-utils/e2e'
-import type { Meeting } from '../../shared/types/meeting'
+import type { Meeting, PublicMeeting } from '../../shared/types/meeting'
 import { audioObjectKey, whisperReplyKey } from '../../shared/utils/meeting'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 import { LOCAL_DRIVERS } from './helpers/local-drivers'
@@ -237,7 +237,7 @@ describe('DELETE /api/meetings/:id while the meeting may still be written', () =
     // no row, invisible to the budget.
     const res = await register(SMALL_AUDIO)
     expect(res.status).toBe(201)
-    const { meeting } = (await res.json()) as { meeting: Meeting }
+    const { meeting } = (await res.json()) as { meeting: PublicMeeting }
 
     const refused = await del(meeting.id)
     expect(refused.status).toBe(409)
@@ -256,7 +256,7 @@ describe('DELETE /api/meetings/:id while the meeting may still be written', () =
     expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(0)
     const after = await fetch(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe(200)
-    expect(((await after.json()) as { meeting: Meeting }).meeting.status).toBe('transcribing')
+    expect(((await after.json()) as { meeting: PublicMeeting }).meeting.status).toBe('transcribing')
   })
 
   it('deletes a transcribing meeting paused between steps, however recently it moved, with its raw reply', async () => {
@@ -317,7 +317,7 @@ describe('DELETE /api/meetings/:id while the meeting may still be written', () =
     // Refused means untouched: the row and its run are both still there.
     const after = await fetch(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe(200)
-    expect(((await after.json()) as { meeting: Meeting }).meeting.status).toBe('indexing')
+    expect(((await after.json()) as { meeting: PublicMeeting }).meeting.status).toBe('indexing')
     expect(await db.hasItem(`pipeline/${meeting.id}`)).toBe(true)
   })
 })

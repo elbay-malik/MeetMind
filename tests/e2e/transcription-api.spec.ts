@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting, TranscriptionStepResponse, TranscriptSegment } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, Meeting, PublicMeeting, TranscriptionStepResponse, TranscriptSegment } from '../../shared/types/meeting'
 import { whisperReplyKey } from '../../shared/utils/meeting'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
@@ -25,7 +25,7 @@ await setup({
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 
 /** Register a meeting, upload its audio and confirm it — the Phase 3 flow. */
-async function uploadedMeeting(): Promise<Meeting> {
+async function uploadedMeeting(): Promise<PublicMeeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
     headers: inviteHeaders,
@@ -42,7 +42,7 @@ async function uploadedMeeting(): Promise<Meeting> {
     method: 'PUT', headers: { 'content-type': 'audio/ogg' }, body: audio,
   })
   expect(put.status).toBe(204)
-  const done = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
+  const done = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
   return done.meeting
 }
 
@@ -57,6 +57,13 @@ const transcribe = async (id: string) => {
 
 const replyPath = (id: string) => join(dataDir, 'audio', ...whisperReplyKey(id).split('/'))
 const exists = (path: string) => access(path).then(() => true, () => false)
+
+/** The row as stored: what a route answers does not carry the stored error. */
+async function storedMeeting(id: string): Promise<Meeting> {
+  const meeting = await createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) }).getItem<Meeting>(`meetings/${id}`)
+  if (!meeting) throw new Error(`no local meeting row for ${id}`)
+  return meeting
+}
 
 /**
  * Simulate the retry cooldown having elapsed, without a real 60s wait in the
@@ -111,7 +118,7 @@ describe('POST /api/meetings/:id/transcribe', () => {
     const { meeting: after, segments } = await transcribe(meeting.id)
 
     expect(after.status).toBe('summarizing')
-    expect(after.errorMessage).toBeNull()
+    expect((await storedMeeting(meeting.id)).errorMessage).toBeNull()
     expect(segments.length).toBeGreaterThan(0)
     // Stored segments must satisfy the same invariants the database enforces.
     for (const [i, s] of segments.entries()) {
@@ -132,7 +139,8 @@ describe('POST /api/meetings/:id/transcribe', () => {
     expect(first.next).toBe('continue')
     expect(first.retryAt).toBeNull()
     expect(first.retryAfterMs).toBeNull()
-    expect(first.progress).toMatchObject({ done: 0, segments: 0, lastError: null })
+    expect(first.progress).toMatchObject({ done: 0, segments: 0 })
+    expect(first.progress).not.toHaveProperty('lastError')
     expect(first.progress.total).toBeGreaterThan(0)
     // The reply is stored unparsed, under the prefix the lifecycle rule covers.
     const raw = await readFile(replyPath(meeting.id), 'utf8')
@@ -147,7 +155,7 @@ describe('POST /api/meetings/:id/transcribe', () => {
 
     const last = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
     expect(last.status).toBe(200)
-    expect(((await last.json()) as { meeting: Meeting }).meeting.status).toBe('summarizing')
+    expect(((await last.json()) as { meeting: PublicMeeting }).meeting.status).toBe('summarizing')
     expect(await exists(replyPath(meeting.id))).toBe(false)
     expect((await storedSegments(meeting.id)).length).toBe(second.progress.segments)
   })
@@ -199,9 +207,9 @@ describe('POST /api/meetings/:id/transcribe', () => {
 
     // Refused before any claim, so the status is untouched. This would have
     // caught a route that claimed first and asked questions afterwards.
-    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: after } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('pending_upload')
-    expect(after.errorMessage).toBeNull()
+    expect((await storedMeeting(meeting.id)).errorMessage).toBeNull()
   })
 
   it('404s for unknown and malformed ids', async () => {
@@ -219,7 +227,7 @@ describe('POST /api/meetings/:id/transcribe', () => {
     ])
     for (const { meeting: after } of results) expect(after.status).toBe('summarizing')
 
-    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: after } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('summarizing')
     const segments = await storedSegments(meeting.id)
     expect(segments.length).toBeGreaterThan(0)
@@ -246,7 +254,7 @@ describe('POST /api/meetings/:id/transcribe', () => {
 
     const res = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { meeting: Meeting }).meeting.status).toBe(status)
+    expect(((await res.json()) as { meeting: PublicMeeting }).meeting.status).toBe(status)
     expect(await storedSegments(meeting.id)).toEqual(finished)
     expect(await exists(replyPath(meeting.id))).toBe(false)
   })
@@ -263,9 +271,9 @@ describe('recovery', () => {
     await rm(path)
     const failed = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
     expect(failed.status).toBe(409)
-    const { meeting: broken } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: broken } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(broken.status).toBe('failed')
-    expect(broken.errorMessage).toMatch(/missing from storage/)
+    expect((await storedMeeting(meeting.id)).errorMessage).toMatch(/missing from storage/)
 
     // Put it back: asking again must work rather than being refused forever.
     // (Past the retry cooldown — that is a separate concern, tested below.)
@@ -274,7 +282,7 @@ describe('recovery', () => {
     await backdateUpdatedAt(meeting.id, 61_000)
     const { meeting: recovered, segments } = await transcribe(meeting.id)
     expect(recovered.status).toBe('summarizing')
-    expect(recovered.errorMessage).toBeNull()
+    expect((await storedMeeting(meeting.id)).errorMessage).toBeNull()
     expect(segments.length).toBeGreaterThan(0)
   })
 
@@ -294,7 +302,7 @@ describe('recovery', () => {
     // provider immediately after every failure.
     const tooSoon = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
     expect(tooSoon.status).toBe(409)
-    const { meeting: stillFailed } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: stillFailed } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(stillFailed.status).toBe('failed')
 
     await backdateUpdatedAt(meeting.id, 61_000)
@@ -351,8 +359,7 @@ describe('recovery', () => {
 
     const res = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
     expect(res.status).toBe(409)
-    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
-    expect(after.errorMessage).toMatch(/expected \d+/)
+    expect((await storedMeeting(meeting.id)).errorMessage).toMatch(/expected \d+/)
   })
 })
 

@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { createStorage } from 'unstorage'
+import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, ExtractionStepResponse, Meeting } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, ExtractionStepResponse, PublicMeeting } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 import { LOCAL_DRIVERS } from './helpers/local-drivers'
@@ -31,7 +33,7 @@ await setup({
 
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 
-async function transcribedMeeting(): Promise<Meeting> {
+async function transcribedMeeting(): Promise<PublicMeeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
     headers: inviteHeaders,
@@ -47,7 +49,7 @@ async function transcribedMeeting(): Promise<Meeting> {
 }
 
 describe('summarization retryable failure', () => {
-  it('parks the chunk with the failure shown, and the next step extracts it, without failing the meeting', async () => {
+  it('parks the chunk with the failure recorded, and the next step extracts it, without failing the meeting', async () => {
     // Step-wise extraction (ADR-0012): a retryable failure on a chunk's first
     // attempt parks it, and the next step is its second attempt. The meeting
     // never shows `failed` for a hiccup the retry absorbs, and the chunks
@@ -64,7 +66,11 @@ describe('summarization retryable failure', () => {
 
     const failed = await step()
     expect(failed.status).toBe(202)
-    expect(failed.body.progress.lastError).toMatch(/stub-injected/)
+    // The failure is on the run, for whoever reads storage, and not in the answer.
+    const ledger = await createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+      .getItem<{ runs: { summarization: { lastError: string | null } } }>(`pipeline/${meeting.id}`)
+    expect(ledger!.runs.summarization.lastError).toMatch(/stub-injected/)
+    expect(failed.body.progress).not.toHaveProperty('lastError')
     expect(failed.body.meeting.status).toBe('indexing')
     // Parked for a few seconds, measured on the server, so a blip that is not
     // the provider's is not retried into the chunk's last attempt at once.
@@ -80,7 +86,7 @@ describe('summarization retryable failure', () => {
 
     const extracted = await step()
     expect(extracted.status).toBe(202)
-    expect(extracted.body.progress).toEqual({ done: 1, total: 1, lastError: null })
+    expect(extracted.body.progress).toEqual({ done: 1, total: 1 })
 
     const done = await step()
     expect(done.status).toBe(200)

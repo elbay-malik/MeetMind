@@ -7,15 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type {
-  CreateMeetingResponse,
-  Meeting,
-  MeetingSummary,
-  PipelineResponse,
-  QuestionAnswer,
-  SearchIndexStatus,
-  TranscriptSegment,
-} from '../../shared/types/meeting'
+import type { CreateMeetingResponse, Meeting, MeetingSummary, PipelineResponse, PublicMeeting, QuestionAnswer, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
 import { whisperReplyKey } from '../../shared/utils/meeting'
 import { advance, driveToDone } from './helpers/pipeline'
 import { indexUntilStopped } from './helpers/indexing'
@@ -46,14 +38,14 @@ async function register(): Promise<CreateMeetingResponse> {
 }
 
 /** The fixture: its audio stored and confirmed, nothing else done. */
-async function uploadedMeeting(): Promise<Meeting> {
+async function uploadedMeeting(): Promise<PublicMeeting> {
   const { meeting, upload } = await register()
   await fetch(upload.url, { method: 'PUT', headers: { 'content-type': 'audio/ogg' }, body: audio })
-  return (await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })).meeting
+  return (await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })).meeting
 }
 
 const pipeline = (id: string) => $fetch<PipelineResponse>(`/api/meetings/${id}/pipeline`)
-const meetingOf = async (id: string) => (await $fetch<{ meeting: Meeting }>(`/api/meetings/${id}`)).meeting
+const meetingOf = async (id: string) => (await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${id}`)).meeting
 const indexOf = async (id: string) => (await $fetch<{ index: SearchIndexStatus }>(`/api/meetings/${id}/search-index`)).index
 
 /** Every stored byte, the provider ledger included, for what a read is not allowed to touch. */
@@ -85,7 +77,8 @@ describe('driveToDone', () => {
 
     // And what each stage leaves behind, read back over the routes a visitor uses: if a step
     // were skipped, or only said to have run, one of these would have nothing to show.
-    expect(await meetingOf(meeting.id)).toMatchObject({ status: 'ready', errorMessage: null, failedStage: null })
+    expect(await meetingOf(meeting.id)).toMatchObject({ status: 'ready', failedStage: null })
+    expect(await db.getItem<Meeting>(`meetings/${meeting.id}`)).toMatchObject({ errorMessage: null })
 
     const { segments } = await $fetch<{ segments: TranscriptSegment[] }>(`/api/meetings/${meeting.id}/transcript`)
     expect(segments).toHaveLength(12)
@@ -306,6 +299,8 @@ describe('the page that drives it, as the server renders it', () => {
 
     const html = await (await page(meeting.id)).text()
     expect(html).toContain('Transcription did not finish')
+    // The server's payload travels in the page, so this is both, and it is what is being read.
+    expect(html).toContain('__NUXT_DATA__')
     expect(html).not.toContain('PGRST116')
   })
 

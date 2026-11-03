@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, Meeting, PublicMeeting } from '../../shared/types/meeting'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
@@ -64,7 +64,7 @@ describe('nothing hands out meeting ids', () => {
   })
 
   it('still serves the meeting to whoever holds the link', async () => {
-    const { meeting: found } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: found } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(found.id).toBe(meeting.id)
     expect((await fetch(`/meetings/${meeting.id}`)).status).toBe(200)
   })

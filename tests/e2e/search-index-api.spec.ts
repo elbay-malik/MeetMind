@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, IndexingStepResponse, Meeting, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, IndexingStepResponse, Meeting, PublicMeeting, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
 import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
@@ -24,7 +24,7 @@ await setup({
 
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 
-async function uploadedMeeting(): Promise<Meeting> {
+async function uploadedMeeting(): Promise<PublicMeeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
     headers: inviteHeaders,
@@ -34,11 +34,11 @@ async function uploadedMeeting(): Promise<Meeting> {
     },
   })
   await fetch(upload.url, { method: 'PUT', headers: { 'content-type': 'audio/ogg' }, body: audio })
-  const done = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
+  const done = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
   return done.meeting
 }
 
-async function transcribedMeeting(): Promise<Meeting> {
+async function transcribedMeeting(): Promise<PublicMeeting> {
   const meeting = await uploadedMeeting()
   return (await driveTranscription(meeting.id)).meeting
 }
@@ -157,7 +157,8 @@ describe('search index', () => {
     expect(steps.at(-1)!.progress.total).toBe(before.windowCount)
     expect(await status(meeting.id)).toMatchObject({ state: 'ready', indexedCount: before.windowCount })
     // Nothing about the meeting moved with it (ADR-0012 §5).
-    expect((await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)).meeting).toMatchObject({ status: meeting.status, errorMessage: null })
+    const stored = await createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) }).getItem<Meeting>(`meetings/${meeting.id}`)
+    expect(stored).toMatchObject({ status: meeting.status, errorMessage: null })
   })
 
   it('reads an index with no marker as incomplete, and finishes it', async () => {
