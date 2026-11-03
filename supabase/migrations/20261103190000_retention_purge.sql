@@ -28,10 +28,10 @@ begin
   return (
     select m.id
       from public.meetings m
-     where m.created_at < clock_timestamp() - make_interval(days => p_days)
+     where m.created_at < now() - make_interval(days => p_days)
        and m.id <> p_exclude
        and not exists (select 1 from public.pipeline_runs r
-                        where r.meeting_id = m.id and r.step_lease_until > clock_timestamp())
+                        where r.meeting_id = m.id and r.step_lease_until > now())
      order by m.created_at
      limit 1
   );
