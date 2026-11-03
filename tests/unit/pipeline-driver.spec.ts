@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PipelineResponse } from '../../shared/types/meeting'
+import { DEMO_READ_ONLY_MESSAGE } from '../../shared/utils/meeting'
 import {
   ADVANCE_TIMEOUT_MS,
   LONG_WAIT_MS,
@@ -71,6 +72,8 @@ interface FakeReply {
 const reply = (status: number, body?: unknown, retryAfter?: string): FakeReply => ({ status, body, retryAfter })
 const ok = (body: unknown): FakeReply => ({ status: 200, body })
 const LOST: FakeReply = { network: true }
+/** What `refuseOnPublicDemo` answers, unlike a 403 from anything in front of the app. */
+const DEMO_REFUSAL = reply(403, { statusCode: 403, statusMessage: 'Forbidden', message: DEMO_READ_ONLY_MESSAGE })
 
 type Script = Partial<Record<string, Array<FakeReply | typeof NOT_ANSWERED>>>
 
@@ -270,7 +273,7 @@ describe('classifyReply', () => {
   })
 
   it.each([
-    [403, { kind: 'read-only' }],
+    [403, { kind: 'trouble', cause: 'server', hintMs: null }],
     [404, { kind: 'missing' }],
     [409, { kind: 'not-uploaded' }],
     [429, { kind: 'trouble', cause: 'rate-limited', hintMs: null }],
@@ -280,6 +283,11 @@ describe('classifyReply', () => {
     [400, { kind: 'trouble', cause: 'server', hintMs: null }],
   ])('reads a %i', (status, expected) => {
     expect(classify(status)).toEqual(expected)
+  })
+
+  it('reads a 403 as read-only only when it is the demo\'s own refusal', () => {
+    expect(classify(403, DEMO_REFUSAL.body)).toEqual({ kind: 'read-only' })
+    expect(classify(403, { message: 'The demo meeting is read-only' })).toEqual({ kind: 'trouble', cause: 'server', hintMs: null })
   })
 
   it.each<[string, string | null, unknown, number]>([
@@ -870,7 +878,7 @@ describe('answers that are not 200', () => {
   it('becomes read-only on a 403, with no step ever again, and gives up the lock', async () => {
     const locks = fakeLocks()
     const demo = answer({ status: 'uploaded', next: 'wait' })
-    const server = fakeServer({ [READ]: [ok(answer()), ok(demo)], [ADVANCE]: [reply(403, { message: 'The demo meeting is read-only' })] })
+    const server = fakeServer({ [READ]: [ok(answer()), ok(demo)], [ADVANCE]: [DEMO_REFUSAL] })
     const driver = tab(server, { locks })
     driver.start()
     await settle()
@@ -1424,6 +1432,41 @@ describe('a hidden tab', () => {
   })
 })
 
+describe('a 403 that is not the demo\'s refusal', () => {
+  it.each<[string, FakeReply]>([
+    ['a page with no JSON', { status: 403, notJson: true }],
+    ['a body with other words', reply(403, { message: 'Blocked by a rule' })],
+  ])('is trouble, from %s: it carries on, and says nothing about a demo', async (_name, foreign) => {
+    const server = fakeServer({ [READ]: [ok(answer())], [ADVANCE]: [foreign, ok(READY)] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    expect(driver.state()).toMatchObject({ role: 'driving', pause: 'server' })
+
+    await pass(5_000)
+    expect(driver.state()).toMatchObject({ role: 'driving', stop: 'finished' })
+  })
+
+  it('stops as any other trouble does, and can be tried again', async () => {
+    const server = fakeServer({ [READ]: [ok(answer())], [ADVANCE]: [reply(403, {})] })
+    const driver = tab(server)
+    driver.start()
+    await pass(125_000)
+    expect(driver.state()).toMatchObject({ role: 'driving', stop: 'trouble', troubleCause: 'server', retryFrom: Date.now() })
+  })
+
+  it('refuses a rebuild in this page\'s words, and the page stays as it was', async () => {
+    const held = answer({ status: 'ready', next: 'done', index: { state: 'held', done: 0, total: null, retryAt: null } })
+    const server = fakeServer({ [READ]: [ok(held)], [REBUILD]: [reply(403, {})] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    driver.rebuildIndex()
+    await settle()
+    expect(driver.state()).toMatchObject({ role: 'driving', rebuildError: REBUILD_REFUSED })
+  })
+})
+
 describe('a Retry-After the server sent', () => {
   const told = (status = 429) => reply(status, {}, String(HOUR / 1000))
   /** Stopped for trouble, on an answer that said an hour, after four that said nothing. */
@@ -1614,7 +1657,7 @@ describe('rebuilding the index', () => {
   })
 
   it('goes read-only on a 403, with nothing more sent', async () => {
-    const server = fakeServer({ [READ]: [ok(held)], [REBUILD]: [reply(403, {})] })
+    const server = fakeServer({ [READ]: [ok(held)], [REBUILD]: [DEMO_REFUSAL] })
     const driver = tab(server)
     driver.start()
     await settle()

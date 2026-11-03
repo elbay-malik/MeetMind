@@ -1,4 +1,5 @@
 import type { PipelineResponse } from '#shared/types/meeting'
+import { DEMO_READ_ONLY_MESSAGE } from '#shared/utils/meeting'
 
 /**
  * The browser's half of ADR-0012 §1: ask the server to take a meeting's next step until it
@@ -242,12 +243,17 @@ function isPipelineResponse(body: unknown): body is PipelineResponse {
     && typeof answer.index?.state === 'string'
 }
 
+/** The server's guard. A 403 with other words is something else talking, and is only trouble. */
+function isDemoRefusal(status: number, body: unknown): boolean {
+  return status === 403 && (body as { message?: unknown } | null)?.message === DEMO_READ_ONLY_MESSAGE
+}
+
 /** What one response means, by what it is rather than by which route gave it. */
 export function classifyReply(reply: { status: number, retryAfter: string | null, body: unknown }, now: number): DriverReply {
   const { status, retryAfter, body } = reply
   const hintMs = hintOf(retryAfter, body, now)
   if (status === 200 && isPipelineResponse(body)) return { kind: 'answer', answer: body }
-  if (status === 403) return { kind: 'read-only' }
+  if (isDemoRefusal(status, body)) return { kind: 'read-only' }
   if (status === 404) return { kind: 'missing' }
   if (status === 409) return { kind: 'not-uploaded' }
   if (status === 429) return { kind: 'trouble', cause: 'rate-limited', hintMs }
@@ -483,7 +489,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
         continue
       }
       answered()
-      if (reply.status === 403) {
+      if (isDemoRefusal(reply.status, reply.body)) {
         becomeReadOnly()
         return false
       }

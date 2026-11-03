@@ -1,5 +1,5 @@
 import type { H3Event } from 'h3'
-import { isDemoMeetingId } from '#shared/utils/meeting'
+import { DEMO_READ_ONLY_MESSAGE, isDemoMeetingId } from '#shared/utils/meeting'
 
 /** Whether this id is the public demo's: see {@link isDemoMeetingId}. */
 export function isPublicDemo(event: H3Event, id: string): boolean {
@@ -19,7 +19,7 @@ export function refuseOnPublicDemo(event: H3Event, id: string): void {
     throw createError({
       statusCode: 403,
       statusMessage: 'Forbidden',
-      message: 'The demo meeting is read-only: it can be read and asked questions, not changed.',
+      message: DEMO_READ_ONLY_MESSAGE,
     })
   }
 }
