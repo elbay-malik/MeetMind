@@ -724,6 +724,21 @@ describe('what a tick logs', () => {
     expect(JSON.stringify(Object.values(logs).map(spy => spy.mock.calls))).not.toContain('secret-word')
   })
 
+  it('says how a step went in one word, whichever stage it is and however it went', async () => {
+    const logs = quiet()
+    const providers = scriptedProviders(lines(2))
+    providers.keepFailing('chunk', () => new SummarizationError('provider body: secret-word', 502, true))
+    await uploadedMeeting()
+    const deps = depsWith(providers)
+    for (let i = 0; i < 40; i++) {
+      await reportTick(() => withoutLogs(() => sweep(deps)))
+      nextTick()
+    }
+    const said = logs.info.mock.calls.map(([line]) => String(line))
+    for (const stage of ['transcription', 'extraction', 'indexing']) expect(said.some(line => line.includes(`${stage} step`)), stage).toBe(true)
+    for (const line of said) expect(line).toMatch(/^\[meetmind\] sweep: (transcription|extraction|indexing) step, [a-z-]+$/)
+  })
+
   it('never drops what anything else logs, while a tick is under way in the same isolate', async () => {
     const logs = quiet()
     let release: () => void
