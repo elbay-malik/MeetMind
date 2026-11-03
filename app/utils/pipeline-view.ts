@@ -330,9 +330,19 @@ export function retryOf(state: DriverState, facts: PipelineFacts, now: number): 
   return { label, open: opensInMs === 0, opensInMs }
 }
 
-/** The moment a daily limit resets. Anything else parked is a run that kept stopping. */
+const DAY_MS = 86_400_000
+/**
+ * Only the meeting whose request hit the limit stores midnight itself. Any other parks on the
+ * account's block, which the database works out from a duration, so it lands a request's round
+ * trip and any clock skew away from it, on either side.
+ */
+const DAILY_RESET_WITHIN_MS = 60_000
+
+/** About the moment a daily limit resets. Anything else parked is a run that kept stopping. */
 function isDailyReset(iso: string | null | undefined): boolean {
-  return !!iso && Date.parse(iso) % 86_400_000 === 0
+  if (!iso) return false
+  const intoDay = Date.parse(iso) % DAY_MS
+  return intoDay <= DAILY_RESET_WITHIN_MS || DAY_MS - intoDay <= DAILY_RESET_WITHIN_MS
 }
 
 export interface QuestionsView {
