@@ -45,7 +45,9 @@ export function bearerToken(event: H3Event): string {
  * random one would only make the route look enabled.
  */
 export async function requireAdmin(event: H3Event): Promise<void> {
-  const configured = String(useRuntimeConfig(event).adminToken ?? '')
+  // Trimmed, as the invite code is: a secret store can keep a pasted newline, which a header
+  // cannot carry to compare against, and that would lock the operator out with no warning.
+  const configured = String(useRuntimeConfig(event).adminToken ?? '').trim()
   if (!configured) throw notFound()
   if (configured.length < MIN_ADMIN_TOKEN_LENGTH) {
     throw new Error(`NUXT_ADMIN_TOKEN must be at least ${MIN_ADMIN_TOKEN_LENGTH} characters; refusing to use a shorter one`)
