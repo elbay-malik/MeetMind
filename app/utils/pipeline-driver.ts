@@ -655,7 +655,8 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
     update({ role: 'watching' })
     let delay = state.answer ? WATCH_POLL_MS : 0
     /** The figures of the `continue` answers in a row, and when they were first seen. */
-    let quiet: { figures: string, since: number } | null = null
+    let quietFigures: string | null = null
+    let quietSince = 0
     for (;;) {
       if (delay > 0) {
         await sleep(delay)
@@ -686,22 +687,25 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
       }
       adopt(answer)
       if (move.kind === 'sleep') {
-        quiet = null
+        quietFigures = null
         update({ pause: 'wait', waitMs: move.ms, nextRequestAt: now() + move.ms })
         delay = move.ms >= LONG_WAIT_MS ? SLOW_LOOK_MS : WATCH_POLL_MS
       }
       else if (move.kind === 'look') {
-        quiet = null
+        quietFigures = null
         update({ pause: 'look' })
         delay = SLOW_LOOK_MS
       }
       else {
         delay = WATCH_POLL_MS
         const figures = progressSignature(answer)
-        if (quiet?.figures !== figures) quiet = { figures, since: now() }
-        else if (now() - quiet.since >= WATCH_STALL_MS) {
+        if (quietFigures !== figures) {
+          quietFigures = figures
+          quietSince = now()
+        }
+        else if (now() - quietSince >= WATCH_STALL_MS) {
+          quietFigures = null
           stealLock()
-          quiet = null
         }
       }
     }
