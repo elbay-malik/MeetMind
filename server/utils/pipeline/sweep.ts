@@ -67,9 +67,9 @@ export async function sweepOnce(deps: PipelineDeps, settings: SweepSettings): Pr
 
 /**
  * Delete one meeting past its retention days (ADR-0017), through the same delete as the admin
- * route, with its blocker and its fence. Irreversible and unattended, so what the database
- * chose is looked at again by what it says it is, before anything is touched: another reader's
- * mistake, a wrong clock or a wrong demo id stops here. Null when nothing has expired.
+ * route, with its blocker and its fence. Irreversible and unattended, so the row the database
+ * named is read and checked again before anything is touched: a mistake in choosing, a wrong
+ * clock or a wrong demo id stops here. Null when nothing has expired.
  */
 export async function purgeOneExpired(deps: PipelineDeps, demoMeetingId: unknown, days: number): Promise<SweepOutcome | null> {
   const demoId = demoIdOf(demoMeetingId)
