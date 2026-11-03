@@ -240,6 +240,7 @@ function onKeydown(event: KeyboardEvent, index: number) {
 /** Nothing on the pipeline page can move the public demo (ADR-0015), so nothing here sends anyone there. */
 const isDemo = computed(() => isDemoMeetingId(useRuntimeConfig().public.demoMeetingId, meetingId.value))
 const DEMO_STAYS_AS_IT_IS = 'This demo meeting is read-only, so it stays as it is here.'
+const deployment = useDeploymentFacts()
 
 /** What to say when there are no segments, which means different things by status. */
 const emptyTranscript = computed(() => {
@@ -251,12 +252,13 @@ const emptyTranscript = computed(() => {
     return { title: 'No audio to transcribe', description: 'The uploaded audio was rejected and removed. Upload the recording again.' }
   }
   if (status === 'transcribing') {
-    return { title: 'Transcription is not finished', description: isDemo.value ? DEMO_STAYS_AS_IT_IS : 'It moves only while its pipeline page is open. Open Pipeline and it carries on by itself.' }
+    return { title: 'Transcription is not finished', description: isDemo.value ? DEMO_STAYS_AS_IT_IS : transcriptionMoves(deployment.value.sweeps, 'It') }
   }
   if (status === 'pending_upload') {
     return { title: 'Waiting for audio', description: 'The upload has not been confirmed yet.' }
   }
-  return { title: 'No transcript yet', description: isDemo.value ? DEMO_STAYS_AS_IT_IS : 'Open Pipeline and transcription starts by itself. The meeting\'s words appear here when it has finished.' }
+  // Only `uploaded`, as a tick retries nothing and that is all else that reaches here.
+  return { title: 'No transcript yet', description: isDemo.value ? DEMO_STAYS_AS_IT_IS : transcriptionStarts(status === 'uploaded' && deployment.value.sweeps) }
 })
 
 /**
@@ -267,7 +269,7 @@ const emptyTranscript = computed(() => {
 const incompleteTranscript = computed(() => {
   const { status, failedStage } = meeting.value
   if (status === 'transcribing') {
-    return { title: 'This transcript is not finished', description: `These are the lines so far. ${isDemo.value ? DEMO_STAYS_AS_IT_IS : 'Transcription moves only while its pipeline page is open. Open Pipeline and it carries on by itself.'}` }
+    return { title: 'This transcript is not finished', description: `These are the lines so far. ${isDemo.value ? DEMO_STAYS_AS_IT_IS : transcriptionMoves(deployment.value.sweeps, 'Transcription')}` }
   }
   if (status === 'failed' && failedStage === 'transcription') {
     return { title: 'This transcript is not finished', description: `Transcription failed part-way, so these lines may stop early. ${isDemo.value ? DEMO_STAYS_AS_IT_IS : 'Open Pipeline to see whether it can be tried again.'}` }

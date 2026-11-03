@@ -573,6 +573,32 @@ describe('an index that is not complete', () => {
   })
 })
 
+describe('what it says closing the page does', () => {
+  const working = answer({ status: 'transcribing', next: 'wait', retryAt: new Date(Date.now() + 60_000).toISOString(), retryAfterMs: 60_000 })
+
+  afterEach(() => {
+    useDeploymentFacts().value = { sweeps: false }
+  })
+
+  it('says the meeting waits for the page, on a server with no cron', async () => {
+    const { id } = aMeeting({ pipeline: [ok(working)], advance: [ok(working)] })
+    const page = await open(id)
+    await vi.waitFor(() => expect(page.text()).toContain('This page is doing the work'))
+    expect(page.text()).toContain('it carries on from the same place when you open it again')
+    expect(page.text()).not.toContain('every 5 minutes')
+  })
+
+  it('says the server carries on, at most one step every 5 minutes and how many steps that is, on a Worker', async () => {
+    useDeploymentFacts().value = { sweeps: true }
+    const { id } = aMeeting({ pipeline: [ok(working)], advance: [ok(working)] })
+    const page = await open(id)
+    await vi.waitFor(() => expect(page.text()).toContain('This page is doing the work'))
+    expect(page.text()).toContain('at most one step every 5 minutes, shared with every other meeting')
+    expect(page.text()).toContain('A one-hour recording takes about 30 steps.')
+    expect(page.text()).not.toContain('when you open it again')
+  })
+})
+
 describe('the public demo', () => {
   const asDemo = (id: string) => {
     useRuntimeConfig().public.demoMeetingId = id

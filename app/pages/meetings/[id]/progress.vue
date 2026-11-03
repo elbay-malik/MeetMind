@@ -71,7 +71,8 @@ const facts = computed(() => ({
 }))
 
 const stages = computed(() => stagesOf(state.value, facts.value))
-const banner = computed(() => bannerOf(state.value, now.value))
+const deployment = useDeploymentFacts()
+const banner = computed(() => bannerOf(state.value, now.value, deployment.value.sweeps))
 const failure = computed(() => failureOf(state.value, facts.value))
 const retryAction = computed(() => retryOf(state.value, facts.value, now.value))
 const questions = computed(() => questionsOf(state.value, now.value))
@@ -271,7 +272,7 @@ function rebuild() {
             v-else-if="state.role === 'driving' && someTabIsWorking"
             class="text-sm text-muted"
           >
-            This page is doing the work, so keep it open. If you close it, nothing is lost: it carries on from the same place when you open it again.
+            This page is doing the work, so keep it open. {{ ifClosedSentence(deployment.sweeps) }}
           </p>
         </div>
       </template>

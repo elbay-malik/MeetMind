@@ -119,6 +119,34 @@ describe('the question card when the index is not finished', () => {
     expect(button(wrapper)).toContain('Index it on the pipeline page')
   })
 
+  describe('on a Worker, where a closed page does not stop it', () => {
+    afterEach(() => {
+      useDeploymentFacts().value = { sweeps: false }
+    })
+
+    it.each<[string, 'none' | 'incomplete', string]>([
+      ['b1000000-0000-4000-8000-000000000011', 'none', 'not been indexed for questions yet'],
+      ['b1000000-0000-4000-8000-000000000012', 'incomplete', 'index is not finished'],
+    ])('%s: says the server moves it slowly as well, for an index that is %s', async (id, state, words) => {
+      useDeploymentFacts().value = { sweeps: true }
+      const wrapper = await notFinished(id, state, 'building')
+      await flushPromises()
+      expect(wrapper.text()).toContain(words)
+      expect(wrapper.text()).toContain('at most one step every 5 minutes, shared with every other meeting')
+      expect(wrapper.text()).not.toMatch(/moves only while|happens by itself while/)
+    })
+
+    it.each<[string, string]>([
+      ['b1000000-0000-4000-8000-000000000013', 'held'],
+      ['b1000000-0000-4000-8000-000000000014', 'stopped'],
+    ])('%s: promises nothing of it for an index that is %s, which a tick leaves alone', async (id, state) => {
+      useDeploymentFacts().value = { sweeps: true }
+      const wrapper = await notFinished(id, 'incomplete', state)
+      await flushPromises()
+      expect(wrapper.text()).not.toContain('every 5 minutes')
+    })
+  })
+
   it('still says what it can when the reason cannot be read', async () => {
     const wrapper = await notFinished('b1000000-0000-4000-8000-000000000006', 'incomplete', null)
     await flushPromises()
