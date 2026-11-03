@@ -81,6 +81,24 @@ describe('softLocks, taking a lock from a tab that has gone quiet', () => {
     const renewed = JSON.parse([...storage.map.values()][0]!) as { owner: string }
     expect(renewed.owner).toBe((JSON.parse(lease!) as { owner: string }).owner)
   })
+
+  it('writes the lease as the new holder\'s at once, and the old holder\'s next renewal leaves it so', async () => {
+    const storage = memory()
+    const ownerNow = () => (JSON.parse([...storage.map.values()][0]!) as { owner: string }).owner
+    void tab(storage).request(NAME, { ifAvailable: true }, holder().callback)
+    await pass(SOFT_SETTLE_MS)
+    const before = ownerNow()
+
+    // Apart, so the old holder's timer does not fire just before the new one's writes over it.
+    await pass(SOFT_RENEW_MS / 2)
+    void tab(storage).request(NAME, { steal: true }, holder().callback)
+    await pass(0)
+    const after = ownerNow()
+    expect(after).not.toBe(before)
+
+    await pass(SOFT_RENEW_MS / 2)
+    expect(ownerNow()).toBe(after)
+  })
 })
 
 describe('softLocks', () => {
@@ -249,6 +267,8 @@ describe('softLocks', () => {
     await pass(SOFT_SETTLE_MS)
     controller.abort()
     await outcome
+    // The holder's renewal, and nothing of the queue's.
+    expect(vi.getTimerCount()).toBe(1)
     await pass(SOFT_RETRY_MS)
     expect(second).not.toHaveBeenCalled()
   })
