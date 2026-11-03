@@ -1,5 +1,6 @@
 import type { MeetingSummary } from '#shared/types/meeting'
 import type { WireSummary } from '#shared/schemas/summary'
+import { INJECTED_FAILURE_TEXT, INJECTED_RATE_LIMIT_MS, injectedFailure } from '../injected-failure'
 import { attestChunk, mergeReconciled, type AttestedChunk } from './reconcile'
 import { SummarizationError, type SummarizeInput, type Summarizer } from './summarizer'
 
@@ -28,6 +29,8 @@ export interface StubSummarizerOptions {
    * Never set outside tests.
    */
   failOnceRetryable?: boolean
+  /** Test-only: lines holding this ask for a failure. See injected-failure.ts. */
+  failureCanary?: string
 }
 
 /**
@@ -48,6 +51,13 @@ export function createStubSummarizer(options: StubSummarizerOptions = {}): Summa
         'Summarization service is unavailable (stub-injected for testing).', 502, true,
       )
     }
+
+    const failure = injectedFailure(options.failureCanary, 'summarize', segments.map(s => s.text).join(' '))
+    if (failure === 'internal') throw new Error(INJECTED_FAILURE_TEXT)
+    if (failure === 'rate-limited') {
+      throw new SummarizationError(INJECTED_FAILURE_TEXT, 429, false, { kind: 'rate-limited', retryAt: new Date(Date.now() + INJECTED_RATE_LIMIT_MS) })
+    }
+    if (failure) throw new SummarizationError(INJECTED_FAILURE_TEXT, 502, failure === 'retryable')
 
     if (segments.length === 0) return { summary: '', decisions: [], actionItems: [] }
 

@@ -12,6 +12,6 @@ export function useTranscriber(event: H3Event): Transcriber {
   return selectDriver<Transcriber>(event, 'groq', {
     real: config => createGroqTranscriber({ apiKey: config.groqApiKey }),
     // Truthy, not === true: destr parses '1' to the number 1, not a boolean.
-    local: config => createStubTranscriber({ failWithQuotaOnce: !!config.transcribeStubQuotaFail }),
+    local: config => createStubTranscriber({ failWithQuotaOnce: !!config.transcribeStubQuotaFail, failureCanary: config.stubFailureCanary }),
   })
 }

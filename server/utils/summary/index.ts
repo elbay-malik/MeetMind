@@ -51,6 +51,7 @@ function pickSummarizer(event: H3Event, options: { maxAttempts?: number, maxSlot
     local: config => createStubSummarizer({
       injectCanary: !!config.summaryStubCanary,
       failOnceRetryable: !!config.summaryStubFailOnceRetryable,
+      failureCanary: config.stubFailureCanary,
     }),
   })
 }

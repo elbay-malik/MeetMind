@@ -20,6 +20,7 @@ const STUB_FLAGS = {
   NUXT_SUMMARY_STUB_FAIL_ONCE_RETRYABLE: 'true',
   NUXT_ANSWER_STUB_PACED: 'true',
   NUXT_EMBED_STUB_QUOTA_CANARY: 'canary',
+  NUXT_STUB_FAILURE_CANARY: 'canary',
 }
 
 // Really absent, not just empty, even when the shell running the tests has one.
