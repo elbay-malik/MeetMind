@@ -551,15 +551,14 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
         update({ answer })
         return finish(move.stop, move.retryInMs === null ? null : now() + move.retryInMs)
       }
-      if (!fresh && sent === 'advance' && now() - lastProgressAt > LONGEST_NO_PROGRESS_MS) {
+      if (!fresh && now() - lastProgressAt > LONGEST_NO_PROGRESS_MS) {
         update({ answer })
         return finish('stalled', now())
       }
 
       adopt(answer)
       if (move.kind === 'advance') {
-        // Only a `continue` that came from taking a step counts: reading twice is not spinning.
-        if (!fresh && sent === 'advance' && !await mayContinue(mine)) return
+        if (!fresh && !await mayContinue(mine)) return
         method = 'advance'
       }
       else if (move.kind === 'sleep') {

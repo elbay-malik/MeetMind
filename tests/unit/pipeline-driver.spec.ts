@@ -220,6 +220,10 @@ describe('nextMove', () => {
     expect(move(parked)).toEqual({ kind: 'stop', stop: 'finished', retryInMs: HOUR })
   })
 
+  it('offers nothing later for a `done` that is not parked, whatever time came with it', () => {
+    expect(move(answer({ ...READY, retryAfterMs: HOUR, retryAt: '2026-11-03T13:00:00.000Z' }))).toEqual({ kind: 'stop', stop: 'finished', retryInMs: null })
+  })
+
   it('reads a held or stopped index as nothing a retry of this kind can move', () => {
     const held = answer({ status: 'ready', next: 'done', index: { state: 'held', done: 0, total: null, retryAt: null } })
     expect(move(held)).toEqual({ kind: 'stop', stop: 'finished', retryInMs: null })
@@ -1277,6 +1281,29 @@ describe('leaving', () => {
     driver.wake('visible')
     await settle()
     expect(server.routes()).toEqual([READ])
+  })
+
+  it('a queued grant that arrives after leaving is handed straight back too', async () => {
+    let grant: (() => void) | undefined
+    const locks: DriverLocks = {
+      request: (_name, options, callback) => options.ifAvailable
+        ? Promise.resolve(callback(null))
+        // A grant already on its way when the abort came, which a lock manager is free to do.
+        : new Promise((resolve) => {
+            grant = () => {
+              void Promise.resolve(callback({})).then(resolve)
+            }
+          }),
+    }
+    const server = fakeServer({ [READ]: [ok(atByte(1))] })
+    const driver = tab(server, { locks, initial: answer() })
+    driver.start()
+    await settle()
+    driver.stop()
+    grant!()
+    await settle()
+    expect(server.calls.length).toBe(0)
+    expect(driver.state().role).toBe('watching')
   })
 
   it('a grant that arrives after leaving is handed straight back', async () => {
