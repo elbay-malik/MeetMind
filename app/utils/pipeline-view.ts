@@ -189,12 +189,24 @@ export interface BannerView {
 
 const PROVIDER_OF: Record<string, string> = {
   summarization: 'The extraction provider\'s quota is used up for now.',
-  search_index: 'The indexing provider\'s quota is used up for now.',
 }
+
+const INDEX_RESTING = 'Paused: indexing is resting'
 
 /** A wait past what a healthy run ever does. Up to a day, and it must be said plainly (step 9 addendum). */
 function isLongWait(state: DriverState): boolean {
   return state.pause === 'wait' && (state.waitMs ?? 0) >= LONG_WAIT_MS
+}
+
+/**
+ * Whether a long wait is the index's: it is when the answer's time is the index's, and the
+ * index is all a failed or `ready` meeting has left to wait on. That can be a provider's block,
+ * or the last 5 min of a 15-minute park after a run kept stopping. The answer does not say
+ * which, so the page does not either.
+ */
+function isIndexWait({ answer }: DriverState): boolean {
+  if (!answer) return false
+  return answer.status === 'failed' || answer.status === 'ready' || (answer.index.retryAt !== null && answer.index.retryAt === answer.retryAt)
 }
 
 function isFinishedMeeting(state: DriverState): boolean {
@@ -259,13 +271,15 @@ export function bannerOf(state: DriverState, now: number): BannerView | null {
     }
   }
   if (isLongWait(state)) {
-    // On a failed meeting, only the index has anything left to wait for.
-    const stage = state.answer?.status === 'failed' ? 'search_index' : state.answer?.progress.stage ?? 'transcription'
     const clock = left !== null && left > 0 ? ` (${formatClock(now + left, now)})` : ''
     const who = state.role === 'watching' ? 'a tab of this browser stays' : 'this page stays'
+    const indexing = isIndexWait(state)
+    const why = indexing
+      ? 'Indexing stopped for now: the provider\'s quota may be used up, or a run kept stopping.'
+      : PROVIDER_OF[state.answer?.progress.stage ?? 'transcription'] ?? PROVIDER_BLOCKED_ERROR
     return {
-      title: 'Paused: waiting for the provider',
-      description: `${PROVIDER_OF[stage] ?? PROVIDER_BLOCKED_ERROR} Nothing is wrong with this meeting, and nothing is lost. It carries on by itself ${when}${clock} while ${who} open. If you close it, it carries on from the same place when you open it again.`,
+      title: indexing ? INDEX_RESTING : 'Paused: waiting for the provider',
+      description: `${why} Nothing is wrong with this meeting, and nothing is lost. It carries on by itself ${when}${clock} while ${who} open. If you close it, it carries on from the same place when you open it again.`,
       icon: 'i-lucide-pause',
       color: 'info',
     }
@@ -455,7 +469,7 @@ export function announcementOf(state: DriverState, facts: PipelineFacts, retryOp
   }
 
   const prefix = state.role === 'watching' ? 'Watching another tab. ' : ''
-  if (isLongWait(state)) return `${prefix}Paused: waiting for the provider. It carries on by itself.`
+  if (isLongWait(state)) return `${prefix}${isIndexWait(state) ? INDEX_RESTING : 'Paused: waiting for the provider'}. It carries on by itself.`
   const parts = state.answer?.progress.stage === 'summarization' ? state.answer.progress : null
   const extracting = parts?.total
     ? `Extracting decisions and action items: ${parts.done} of ${parts.total} parts done.`
