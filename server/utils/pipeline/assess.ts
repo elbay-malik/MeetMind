@@ -2,8 +2,9 @@ import type { Meeting, PipelineResponse } from '#shared/types/meeting'
 import { transcriptionFinished } from '#shared/utils/meeting'
 import type { MeetingRepository } from '../db/meetings'
 import type { ChunkCounts, PipelineRepository, PipelineRun, PipelineStage } from '../db/pipeline'
+import type { SlotProvider } from '../db/slots'
 import { readyWindowCount, type IndexState, type TranscriptIndexRepository } from '../db/windows'
-import { DAILY_RESET_MARGIN_MS } from '../qa/embedder'
+import { DAILY_LIMIT_MESSAGE, DAILY_RESET_MARGIN_MS } from '../qa/embedder'
 import { holdsPassOfAnotherModel, indexProgress, unattendedMayIndex } from '../qa/steps'
 import { cooldownEnds, refusedAsTooLong, waitingOn } from '../summary/steps'
 import { audioIsGone, replyProgress } from '../transcription/steps'
@@ -161,6 +162,38 @@ function firstStep(transcription: Turn, extraction: Turn, index: IndexTurn): Pip
   // 5. Finalize, once every chunk is done.
   if (extraction.kind === 'finalize') return 'extraction'
   return null
+}
+
+/**
+ * The table again with nobody watching, for the cron sweeper (ADR-0012's step 11 addendum).
+ * The same turns in the same order, with less on offer, since each step here is quota spent
+ * every 5 minutes for as long as it goes on:
+ *
+ * - **No row 1.** A failed stage is not retried, whatever its cooldown says: that takes a click.
+ * - **No provider that cannot answer now.** A step that needs a provider which is blocked, or
+ *   whose next slot is not free, is passed over for one that does not, rather than claimed
+ *   only to find that out. The slot itself still decides, for whoever got there in between.
+ * - **No index with an error on its run**, apart from the daily limit with its time passed.
+ *   Transcription and extraction count their attempts and end in `failed`; an index has
+ *   nowhere to end, and a page's 15-minute park would have this retrying all day.
+ *
+ * What stays is each step's own second attempt, since that is bounded and stored.
+ * `sweepCanMove` in server/utils/db/pipeline.ts and `public.sweep_can_move` mirror this.
+ */
+export function unattendedStep(snapshot: PipelineSnapshot, { model, now, busy }: { model: string, now: number, busy: readonly SlotProvider[] }): PipelineStep | null {
+  const { runs, chunks } = snapshot
+  const transcription = transcriptionTurn(snapshot, now)
+  if (transcription.kind === 'run') {
+    const reply = (runOf(runs, 'transcription')?.cursor as { reply?: unknown } | undefined)?.reply
+    return reply || !busy.includes('groq-whisper') ? 'transcription' : null
+  }
+  const extraction = extractionTurn(snapshot, now)
+  if (extraction.kind === 'run' && (chunks.done >= chunks.total || !busy.includes('groq-chat'))) return 'extraction'
+  if (indexTurn(snapshot, model, now).kind === 'run' && !busy.includes('workers-ai-embed')) {
+    const lastError = runOf(runs, 'search_index')?.lastError
+    if (!lastError || lastError === DAILY_LIMIT_MESSAGE) return 'indexing'
+  }
+  return extraction.kind === 'finalize' ? 'extraction' : null
 }
 
 function stageFigures(snapshot: PipelineSnapshot, indexFigures: { done: number, total: number | null }): PipelineResponse['progress'] {
