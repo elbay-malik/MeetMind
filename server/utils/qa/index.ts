@@ -1,5 +1,5 @@
 import type { H3Event } from 'h3'
-import { requireAllOrNone } from '../storage'
+import { selectDriver } from '../drivers'
 import { useGroqChatPacer } from '../summary'
 import type { Answerer } from './answerer'
 import { createGroqAnswerer } from './groq-answerer'
@@ -8,19 +8,9 @@ import type { Embedder } from './embedder'
 import { createStubEmbedder } from './stub'
 import { createWorkersAiEmbedder } from './workers-ai'
 
-let announced = false
-function announce(kind: Embedder['kind']) {
-  if (announced) return
-  announced = true
-  if (kind === 'stub') {
-    console.info('[meetmind] embeddings: stub (set NUXT_WORKERS_AI_ACCOUNT_ID and NUXT_WORKERS_AI_API_TOKEN to use Workers AI)')
-  }
-}
-
 /**
- * Pick the embedder from runtime config: Workers AI when its account and token
- * are present, otherwise a deterministic stub so indexing and questions run
- * without credentials.
+ * Pick the embedder: Workers AI when its account and token are present, or a
+ * deterministic stub where ADR-0016 allows that.
  */
 export function useEmbedder(event: H3Event): Embedder {
   return pickEmbedder(event, {})
@@ -36,37 +26,23 @@ export function useStepEmbedder(event: H3Event): Embedder {
 }
 
 function pickEmbedder(event: H3Event, options: { maxAttempts?: number }): Embedder {
-  const config = useRuntimeConfig(event)
-  const workersAiReady = requireAllOrNone('Workers AI', {
-    NUXT_WORKERS_AI_ACCOUNT_ID: config.workersAiAccountId,
-    NUXT_WORKERS_AI_API_TOKEN: config.workersAiApiToken,
+  return selectDriver<Embedder>(event, 'workersAi', {
+    real: config => createWorkersAiEmbedder({ accountId: config.workersAiAccountId, apiToken: config.workersAiApiToken, maxAttempts: options.maxAttempts }),
+    local: config => createStubEmbedder({ quotaCanary: config.embedStubQuotaCanary }),
   })
-  const embedder = workersAiReady
-    ? createWorkersAiEmbedder({ accountId: config.workersAiAccountId, apiToken: config.workersAiApiToken, maxAttempts: options.maxAttempts })
-    : createStubEmbedder({ quotaCanary: config.embedStubQuotaCanary })
-  announce(embedder.kind)
-  return embedder
 }
-
-let answererAnnounced = false
 
 /**
  * Pick the answerer: Groq when its key is present, sharing extraction's slots
- * because both spend one per-account allowance; otherwise a deterministic stub.
- * A question waits only `askMaxSlotWaitMs` for its slot, then is refused with
- * when to try again (ADR-0012).
+ * because both spend one per-account allowance, or a deterministic stub where
+ * ADR-0016 allows that. A question waits only `askMaxSlotWaitMs` for its slot,
+ * then is refused with when to try again (ADR-0012).
  */
 export function useAnswerer(event: H3Event): Answerer {
-  const config = useRuntimeConfig(event)
-  const groqReady = requireAllOrNone('Groq', { NUXT_GROQ_API_KEY: config.groqApiKey })
-  const pacer = () => useGroqChatPacer(event, { maxWaitMs: Number(config.askMaxSlotWaitMs) })
-  const answerer = groqReady
-    ? createGroqAnswerer({ apiKey: config.groqApiKey, pacer: pacer() })
+  const pacer = () => useGroqChatPacer(event, { maxWaitMs: Number(useRuntimeConfig(event).askMaxSlotWaitMs) })
+  return selectDriver<Answerer>(event, 'groq', {
+    real: config => createGroqAnswerer({ apiKey: config.groqApiKey, pacer: pacer() }),
     // Truthy, not === true: destr parses '1' to the number 1, not a boolean.
-    : createStubAnswerer({ pacer: config.answerStubPaced ? pacer() : undefined })
-  if (!answererAnnounced && answerer.kind === 'stub') {
-    answererAnnounced = true
-    console.info('[meetmind] answers: stub (set NUXT_GROQ_API_KEY to use Groq)')
-  }
-  return answerer
+    local: config => createStubAnswerer({ pacer: config.answerStubPaced ? pacer() : undefined }),
+  })
 }
