@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { fetch, getServerLogs, setup, startServer } from '@nuxt/test-utils/e2e'
+import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-invite-closed-'))
@@ -20,14 +21,14 @@ delete process.env.NUXT_INVITE_CODE
 
 /**
  * Its own spec file because the code is process-wide, and these are misconfigured on
- * purpose. This is the one setting whose absence must not select a stub: a missing code
- * closes uploads, and a short one is refused even from a caller who presents it exactly.
+ * purpose. A missing code closes uploads, and a short one is refused even from a caller who
+ * presents it exactly.
  */
 await setup({
   rootDir,
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
-  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret' },
+  env: { ...LOCAL_DRIVERS, NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret' },
 })
 
 const db = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })

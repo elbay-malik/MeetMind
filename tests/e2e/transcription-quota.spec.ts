@@ -9,6 +9,7 @@ import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting, PipelineResponse } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
+import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
 // Isolated from transcription-api.spec.ts: NUXT_TRANSCRIBE_STUB_QUOTA_FAIL
 // makes the stub throw a 429 exactly ONCE for the whole server process, which
@@ -22,6 +23,7 @@ await setup({
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
   env: {
+    ...LOCAL_DRIVERS,
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
     NUXT_INVITE_CODE: INVITE_CODE,

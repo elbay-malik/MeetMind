@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { fetch, setup } from '@nuxt/test-utils/e2e'
+import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 
@@ -11,7 +12,7 @@ await setup({
   rootDir,
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
-  env: { NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret', NUXT_PUBLIC_DEMO_MEETING_ID: DEMO_ID },
+  env: { ...LOCAL_DRIVERS, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret', NUXT_PUBLIC_DEMO_MEETING_ID: DEMO_ID },
 })
 
 describe('NUXT_PUBLIC_DEMO_MEETING_ID', () => {
