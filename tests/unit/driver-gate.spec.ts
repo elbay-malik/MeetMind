@@ -184,6 +184,28 @@ describe('on a Worker known by what the runtime says it is', () => {
   })
 })
 
+// Nitro replaces this signal at build time, so nothing here can run it, and the other two hide
+// its loss from this file and from scripts/verify-worker-gate.mjs. ADR-0016 leaves those two
+// unproven on a deployed Worker, so this reads the source and replaces it as a build does.
+describe('on a Worker known by what it was built for', () => {
+  const signal = async () => {
+    const source = await readFile(fileURLToPath(new URL('../../server/utils/drivers.ts', import.meta.url)), 'utf8')
+    const body = source.slice(source.indexOf('function driverEnvironment'))
+    return /worker: ([\s\S]*?),\n/.exec(body)![1]!.split('||').map(clause => clause.trim()).find(clause => clause.includes('import.meta.preset'))
+  }
+
+  it('is still one of the signals, read without the following dot that stops Nitro replacing it', async () => {
+    const clause = await signal()
+    expect(clause).toBeTruthy()
+    expect(clause).not.toMatch(/import\.meta\.preset\s*\??\./)
+  })
+
+  it.each([['cloudflare-module', true], ['cloudflare-pages', true], ['node-server', false]])('built for %s, it says %s', async (preset, worker) => {
+    const clause = (await signal())!.replaceAll('import.meta.preset', JSON.stringify(preset))
+    expect(new Function(`return ${clause}`)()).toBe(worker)
+  })
+})
+
 describe('the message', () => {
   it('names no provider, store or setting', () => {
     expect(DRIVERS_REFUSED_MESSAGE).not.toMatch(/nuxt|groq|workers|cloudflare|supabase|r2\b|key|token|setting|config/i)
