@@ -322,8 +322,8 @@ spends real quota. `scripts/verify-worker-*.mjs` run it from a temporary copy, w
    and a stranger's questions are capped separately
    ([ADR-0019](docs/adr/0019-demo-question-cap.md)).
 8. **Look at it before telling anyone.** Load `/` from cold and read its CPU in the Worker's logs, and any
-   1102. Check `curl -I https://meetmind.elbaymalik.com/ffmpeg/ffmpeg-core.wasm` says
-   `application/wasm`. Read one invocation's log for the invite header. Ask for `/__scheduled` and
+   1102. Check `curl -sS -o /dev/null -D - https://meetmind.elbaymalik.com/ffmpeg/ffmpeg-core.wasm` says 200 and
+   `application/wasm`, and not with `curl -I`, as the route answers only a GET. Read one invocation's log for the invite header. Ask for `/__scheduled` and
    `/cdn-cgi/local/scheduled`, which should run no tick. `workers.dev` should not answer.
 9. **Run the acceptance.** Upload a short real meeting, close the tab, and watch it reach `ready`. A
    line in `wrangler tail` says a step ran, and a tick with nothing to do logs nothing.

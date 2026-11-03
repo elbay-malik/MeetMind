@@ -318,7 +318,10 @@ try {
   const compressed = await readWhileHeld(`/ffmpeg/ffmpeg-core.wasm?v=${version}`, { 'accept-encoding': 'gzip' })
   console.log(`  (the wasm, asked for with gzip: content-encoding ${compressed.res.headers.get('content-encoding')}, first byte at ${compressed.firstByteMs} ms, workerd CPU ${compressed.cpuSeconds.toFixed(2)} s)`)
   check(compressed.streamed && sha(compressed.bytes) === sha(WASM), 'the wasm, asked for with gzip: streams, and the same bytes come out')
+  // A route for GET answers nothing else, so `curl -I` is no way to look at this one.
   asked.length = 0
+  const head = await fetch(`${base}/ffmpeg/ffmpeg-core.wasm?v=${version}`, { method: 'HEAD' })
+  check(head.status === 404 && asked.length === 0, `a HEAD answers 404 and costs no read of R2 (got ${head.status}, ${asked.length} reads)`)
   await (await fetch(`${base}/ffmpeg/ffmpeg-core.wasm?key=${encodeURIComponent(AUDIO_KEY)}&v=other`)).body.cancel()
   check(asked.length === 1 && asked[0] === WASM_KEY, `no query steers it to another object (asked for ${JSON.stringify(asked)})`)
   const steer = await fetch(`${base}/ffmpeg/ffmpeg-core.wasm/${encodeURIComponent(`../../${AUDIO_KEY}`)}`)
