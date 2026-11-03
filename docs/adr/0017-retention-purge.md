@@ -39,7 +39,7 @@ A tick does one thing, and a person may be waiting on a step. So a backlog of st
 
 ### 6. A migration, which changes nothing by itself.
 
-`20261103190000_retention_purge.sql` adds `next_expired_meeting(days, demo)`, marked `stable`, as nothing but reading. Only the service role may run it, and it is safe to run twice. It reads the existing `meetings_created_at_idx`: **one row with 20,000 meetings expired**, by Postgres's own count, in `verify-migrations.sh`.
+`20261103190000_retention_purge.sql` adds `next_expired_meeting(days, demo)`, marked `stable`, as nothing but reading. Only the service role may run it, and it is safe to run twice. It reads the existing `meetings_created_at_idx` and each run by key, one meeting at a time, and at most the 20 oldest: **11 rows with 20,000 meetings expired, each with a run**, by Postgres's own count, in `verify-migrations.sh`. That count is why it is a loop: as one `NOT EXISTS`, Postgres read every run once per call to hash them.
 
 ## What it costs
 
