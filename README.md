@@ -346,10 +346,28 @@ staging. Both share the one real database with the live cron, so a tick can pick
 insert, and spend real quota on them. **Past Cron Events is the proof that the cron fires, and
 `last_tick_at` is not**, because `test:services` moves it too, with nothing deployed.
 
-**To roll back:** `pnpm exec wrangler rollback`, which goes back to an earlier version. Leave any older wasm in
-the bucket, as that version asks for its own. To stop the ticks as well, set `"crons": []` in
-`wrangler.jsonc` and run `pnpm deploy:worker`, or remove the trigger in the dashboard. That is from
-Cloudflare's docs, and has not been run here.
+**To roll back,** name the version: `pnpm exec wrangler versions list`, then
+`pnpm exec wrangler rollback <version-id>`. Leave any older wasm in the bucket, as that version asks
+for its own.
+
+**Once step 10 is done, roll back only to a version created after it.** Secrets belong to a version, and
+`wrangler secret put` makes one, so a plain `wrangler rollback` straight after step 10 goes back to a
+version with no `NUXT_PUBLIC_DEMO_MEETING_ID`. There the demo has no question count, no pause for
+extraction and no read-only guard, and its id is already known. Wrangler's prompt names that secret as
+changed and does not say any of this, so if it lists the name, answer no.
+`pnpm exec wrangler versions secret list` should still name it afterwards. Putting the secret back
+afterwards is no repair, as wrangler refuses `wrangler secret put` while the latest version is not the
+deployed one. If no version after step 10 has the code you want, check out the last good commit and run
+`pnpm deploy:worker` rather than rolling back. A deploy should keep the secrets.
+
+**To stop the ticks,** set `"crons": []` in `wrangler.jsonc` and run `pnpm exec wrangler triggers deploy`,
+which changes the triggers and uploads no code, or remove the trigger in the dashboard. Do not use
+`pnpm deploy:worker` for this after a rollback: it builds and deploys the checkout, which puts the code
+just rolled back from live again, with only the cron gone. Undo the edit before the next deploy, or that
+deploy leaves the ticks off.
+
+All of that comes from wrangler's code and Cloudflare's docs, and has not been run here. Wrangler marks
+`triggers deploy` as experimental.
 
 **The retention purge is off, and nothing here turns it on.** Set `NUXT_RETENTION_PURGE_DAYS` with
 `wrangler secret put` to have a tick with nothing else to do delete one meeting past that many days:

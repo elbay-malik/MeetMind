@@ -336,6 +336,24 @@ describe('the first deploy\'s steps', () => {
     expect(text).toContain('"crons": []')
   })
 
+  it('stop the ticks with no deploy, which would put back the code just rolled back from', async () => {
+    const text = await steps()
+    expect(text).not.toMatch(/"crons": \[\]` in `wrangler\.jsonc` and run `pnpm deploy:worker`/)
+    expect(text).toContain('set `"crons": []` in `wrangler.jsonc` and run `pnpm exec wrangler triggers deploy`')
+    expect(text).toContain('Do not use `pnpm deploy:worker` for this after a rollback')
+  })
+
+  it('say a rollback past step 10 loses the demo\'s id, and give a way that does not', async () => {
+    const text = await steps()
+    expect(text).toContain('`pnpm exec wrangler rollback <version-id>`')
+    expect(text).toContain('Once step 10 is done, roll back only to a version created after it.')
+    expect(text).toContain('There the demo has no question count, no pause for extraction and no read-only guard')
+    expect(text).toContain('`pnpm exec wrangler versions secret list`')
+    expect(text).toContain('wrangler refuses `wrangler secret put` while the latest version is not the deployed one')
+    expect(text).not.toMatch(/put(ting)? `?NUXT_PUBLIC_DEMO_MEETING_ID`? again/i)
+    expect(await adr('0019')).toContain('**A rollback can drop the cap.**')
+  })
+
   it('claim the rate rule\'s bound only with what makes it true, and say what the fallback gives up', async () => {
     const text = await steps()
     expect(text).toContain('so `run_worker_first` in `wrangler.jsonc` keeps everything under `/_nuxt/` away from the Worker, found or not')

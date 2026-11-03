@@ -53,6 +53,7 @@ Both sentences go through `server/utils/public-errors.ts`, and the question form
 
 ## What stays unproven until deployed
 
+- **A rollback can drop the cap.** Secrets belong to a version, so rolling back past `wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID` leaves a version with no demo id, and so no count, no pause and no read-only guard. README's rollback steps say to name a version created after it. This comes from wrangler's code and Cloudflare's docs, and has not been run.
 - Real tokens per question, so whether 25 is the right number. Read Groq's dashboard after the first days.
 - The SQL and both drivers have run against a throwaway Postgres behind PostgREST and the local driver, not against Supabase. `pnpm db:migrate` has not applied this migration.
 - That a real extraction and a real question loop do what the order above says on a deployed Worker, as this has run only with a staged slot ledger.
