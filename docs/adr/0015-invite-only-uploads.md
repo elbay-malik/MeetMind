@@ -1,6 +1,6 @@
 # ADR-0015: Visitors get the demo meeting, and uploading takes an invite code
 
-- **Status:** Accepted
+- **Status:** Accepted, amended by [ADR-0016](0016-real-services-or-nothing.md)
 - **Date:** 2026-11-02
 - **Supersedes:** Nothing whole. Amends ADR-0010 (open registration is no longer what is left for rate limiting to cover), ADR-0012 (a question takes its request slot before it is embedded) and ADR-0013 (registration is closed, and its decision 5's demo meeting can now only be read and asked).
 
@@ -38,7 +38,8 @@ one gate also closes transcription, extraction and indexing to anyone without a 
 
 ### 2. An unset or short code closes uploads for everyone.
 
-This is a deliberate exception to the repo's habit of absent config selecting a stub: a
+This is a deliberate exception to the repo's habit of absent config selecting a stub, which
+[ADR-0016](0016-real-services-or-nothing.md) has since ended outside `pnpm dev`: a
 missing code must never read as open. Unset, empty, whitespace or under 32 characters answers
 503 with a plain message and logs a warning naming the setting, never its value. Someone
 presenting a too-short configured code exactly is refused too, as `requireAdmin` refuses a
@@ -51,7 +52,9 @@ deployment does.
 ### 3. The page checks the code before the browser touches a recording.
 
 `POST /api/invite-check` answers 204 or the same refusal as the real route. It is the same
-guard and nothing else, so it is no cheaper to guess against, and it reads and writes nothing.
+guard, so it is no cheaper to guess against, and it reads and writes nothing. Since
+[ADR-0016](0016-real-services-or-nothing.md), a right code on a server that could not take the
+upload gets that server's 503 here, rather than after the extraction.
 The home page renders no file input until it has answered 204, so a wrong code fails at once
 rather than after minutes of extraction.
 
@@ -100,12 +103,13 @@ with the variable unset (see below).
 
 Checked against the code on 2026-11-02. `tests/unit/adr-consistency.spec.ts` fails if a file under
 `server/api` that is not a `GET` is missing here, including one with no method in its name, which
-answers every method. No `GET` route writes anything.
+answers every method. No `GET` route writes anything. After the guards below, every route but the
+health check also answers 503 when [ADR-0016](0016-real-services-or-nothing.md) says this server may not run.
 
 | Route | Guard | What it can write or spend | On the demo |
 | --- | --- | --- | --- |
 | `POST /api/meetings` | Invite code, first | A `pending_upload` row and an upload grant | Same. The id is minted here, and a body naming one is refused |
-| `POST /api/invite-check` | Invite code, and nothing else | Nothing | Same |
+| `POST /api/invite-check` | Invite code, then ADR-0016's check, which reads only settings | Nothing | Same |
 | `PUT /api/uploads/:token` | Signed grant for one key, type and byte count, 15 minutes. Local store only: 404 with R2 | The grant's audio object | Same. Only whoever registered a meeting ever holds its grant |
 | R2's presigned `PUT` (not our route) | Signed URL, 15 minutes, handed only to whoever registered. Signs the host alone, so size and type are checked at `complete` | The audio object | Same |
 | `POST /api/meetings/:id/complete` | Meeting id, and the row must be `pending_upload` | The row's status; deletes an object that fails verification | **Refused, 403** |

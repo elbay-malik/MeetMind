@@ -98,6 +98,40 @@ describe('ADRs changed by ADR-0014', () => {
   })
 })
 
+describe('ADRs changed by ADR-0016', () => {
+  it('every ADR it names in its header says so in its own status', async () => {
+    const header = /^- \*\*Supersedes:\*\* (.*)$/m.exec(await adr('0016'))?.[1]
+    expect(header, 'could not find the header line of ADR-0016').toBeTruthy()
+    const named = [...new Set([...header!.matchAll(/ADR-(\d{4})/g)].map(m => m[1]!))]
+    expect(named).toContain('0015')
+    const silent: string[] = []
+    for (const number of named) {
+      const status = /^- \*\*Status:\*\* (.*)$/m.exec(await adr(number))?.[1] ?? ''
+      if (!status.includes('ADR-0016')) silent.push(number)
+    }
+    expect(silent).toEqual([])
+  })
+
+  it('tells whoever deploys the same nine settings as the gate, in the ADR and the README', async () => {
+    const { REQUIRED_SETTINGS } = await import('../../server/utils/drivers')
+    const readme = await readFile(fileURLToPath(new URL('../../README.md', import.meta.url)), 'utf8')
+    const section = readme.split('### What a deployment needs')[1]!.split('\n### ')[0]!
+    const decision = await adr('0016')
+    for (const name of Object.values(REQUIRED_SETTINGS).flatMap(group => Object.keys(group))) {
+      expect(section).toContain(name)
+      expect(decision).toContain(name)
+    }
+    expect(section).toContain('NUXT_ALLOW_LOCAL_DRIVERS')
+  })
+
+  // It has run under local workerd and nowhere else, and it should keep saying so.
+  it('says what waits for Phase 13, and claims nothing measured on a deployed Worker', async () => {
+    const flat = (await adr('0016')).replace(/\s+/g, ' ')
+    expect(flat).toContain('## What stays unproven until Phase 13')
+    expect(flat).toContain('No deployed Worker has run any of this')
+  })
+})
+
 describe('ADRs changed by ADR-0015', () => {
   it('every ADR it names in its header says so in its own status', async () => {
     const header = /^- \*\*Supersedes:\*\* (.*)$/m.exec(await adr('0015'))?.[1]
