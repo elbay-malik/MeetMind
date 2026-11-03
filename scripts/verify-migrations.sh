@@ -1491,5 +1491,78 @@ check "applying the sweeper's migration again keeps the rotation, and its postur
      from public.sweep_state"
 gone "$SW1"
 
+echo "checking the retention purge's selection (ADR-0017) ..."
+PURGE_MIGRATION=supabase/migrations/20261103190000_retention_purge.sql
+DEMO_ID=dddddddd-dddd-4ddd-8ddd-dddddddddddd
+psql -q -c "delete from public.meetings;"
+expired() { # expired [days]: the meeting that would be deleted next, or none
+  psql -At -c "select coalesce(public.next_expired_meeting(${1:-30}, '$DEMO_ID')::text, 'none');"
+}
+expect_expired() { # expect_expired <description> <id or none> [days]
+  local got
+  got=$(expired "${3:-30}")
+  [ "$got" = "$2" ] || fail "$1 (got '$got')"
+  echo "  ok: $1"
+}
+day_old() { echo $(($1 * 86400)); }
+expect_expired "nothing to delete answers null" none
+mk "$SW1" ready null "$(day_old 29)"
+expect_expired "a meeting inside its days stays" none
+expect_expired "and goes with fewer days" "$SW1" 28
+gone "$SW1"
+mk "$SW1" ready null "$(day_old 31)"
+expect_expired "a meeting past its days is the answer" "$SW1"
+mk "$SW2" uploaded null "$(day_old 60)"
+expect_expired "the oldest first, whatever its status" "$SW2"
+psql -q -c "insert into public.pipeline_runs (meeting_id, stage, step_token, step_lease_until)
+            values ('$SW2', 'transcription', gen_random_uuid(), now() + interval '1 minute');"
+expect_expired "a live step keeps it, and the next is the answer" "$SW1"
+psql -q -c "update public.pipeline_runs set step_lease_until = now() - interval '1 second' where meeting_id = '$SW2';"
+expect_expired "a lease that has run out does not" "$SW2"
+gone "$SW2"
+psql -q -c "update public.meetings set title = 'touched' where id = '$SW1';"
+expect_expired "age is from created_at, however recently it was touched" "$SW1"
+gone "$SW1"
+mk "$DEMO_ID" ready null "$(day_old 400)"
+expect_expired "the demo is never the answer, however old" none
+check "and in capitals, which is the same row to Postgres" \
+  "select public.next_expired_meeting(30, upper('$DEMO_ID')::uuid) is null"
+gone "$DEMO_ID"
+reject "no days has no safe reading" "select public.next_expired_meeting(null, '$DEMO_ID');" "positive whole number"
+reject "zero days would make every meeting expired" "select public.next_expired_meeting(0, '$DEMO_ID');" "positive whole number"
+reject "nor negative days" "select public.next_expired_meeting(-1, '$DEMO_ID');" "positive whole number"
+reject "no demo would compare as nothing to leave out" "select public.next_expired_meeting(30, null);" "public demo must be named"
+check "next_expired_meeting writes nothing, so a read-only caller could not make it delete" \
+  "select provolatile = 's' from pg_proc where proname = 'next_expired_meeting'"
+check "next_expired_meeting is executable by service_role and not by PUBLIC, anon or authenticated" \
+  "select has_function_privilege('service_role', 'public.next_expired_meeting(integer, uuid)', 'execute')
+          and not has_function_privilege('anon', 'public.next_expired_meeting(integer, uuid)', 'execute')
+          and not has_function_privilege('authenticated', 'public.next_expired_meeting(integer, uuid)', 'execute')
+          and not exists (select 1 from pg_proc p, aclexplode(p.proacl) a
+                           where p.oid = 'public.next_expired_meeting(integer, uuid)'::regprocedure and a.grantee = 0)"
+check "next_expired_meeting pins its search_path" \
+  "select 'search_path=public' = any(proconfig) from pg_proc where proname = 'next_expired_meeting'"
+
+# What it reads, by Postgres's own count, among as many old meetings as there are.
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes,created_at)
+              select gen_random_uuid(), 'x', 'ready', 'a.mp4', 1, 'purge_read_' || g, 10, now() - interval '400 days' - make_interval(secs => g)
+                from generate_series(1, 20000) g;
+            analyze public.meetings;"
+read_old=$(psql -q -At -c "begin;
+    select count(*) from public.next_expired_meeting(30, '$DEMO_ID');
+    select coalesce(sum(coalesce(seq_tup_read, 0) + coalesce(idx_tup_fetch, 0)), 0) || ' ' || coalesce(sum(seq_scan), 0)
+      from pg_stat_xact_user_tables where relname in ('meetings', 'pipeline_runs');
+    rollback;" | tail -1)
+echo "  (rows read to answer, then scans of a whole table, with 20,000 expired meetings: $read_old)"
+[ "${read_old%% *}" -le 10 ] || fail "choosing what to delete read too much: $read_old"
+[ "${read_old##* }" = "0" ] || fail "choosing what to delete scanned a whole table: $read_old"
+echo "  ok: choosing what to delete reads a row or two, however many have expired"
+psql -q -c "delete from public.meetings where audio_key like 'purge_read_%';"
+
+psql -q < "$PURGE_MIGRATION"
+check "applying the purge's migration again keeps its posture" \
+  "select not has_function_privilege('anon', 'public.next_expired_meeting(integer, uuid)', 'execute')
+          and has_function_privilege('service_role', 'public.next_expired_meeting(integer, uuid)', 'execute')"
+
 echo
 echo "RESULT: PASS — $(ls supabase/migrations/*.sql | wc -l | tr -d ' ') migrations applied, all invariants hold"
