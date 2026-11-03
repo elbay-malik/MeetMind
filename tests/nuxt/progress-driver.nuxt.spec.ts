@@ -54,6 +54,10 @@ interface Scenario {
   searchIndex?: Reply[]
   /** Whatever the transcript route answers. */
   segments?: unknown[]
+  /** Whether that read of the row, counting from 1, answers 500. */
+  rowFails?: (read: number) => boolean
+  /** The same for the transcript. */
+  transcriptFails?: (read: number) => boolean
 }
 
 let scenarios = 0
@@ -75,8 +79,15 @@ function aMeeting(scenario: Scenario) {
     event.node.res.statusCode = reply.status ?? 200
     return reply.body
   }
-  registerEndpoint(`/api/meetings/${id}`, () => ({ meeting: meetingRow(id, row) }))
-  registerEndpoint(`/api/meetings/${id}/transcript`, () => ({ segments: scenario.segments ?? [] }))
+  const reads = { row: 0, transcript: 0 }
+  const failed = (event: Handler) => {
+    event.node.res.statusCode = 500
+    return { statusCode: 500, statusMessage: 'Internal Server Error' }
+  }
+  registerEndpoint(`/api/meetings/${id}`, (event: Handler) =>
+    scenario.rowFails?.(++reads.row) ? failed(event) : { meeting: meetingRow(id, row) })
+  registerEndpoint(`/api/meetings/${id}/transcript`, (event: Handler) =>
+    scenario.transcriptFails?.(++reads.transcript) ? failed(event) : { segments: scenario.segments ?? [] })
   registerEndpoint(`/api/meetings/${id}/pipeline`, (event: Handler) => take('pipeline', scenario.pipeline, event))
   registerEndpoint(`/api/meetings/${id}/advance`, { method: 'POST', handler: (event: Handler) => take('advance', scenario.advance, event) })
   registerEndpoint(`/api/meetings/${id}/search-index`, { method: 'POST', handler: (event: Handler) => take('searchIndex', scenario.searchIndex, event) })
@@ -104,6 +115,70 @@ afterEach(() => {
 const buttons = (page: Mounted) => page.findAll('button').map(button => button.text())
 const links = (page: Mounted) => page.findAll('a').map(link => link.text())
 const announced = (page: Mounted) => page.findAll('[role="status"]').map(region => region.text()).join(' | ')
+
+const SPOKEN = [{ idx: 0, startMs: 0, endMs: 1_000, text: 'We ship on Friday.' }]
+const SUMMARIZING = answer({ status: 'summarizing', progress: { stage: 'summarization', done: 0, total: 1, etaSeconds: null } })
+
+/** Long enough for a read the status set off, and the one retry `useFetch` makes of it, to be over. */
+const readsSettled = () => new Promise(resolve => setTimeout(resolve, 300))
+
+describe('a read of the row or the transcript that fails', () => {
+  it('keeps the transcript it has, and says nothing about speech, when the status moves', async () => {
+    const { id } = aMeeting({
+      row: { status: 'transcribing' },
+      segments: SPOKEN,
+      transcriptFails: read => read > 1,
+      pipeline: [ok(answer({ status: 'transcribing' }))],
+      advance: [ok(SUMMARIZING), ok(READY)],
+    })
+    const page = await open(id)
+    await vi.waitFor(() => expect(announced(page)).toContain('Finished'))
+    await readsSettled()
+
+    expect(page.text()).toContain('Speech turned into timestamped segments.')
+    expect(page.text()).toContain('We ship on Friday.')
+    expect(page.text()).not.toContain('No speech was found')
+    expect(page.text()).not.toContain('found no speech')
+  })
+
+  it('says nothing about speech when the first read of the transcript failed', async () => {
+    const { id } = aMeeting({ row: { status: 'ready' }, transcriptFails: () => true, pipeline: [ok(READY)] })
+    const page = await open(id)
+    await vi.waitFor(() => expect(announced(page)).toContain('Finished'))
+
+    expect(page.text()).not.toContain('No speech was found')
+    expect(page.text()).not.toContain('found no speech')
+  })
+
+  it('knows the size again once a later read comes back', async () => {
+    const { id } = aMeeting({
+      row: { status: 'transcribing' },
+      segments: SPOKEN,
+      // The first read, then the failure and the retry `useFetch` makes of it.
+      transcriptFails: read => read === 2 || read === 3,
+      pipeline: [ok(answer({ status: 'transcribing' }))],
+      advance: [ok(SUMMARIZING), ok(READY)],
+    })
+    const page = await open(id)
+    await vi.waitFor(() => expect(page.text()).toContain('1 segment.'))
+  })
+
+  it('goes on rendering what the driver says when the row cannot be read again', async () => {
+    const { id } = aMeeting({
+      row: { status: 'uploaded' },
+      rowFails: read => read > 1,
+      pipeline: [ok(answer())],
+      // A wait, so that what comes next arrives after that read has failed.
+      advance: [ok(answer({ status: 'transcribing', next: 'wait', retryAfterMs: 1_000 })), ok(READY)],
+    })
+    const page = await open(id)
+    await vi.waitFor(() => expect(announced(page)).toContain('Finished'), { timeout: 5_000 })
+    await readsSettled()
+
+    expect(page.text()).toContain('Weekly sync')
+    expect(page.text()).toContain('Ready for questions')
+  })
+})
 
 describe('opening the page', () => {
   it('drives the meeting to the end with no click, in the one live region', async () => {

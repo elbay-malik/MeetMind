@@ -17,13 +17,14 @@ if (error.value) {
     fatal: true,
   })
 }
-const meeting = computed(() => data.value!.meeting)
+/** Not `data` itself: a read that fails empties that, and what was last read is still what is known. */
+const meeting = shallowRef(data.value!.meeting)
 
 useSeoMeta({ title: () => `MeetMind — ${meeting.value.title}` })
 
-const { data: transcriptData, refresh: refreshTranscript }
+const { data: transcriptData, error: transcriptError, refresh: refreshTranscript }
   = await useFetch<{ segments: TranscriptSegment[] }>(`/api/meetings/${meetingId.value}/transcript`)
-const segments = computed(() => transcriptData.value?.segments ?? [])
+const segments = shallowRef(transcriptData.value?.segments ?? [])
 
 /** Failing to read this costs only what it says: the driver asks again as soon as it starts. */
 const { data: firstAnswer } = await useFetch<PipelineResponse>(`/api/meetings/${meetingId.value}/pipeline`)
@@ -45,14 +46,21 @@ const status = computed<MeetingStatus>(() => state.value.answer?.status ?? meeti
  * The row and the transcript are read when the status moves, not on every step: a page of a
  * reply does not change either, and reading a whole transcript per step would grow with the
  * meeting. Until that read is back the transcript's size is not known, and is not guessed at.
+ * A read that fails says nothing about the meeting: what was shown stays, the size stays not
+ * known, and the next move reads again. `refresh` does not throw, so each has to be looked at.
  */
-const transcriptReadAt = ref<MeetingStatus>(meeting.value.status)
+const transcriptReadAt = ref<MeetingStatus | null>(transcriptError.value ? null : meeting.value.status)
 let latestRead = 0
 watch(status, async (moved) => {
   // A read cancels the one before it, and that one can still be the last to come back.
   const thisRead = ++latestRead
   await Promise.all([refresh(), refreshTranscript()])
-  if (thisRead === latestRead) transcriptReadAt.value = moved
+  if (thisRead !== latestRead) return
+  if (data.value) meeting.value = data.value.meeting
+  if (transcriptData.value && !transcriptError.value) {
+    segments.value = transcriptData.value.segments
+    transcriptReadAt.value = moved
+  }
 })
 
 const facts = computed(() => ({
