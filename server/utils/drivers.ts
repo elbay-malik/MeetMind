@@ -3,8 +3,8 @@ import type { H3Event } from 'h3'
 /**
  * The one place that decides what this server runs on, and whether it runs at all
  * (ADR-0016). Every provider and store is built through {@link selectDriver}, and
- * tests/unit/source-hygiene.spec.ts fails if one is built anywhere else, so a new
- * provider cannot forget this.
+ * tests/unit/source-hygiene.spec.ts fails if one is built anywhere else. It knows a
+ * driver by its name, so a new provider has to follow the rule that ADR sets out.
  *
  * Decided per request and not at startup, because a Worker has no startup with its
  * settings available. It reads the runtime config and nothing else, before any claim,

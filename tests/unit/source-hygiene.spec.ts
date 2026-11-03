@@ -39,6 +39,23 @@ async function trackedTextFiles(): Promise<string[]> {
 const REAL_DRIVER = /\bcreate(?:Groq|WorkersAi|R2|Supabase)[A-Z]\w*\s*\(/
 const STAND_IN = /\bcreate(?:Stub|Local)[A-Z]\w*\s*\(/
 const STAND_IN_MODULE = /(?:^|\/)(?:stub[\w-]*|local|[\w-]+-local)$/
+/**
+ * A factory the two patterns above do not know would pass the gate check unseen, whatever it
+ * builds, so each one under server/ has to fit them or say here why it is not a driver.
+ */
+const NOT_DRIVERS: Record<string, string> = {
+  createSlotPacer: 'paces calls through a slot repository it is handed, and calls no service',
+  createQuoteAttester: 'compares quotes with the segments it is handed, and calls no service',
+}
+const FACTORY_DEFINITION = /\b(?:function|const|let|var)\s+(create[A-Z]\w*)/g
+
+function factoriesOfNoKnownKind(files: Record<string, string>): string[] {
+  return Object.entries(files).flatMap(([file, source]) => [...source.matchAll(FACTORY_DEFINITION)]
+    .map(match => match[1]!)
+    .filter(name => !REAL_DRIVER.test(`${name}(`) && !STAND_IN.test(`${name}(`) && !(name in NOT_DRIVERS))
+    .map(name => `${file}: ${name}`))
+}
+
 const RENAMED_DRIVER = /\bcreate(?:Stub|Local|Groq|WorkersAi|R2|Supabase)[A-Z]\w*\s+as\b/
 const CALLS_THE_GATE = /\bselectDriver(?:<[^(]*>)?\(/
 /** An import or re-export, across as many lines as it takes. No `(` or `=`, so `export function` is not one. */
@@ -71,7 +88,8 @@ function callAt(source: string, start: number): string {
  * Where a stub or local driver is built other than through `selectDriver`, or a real
  * driver is. ADR-0016 holds only if nothing can get to one without going through the gate:
  * inside its `local` branch for a stand-in, and its `real` one for a real driver. Going by
- * what the source does, and not by a list of allowed files, so a new provider is covered.
+ * what the source does, and not by a list of allowed files. A driver is known by its name,
+ * and {@link factoriesOfNoKnownKind} fails on a factory whose name says nothing.
  */
 function driversBuiltOutsideTheGate(files: Record<string, string>): string[] {
   const offenders: string[] = []
@@ -188,6 +206,31 @@ describe('source hygiene', () => {
       for (const file of ['db', 'storage', 'transcription', 'summary', 'qa']) {
         expect(files[join('server', 'utils', file, 'index.ts')]).toContain('selectDriver<')
       }
+    })
+
+    it('knows every factory there is, so the check above cannot miss one by its name', async () => {
+      const files = await serverSources()
+      expect(factoriesOfNoKnownKind(files)).toEqual([])
+      // Guard the guard: each reason is for a factory still there, and the walk finds them.
+      const found = Object.values(files).join('\n')
+      for (const name of Object.keys(NOT_DRIVERS)) expect(found).toMatch(new RegExp(`function ${name}\\b`))
+    })
+
+    it.each([
+      ['a stub by another name', 'export function createFakeReranker() { return { kind: \'stub\' } }'],
+      ['an in-memory store', 'export const createInMemoryReranker = () => ({ kind: \'local\' })'],
+      ['a provider not on the list', 'export function createCohereReranker(options) { return options }'],
+    ])('does not know %s until it is classified', (_name, body) => {
+      expect(factoriesOfNoKnownKind({ 'server/utils/rerank/index.ts': body })).toHaveLength(1)
+    })
+
+    it.each([
+      ['a stub', 'export function createStubReranker() {}'],
+      ['a local store', 'export function createLocalReranker() {}'],
+      ['a real driver', 'export function createGroqReranker() {}'],
+      ['what is not a driver', 'export function createSlotPacer() {}'],
+    ])('knows %s', (_name, body) => {
+      expect(factoriesOfNoKnownKind({ 'server/utils/rerank/index.ts': body })).toEqual([])
     })
 
     const gate = (real: string, local: string) => `selectDriver<T>(event, 'groq', {
