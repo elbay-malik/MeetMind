@@ -30,7 +30,7 @@ With any missing, a built server refuses unless `NUXT_ALLOW_LOCAL_DRIVERS` is ex
 A value of `1` or `yes` opens nothing. `pnpm dev` needs no flag, because `import.meta.dev` is
 a build constant that nothing set on a built server can change. It is not keyed on `NODE_ENV`, since
 the e2e and browser jobs run a real production build on local drivers. Those harnesses set the
-opt-in themselves, and the e2e helper blanks all nine settings too, in case a shell exported them.
+opt-in themselves and blank all nine settings, in case a shell exported them.
 
 ### 2. A Worker ignores the opt-in.
 

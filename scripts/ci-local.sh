@@ -163,8 +163,12 @@ run_browser_job() {
   data_dir=$(mktemp -d)
   printf '%s' "$data_dir" > "$DATA_DIR_FILE"
   # NUXT_ALLOW_LOCAL_DRIVERS: a real production build, which refuses local drivers
-  # unless told otherwise (ADR-0016).
+  # unless told otherwise (ADR-0016). The real settings are blanked because with all
+  # nine exported in this shell, the upload below would go to the real services.
   NUXT_ALLOW_LOCAL_DRIVERS=true NUXT_DATA_DIR="$data_dir" NUXT_UPLOAD_TOKEN_SECRET=ci-secret PORT="$port" \
+    NUXT_GROQ_API_KEY= NUXT_WORKERS_AI_ACCOUNT_ID= NUXT_WORKERS_AI_API_TOKEN= \
+    NUXT_SUPABASE_URL= NUXT_SUPABASE_SERVICE_KEY= \
+    NUXT_R2_ACCOUNT_ID= NUXT_R2_ACCESS_KEY_ID= NUXT_R2_SECRET_ACCESS_KEY= NUXT_R2_BUCKET= \
     node .output/server/index.mjs > "$LOG_DIR/server.log" 2>&1 &
   printf '%s' "$!" > "$PID_FILE"
 
