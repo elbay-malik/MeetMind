@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { access, chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -155,10 +156,128 @@ describe('pnpm deploy:worker', () => {
     expect(lines.join()).toContain('Run pnpm build')
   })
 
+  it('deploys nothing when a signal arrives during a Worker build that still finishes, and answers its code', async () => {
+    const { calls, problem, lines } = world()
+    const code = await deployWorker({
+      run: async (_command: string, args: string[], env: Record<string, string | undefined>) => {
+        calls.push(args[0] === 'build' && env.NITRO_PRESET ? 'worker build' : args[0] === 'build' ? 'node build' : 'deploy')
+        return 0
+      },
+      problem,
+      log: (line: string) => lines.push(line),
+      interrupted: () => 130,
+    })
+    expect(code).toBe(130)
+    expect(calls).toEqual(['worker build', 'node build'])
+    expect(problem).not.toHaveBeenCalled()
+  })
+
   it('is the package script', async () => {
     const { scripts } = JSON.parse(await inRepo('package.json')) as { scripts: Record<string, string> }
     expect(scripts['deploy:worker']).toBe('node scripts/deploy-worker.mjs')
     expect(scripts['secrets:worker']).toBe('node scripts/push-worker-secrets.mjs')
+  })
+})
+
+// The real script as a real process, in a temporary copy so its root is that copy, with a fake
+// pnpm first on the PATH. A signal is what the fake world above cannot show: nothing runs in a
+// process that dies of one.
+describe('pnpm deploy:worker, stopped by a signal', () => {
+  const FAKE_PNPM = `#!/bin/sh
+if [ "$1" = exec ]; then
+  : > deploying
+  exec sleep 30
+fi
+if [ -n "$NITRO_PRESET" ]; then
+  [ -z "$FAKE_STUBBORN_WORKER_BUILD" ] || trap '' INT TERM HUP
+  [ -z "$FAKE_SLOW_WORKER_BUILD" ] || { : > worker-building; sleep 1; }
+  mkdir -p .output/public/ffmpeg
+  rm -f .output/public/ffmpeg/ffmpeg-core.wasm
+  printf '{"preset":"cloudflare-module"}' > .output/nitro.json
+else
+  echo node-build >> node-builds
+  : > node-building
+  [ -z "$FAKE_SLOW_NODE_BUILD" ] || sleep 1
+  mkdir -p .output/public/ffmpeg
+  : > .output/public/ffmpeg/ffmpeg-core.wasm
+  printf '{"preset":"node-server"}' > .output/nitro.json
+fi
+`
+  let root = ''
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'meetmind-deploy-signal-'))
+    await mkdir(join(root, 'bin'))
+    await writeFile(join(root, 'bin/pnpm'), FAKE_PNPM)
+    await chmod(join(root, 'bin/pnpm'), 0o755)
+    for (const path of ['scripts/deploy-worker.mjs', 'scripts/lib/deploy-worker.mjs']) {
+      await cp(fileURLToPath(new URL(`../../${path}`, import.meta.url)), join(root, path), { recursive: true })
+    }
+  })
+  afterEach(() => rm(root, { recursive: true, force: true }))
+
+  function start(env: Record<string, string> = {}) {
+    // Its own process group, so a test can do what Ctrl-C does and signal all of it at once.
+    const child = spawn(process.execPath, ['scripts/deploy-worker.mjs'], {
+      cwd: root,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, NITRO_PRESET: '', ...env },
+    })
+    let output = ''
+    child.stdout.on('data', chunk => (output += chunk))
+    child.stderr.on('data', chunk => (output += chunk))
+    const exited = new Promise<number | null>((resolve) => {
+      child.once('close', status => resolve(status))
+    })
+    return { child, exited, output: () => output }
+  }
+
+  async function reached(marker: string) {
+    for (let i = 0; i < 200; i++) {
+      if (await access(join(root, marker)).then(() => true, () => false)) return
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+    throw new Error(`never reached ${marker}`)
+  }
+  const nodeBuildIsBack = async () => {
+    expect(JSON.parse(await readFile(join(root, '.output/nitro.json'), 'utf8')).preset).toBe('node-server')
+    await access(join(root, '.output/public/ffmpeg/ffmpeg-core.wasm'))
+  }
+
+  it.each([
+    ['SIGINT, to the whole group, as Ctrl-C sends it', 'SIGINT', true, 130],
+    ['SIGINT, to the script alone', 'SIGINT', false, 130],
+    ['SIGTERM, to the script alone', 'SIGTERM', false, 143],
+    ['SIGHUP, to the script alone', 'SIGHUP', false, 129],
+  ] as Array<[string, NodeJS.Signals, boolean, number]>)('puts the Node build back after %s during wrangler deploy', async (_name, signal, group, code) => {
+    const { child, exited, output } = start()
+    await reached('deploying')
+    process.kill(group ? -child.pid! : child.pid!, signal)
+    expect(await exited).toBe(code)
+    expect(output()).toContain('Putting the Node build back.')
+    expect(output()).toContain('may or may not be live')
+    await nodeBuildIsBack()
+  })
+
+  it('deploys nothing when a signal arrives during the Worker build, even if that build finishes', async () => {
+    const { child, exited, output } = start({ FAKE_SLOW_WORKER_BUILD: '1', FAKE_STUBBORN_WORKER_BUILD: '1' })
+    await reached('worker-building')
+    process.kill(child.pid!, 'SIGTERM')
+    expect(await exited).toBe(143)
+    expect(output()).toContain('nothing was deployed')
+    await expect(access(join(root, 'deploying'))).rejects.toThrow()
+    await nodeBuildIsBack()
+  })
+
+  it('leaves the Node build running when a signal reaches the script alone during it', async () => {
+    const { child, exited, output } = start({ FAKE_SLOW_NODE_BUILD: '1' })
+    await reached('deploying')
+    process.kill(child.pid!, 'SIGTERM')
+    await reached('node-building')
+    process.kill(child.pid!, 'SIGTERM')
+    await exited
+    expect(output()).not.toContain('Run pnpm build')
+    await nodeBuildIsBack()
   })
 })
 
