@@ -39,6 +39,15 @@ async function trackedTextFiles(): Promise<string[]> {
 const REAL_DRIVER = /\bcreate(?:Groq|WorkersAi|R2|Supabase)[A-Z]\w*\s*\(/
 const STAND_IN = /\bcreate(?:Stub|Local)[A-Z]\w*\s*\(/
 const STAND_IN_MODULE = /(?:^|\/)(?:stub[\w-]*|local|[\w-]+-local)$/
+const RENAMED_DRIVER = /\bcreate(?:Stub|Local|Groq|WorkersAi|R2|Supabase)[A-Z]\w*\s+as\b/
+const CALLS_THE_GATE = /\bselectDriver(?:<[^(]*>)?\(/
+/** An import or re-export, across as many lines as it takes. No `(` or `=`, so `export function` is not one. */
+const MODULE_STATEMENT = /^(import|export)\b\s*([\w$*\s,{}]+?)\s*\bfrom\s*['"]([^'"]+)['"]/gm
+const DYNAMIC_IMPORT = /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g
+
+function isStandInModule(path: string): boolean {
+  return STAND_IN_MODULE.test(path.replace(/\.[cm]?[jt]s$/, '').replace(/\/index$/, ''))
+}
 
 /** Comments can name a constructor, and so can its own definition. Neither builds anything. */
 function withoutCommentsOrDefinitions(source: string): string {
@@ -69,7 +78,7 @@ function driversBuiltOutsideTheGate(files: Record<string, string>): string[] {
   for (const [file, raw] of Object.entries(files)) {
     const source = withoutCommentsOrDefinitions(raw)
     let outside = source
-    for (const match of source.matchAll(/\bselectDriver(?:<[^(]*>)?\(/g)) {
+    for (const match of source.matchAll(new RegExp(CALLS_THE_GATE, 'g'))) {
       const call = callAt(source, match.index)
       const [beforeLocal = '', afterLocal = ''] = call.split(/\blocal:/)
       if (STAND_IN.test(beforeLocal)) offenders.push(`${file}: a stand-in in the real branch`)
@@ -79,12 +88,24 @@ function driversBuiltOutsideTheGate(files: Record<string, string>): string[] {
     if (STAND_IN.test(outside)) offenders.push(`${file}: a stand-in built outside selectDriver`)
     if (REAL_DRIVER.test(outside)) offenders.push(`${file}: a real driver built outside selectDriver`)
 
-    // An alias or a namespace import would get past the patterns above, and nothing but a
-    // selection module, or a local driver sharing a helper, has any use for one of these.
-    const isStandIn = STAND_IN_MODULE.test(file.replace(/\.ts$/, ''))
-    if (isStandIn || raw.includes('selectDriver')) continue
-    for (const [, clause, from] of raw.matchAll(/^import\s+(.+?)\s+from\s+'([^']+)'/gm)) {
-      if (STAND_IN_MODULE.test(from!) && !clause!.startsWith('type ')) offenders.push(`${file}: imports ${from}`)
+    // An alias, a namespace or a re-export would get past the patterns above. A local driver
+    // sharing a helper has a use for these, and a selection module for the plain name alone,
+    // which leaves its calls where those patterns can see them.
+    if (isStandInModule(file)) continue
+    const statements = source.replace(/[ \t]\/\/.*$/gm, '')
+    const selects = CALLS_THE_GATE.test(source)
+    for (const [, verb, clause, from] of statements.matchAll(MODULE_STATEMENT)) {
+      if (clause!.startsWith('type ')) continue
+      if (RENAMED_DRIVER.test(clause!)) {
+        offenders.push(`${file}: renames a driver from ${from}`)
+        continue
+      }
+      if (!isStandInModule(from!)) continue
+      const onlyPlainNames = /^\{[^}]*\}$/.test(clause!) && !/\bas\b/.test(clause!)
+      if (!(selects && verb === 'import' && onlyPlainNames)) offenders.push(`${file}: ${verb}s ${from}`)
+    }
+    for (const [, from] of statements.matchAll(DYNAMIC_IMPORT)) {
+      if (isStandInModule(from!)) offenders.push(`${file}: imports ${from} when run`)
     }
   }
   return offenders
@@ -189,8 +210,28 @@ describe('source hygiene', () => {
       ['under an alias', 'import { createStubEmbedder as embedder } from \'./stub\''],
       ['under a namespace', 'import * as stubs from \'../qa/stub-answerer\''],
       ['a local store', 'import { createLocalSlotRepository as slots } from \'./db/slots-local\''],
+      ['across several lines', 'import {\n  createStubEmbedder as embedder,\n} from \'../qa/stub\''],
+      ['across several lines with a comment in them', 'import {\n  createStubEmbedder as embedder, // for now\n} from \'../qa/stub\''],
+      ['with its folder spelled out', 'import { createStubEmbedder } from \'../qa/stub/index.ts\''],
+      ['when run', 'const { createStubEmbedder: embedder } = await import(\'../qa/stub\')'],
+      ['and handed on', 'export { createStubEmbedder as embedder } from \'../qa/stub\''],
+      ['and handed on across several lines', 'export {\n  createStubEmbedder as embedder,\n} from \'../qa/stub\''],
+      ['and handed on whole', 'export * from \'../qa/stub\''],
+      ['beside a comment naming the gate', '// selectDriver is not used here\nimport { createStubEmbedder as stub } from \'./stub\''],
+      ['and renamed from a module with any name', 'import { createStubEmbedder as stub } from \'./helpers\''],
+      ['a real driver, renamed', 'import { createGroqTranscriber as transcriber } from \'./groq\''],
     ])('notices one imported %s', (_name, statement) => {
       expect(driversBuiltOutsideTheGate({ 'server/utils/new-provider.ts': statement })).toHaveLength(1)
+    })
+
+    it.each([
+      ['renamed', 'import { createStubEmbedder as stub } from \'./stub\''],
+      ['as a namespace', 'import * as stubs from \'./stub\''],
+      ['and handed on', 'export { createStubEmbedder } from \'./stub\''],
+      ['when run', 'const stubs = await import(\'./stub\')'],
+    ])('notices a stand-in %s in a module that also selects', (_name, statement) => {
+      const body = `${statement}\nexport const use = () => ${gate('createGroqTranscriber({})', 'createStubTranscriber({})')}`
+      expect(driversBuiltOutsideTheGate({ 'server/utils/new-provider/index.ts': body })).toHaveLength(1)
     })
 
     it.each([
@@ -199,6 +240,11 @@ describe('source hygiene', () => {
       ['its name in a comment', '// createStubTranscriber() is built in the gate\n/* createLocalMeetingRepository() too */'],
       ['its definition', 'export function createStubTranscriber(options) { return options }'],
       ['a type from a local driver', 'import type { LocalAudioStore } from \'./local\''],
+      ['a type from a local driver, across several lines', 'import type {\n  LocalAudioStore,\n} from \'./local\''],
+      ['a type handed on', 'export type { LocalAudioStore } from \'./local\''],
+      ['a selection module importing what it selects', `import {\n  createStubTranscriber,\n  type Thing,\n} from './stub'\nexport const use = () => ${gate('createGroqTranscriber({})', 'createStubTranscriber({})')}`],
+      ['an import after other code, from no stand-in', 'export function other() { return 1 }\nimport { helper as h } from \'./helpers\''],
+      ['a dynamic import of something else', 'const fs = await import(\'node:fs\')'],
     ])('accepts %s', (_name, body) => {
       expect(driversBuiltOutsideTheGate({ 'server/utils/new-provider/index.ts': body })).toEqual([])
     })
