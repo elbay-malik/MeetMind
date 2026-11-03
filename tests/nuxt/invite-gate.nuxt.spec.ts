@@ -156,6 +156,15 @@ describe('with no demo meeting configured', () => {
   })
 })
 
+describe('a visitor who wants a code', () => {
+  it('is told who to email for one, by a link that opens a message', async () => {
+    const page = await mount()
+    expect(page.text().replace(/\s+/g, ' ')).toContain('To try it on a real meeting, email elbay.malik@gmail.com for an invite code.')
+    const link = page.find('a[href^="mailto:"]')
+    expect(link.attributes('href')).toBe('mailto:elbay.malik@gmail.com?subject=MeetMind%20invite%20code')
+  })
+})
+
 describe('a wrong code', () => {
   it('fails at once, in an alert, with no way on to a recording', async () => {
     checkReply = { statusCode: 401, message: REFUSED }

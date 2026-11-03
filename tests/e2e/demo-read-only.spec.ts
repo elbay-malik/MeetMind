@@ -240,6 +240,7 @@ describe('the demo meeting', () => {
   it('renders the finished demo\'s progress page as read-only, with no driver to offer', async () => {
     const html = await (await fetch(`/meetings/${demoId}/progress`, { headers: { accept: 'text/html' } })).text()
     expect(html).toContain('This is the public demo meeting.')
+    expect(html).toContain('mailto:elbay.malik@gmail.com')
     expect(html).not.toContain('Try again')
     expect(html).not.toContain('Rebuild the index')
   })

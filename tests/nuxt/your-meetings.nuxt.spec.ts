@@ -199,6 +199,7 @@ describe('MeetingLinkNotice', () => {
       setDemo(demoId)
       const page = await mount()
       expect(page.text()).toContain('public demo meeting')
+      expect(page.find('a[href^="mailto:elbay.malik@gmail.com"]').exists()).toBe(true)
       expect(page.text()).not.toContain('only way back')
       expect(page.text()).not.toContain('lose access')
       expect(page.find('input').exists()).toBe(true)
@@ -215,6 +216,7 @@ describe('MeetingLinkNotice', () => {
       const page = await mount()
       expect(page.text()).toContain('only way back')
       expect(page.text()).not.toContain('public demo meeting')
+      expect(page.find('a[href^="mailto:"]').exists()).toBe(false)
     })
   })
 

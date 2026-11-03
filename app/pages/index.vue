@@ -182,7 +182,8 @@ async function uploadAndContinue() {
         Upload a meeting recording
       </h2>
       <p class="mt-1 text-muted">
-        Uploading is invite-only: it takes a code from whoever runs this demo.
+        Uploading is invite-only.
+        <InviteContact />
         <template v-if="demoMeetingId">
           The demo meeting above needs no code.
         </template>
