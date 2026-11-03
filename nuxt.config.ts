@@ -66,7 +66,7 @@ export default defineNuxtConfig({
     // Local drivers only (dev/tests): HMAC secret for upload URLs and data root.
     uploadTokenSecret: '', // NUXT_UPLOAD_TOKEN_SECRET (random per process when empty)
     dataDir: '.data', // NUXT_DATA_DIR
-    // The five test-only flags below are read only when a stub is built, so they do
+    // The six test-only flags below are read only when a stub is built, so they do
     // nothing without ADR-0016's opt-in and nothing at all on a Worker.
     //
     // Test-only: makes the stub summarizer emit one item whose quote does not
@@ -93,6 +93,11 @@ export default defineNuxtConfig({
     // prove what a visitor is told, and that indexing resumes, over the real HTTP
     // routes. Never set outside tests.
     embedStubQuotaCanary: '', // NUXT_EMBED_STUB_QUOTA_CANARY
+    // Test-only: a stub given text holding this string followed by a stage and a kind
+    // fails with text no visitor may read (server/utils/injected-failure.ts), so tests
+    // can prove none of it reaches a browser over the real HTTP routes. Never set
+    // outside tests.
+    stubFailureCanary: '', // NUXT_STUB_FAILURE_CANARY
     public: {
       // The one meeting linked publicly, from the home page (ADR-0013). Its id
       // ends up in every page's payload, so only ever a meeting meant to be seen.

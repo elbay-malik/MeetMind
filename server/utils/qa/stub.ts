@@ -1,8 +1,10 @@
 import { normalise, tokenize } from '../summary/reconcile'
 import { estimateTokens } from '../summary/plan'
+import { INJECTED_FAILURE_TEXT, INJECTED_RATE_LIMIT_MS, injectedFailure } from '../injected-failure'
 import {
   dailyLimitReached,
   EMBEDDING_DIMENSIONS,
+  EmbeddingError,
   EmbeddingInputTooLongError,
   MAX_INPUT_TOKENS,
   type Embedder,
@@ -53,6 +55,8 @@ export interface StubEmbedderOptions {
    * over the real HTTP routes.
    */
   quotaCanary?: string
+  /** Test-only: a text holding this asks for a failure. See injected-failure.ts. */
+  failureCanary?: string
 }
 
 /**
@@ -64,6 +68,10 @@ export interface StubEmbedderOptions {
 export function createStubEmbedder(options: StubEmbedderOptions = {}): Embedder {
   function embed(text: string): number[] {
     if (options.quotaCanary && text.includes(options.quotaCanary)) throw dailyLimitReached()
+    const failure = injectedFailure(options.failureCanary, 'embed', text)
+    if (failure === 'internal') throw new Error(INJECTED_FAILURE_TEXT)
+    if (failure === 'rate-limited') throw new EmbeddingError(INJECTED_FAILURE_TEXT, 429, false, new Date(Date.now() + INJECTED_RATE_LIMIT_MS))
+    if (failure) throw new EmbeddingError(INJECTED_FAILURE_TEXT, 502, failure === 'retryable')
     const tokens = estimateTokens(text)
     if (tokens > MAX_INPUT_TOKENS) throw new EmbeddingInputTooLongError(tokens)
     return hashedTokenVector(text)

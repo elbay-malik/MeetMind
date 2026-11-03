@@ -28,7 +28,7 @@ export function useStepEmbedder(event: H3Event): Embedder {
 function pickEmbedder(event: H3Event, options: { maxAttempts?: number }): Embedder {
   return selectDriver<Embedder>(event, 'workersAi', {
     real: config => createWorkersAiEmbedder({ accountId: config.workersAiAccountId, apiToken: config.workersAiApiToken, maxAttempts: options.maxAttempts }),
-    local: config => createStubEmbedder({ quotaCanary: config.embedStubQuotaCanary }),
+    local: config => createStubEmbedder({ quotaCanary: config.embedStubQuotaCanary, failureCanary: config.stubFailureCanary }),
   })
 }
 
@@ -43,6 +43,6 @@ export function useAnswerer(event: H3Event): Answerer {
   return selectDriver<Answerer>(event, 'groq', {
     real: config => createGroqAnswerer({ apiKey: config.groqApiKey, pacer: pacer() }),
     // Truthy, not === true: destr parses '1' to the number 1, not a boolean.
-    local: config => createStubAnswerer({ pacer: config.answerStubPaced ? pacer() : undefined }),
+    local: config => createStubAnswerer({ pacer: config.answerStubPaced ? pacer() : undefined, failureCanary: config.stubFailureCanary }),
   })
 }

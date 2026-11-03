@@ -66,6 +66,7 @@ const LOCAL_ONLY = {
   summaryStubFailOnceRetryable: true,
   answerStubPaced: true,
   embedStubQuotaCanary: 'canary',
+  stubFailureCanary: 'canary',
 }
 
 const INTERVALS = { groqChatIntervalMs: 60_000, embedIntervalMs: 1000, askMaxSlotWaitMs: 20_000 }
@@ -516,6 +517,7 @@ describe('every runtime setting', () => {
     summaryStubFailOnceRetryable: 'read only inside a stub',
     answerStubPaced: 'read only inside a stub',
     embedStubQuotaCanary: 'read only inside a stub',
+    stubFailureCanary: 'read only inside a stub',
     public: 'the public block, which holds no credential',
   }
 
@@ -544,7 +546,7 @@ describe('every runtime setting', () => {
 
   it('reads a stub flag nowhere but where a stub is built', async () => {
     const root = fileURLToPath(new URL('../../server/', import.meta.url))
-    const stubFlag = /\b(?:summaryStubCanary|transcribeStubQuotaFail|summaryStubFailOnceRetryable|answerStubPaced|embedStubQuotaCanary|uploadTokenSecret)\b/
+    const stubFlag = /\b(?:summaryStubCanary|transcribeStubQuotaFail|summaryStubFailOnceRetryable|answerStubPaced|embedStubQuotaCanary|stubFailureCanary|uploadTokenSecret)\b/
     const readers: string[] = []
     for (const entry of await readdir(root, { recursive: true, withFileTypes: true })) {
       if (!entry.isFile()) continue

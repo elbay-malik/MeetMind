@@ -1,3 +1,4 @@
+import { INJECTED_FAILURE_TEXT, injectedFailure } from '../injected-failure'
 import type { TranscribeInput, Transcriber } from './transcriber'
 import { TranscriptionError } from './transcriber'
 
@@ -11,6 +12,8 @@ export interface StubTranscriberOptions {
    * over the real HTTP route without credentials. Never set outside tests.
    */
   failWithQuotaOnce?: boolean
+  /** Test-only: audio holding this asks for a failure. See injected-failure.ts. */
+  failureCanary?: string
 }
 
 /**
@@ -30,6 +33,11 @@ export function createStubTranscriber(options: StubTranscriberOptions = {}): Tra
         quotaFailureUsed = true
         throw new TranscriptionError('Transcription quota is exhausted for now (stub-injected for testing).', 429, true)
       }
+
+      const failure = options.failureCanary ? injectedFailure(options.failureCanary, 'transcribe', new TextDecoder().decode(input.bytes)) : null
+      if (failure === 'internal') throw new Error(INJECTED_FAILURE_TEXT)
+      if (failure === 'rate-limited') throw new TranscriptionError(INJECTED_FAILURE_TEXT, 429, true)
+      if (failure) throw new TranscriptionError(INJECTED_FAILURE_TEXT, 502, failure === 'retryable')
 
       // 16 kHz mono Opus at 16 kbps, the format Phase 3 produces: 2 kB ≈ 1 s.
       const durationSec = Math.max(1, Math.round(input.bytes.byteLength / 2000))

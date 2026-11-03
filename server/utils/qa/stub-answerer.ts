@@ -1,7 +1,8 @@
 import { NO_SPACE_SCRIPT } from '../summary/plan'
 import { normalise, tokenize } from '../summary/reconcile'
 import type { RequestPacer } from '../summary/groq'
-import { awaitAnswerSlot, type Answerer } from './answerer'
+import { INJECTED_FAILURE_TEXT, INJECTED_RATE_LIMIT_MS, injectedFailure } from '../injected-failure'
+import { AnswerError, awaitAnswerSlot, type Answerer } from './answerer'
 
 /**
  * Common English function words that are long enough to survive the length
@@ -66,6 +67,8 @@ export function createStubAnswerer(options: {
    * proven over HTTP without a provider. The stub otherwise spends no quota.
    */
   pacer?: RequestPacer
+  /** Test-only: a question holding this asks for a failure. See injected-failure.ts. */
+  failureCanary?: string
 } = {}): Answerer {
   return {
     kind: 'stub',
@@ -74,6 +77,10 @@ export function createStubAnswerer(options: {
     },
     async answer({ question, segments }, { slotHeld = false } = {}) {
       if (options.pacer && !slotHeld) await awaitAnswerSlot(options.pacer)
+      const failure = injectedFailure(options.failureCanary, 'answer', question)
+      if (failure === 'internal') throw new Error(INJECTED_FAILURE_TEXT)
+      if (failure === 'rate-limited') throw new AnswerError(INJECTED_FAILURE_TEXT, 429, false, new Date(Date.now() + INJECTED_RATE_LIMIT_MS))
+      if (failure) throw new AnswerError(INJECTED_FAILURE_TEXT, 502, failure === 'retryable')
       const wanted = meaningfulTokens(question)
       let best: { idx: number, text: string, overlap: number } | null = null
       for (const segment of segments) {
