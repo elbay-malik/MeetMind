@@ -80,13 +80,33 @@ export function deletionBlocker(
  * and once the row is gone the storage budget no longer counts it.
  */
 export async function removeMeetingData(event: H3Event, meetingId: string, audioKey: string): Promise<void> {
-  const store = useAudioStore(event)
-  await store.delete(audioKey)
-  await store.delete(whisperReplyKey(meetingId))
-  await usePipelineRepository(event).deleteForMeeting(meetingId)
-  await useTranscriptIndexRepository(event).deleteForMeeting(meetingId)
-  await useSummaryRepository(event).deleteForMeeting(meetingId)
-  await useTranscriptRepository(event).deleteForMeeting(meetingId)
+  await removeDataWith({
+    store: useAudioStore(event),
+    pipeline: usePipelineRepository(event),
+    index: useTranscriptIndexRepository(event),
+    summaries: useSummaryRepository(event),
+    transcripts: useTranscriptRepository(event),
+  }, meetingId, audioKey)
+}
+
+/** {@link removeMeetingData}, with what it needs already chosen: what the retention purge has to hand. */
+export async function removeDataWith(
+  deps: {
+    store: { delete: (key: string) => Promise<void> }
+    pipeline: Pick<PipelineRepository, 'deleteForMeeting'>
+    index: { deleteForMeeting: (meetingId: string) => Promise<void> }
+    summaries: { deleteForMeeting: (meetingId: string) => Promise<void> }
+    transcripts: { deleteForMeeting: (meetingId: string) => Promise<void> }
+  },
+  meetingId: string,
+  audioKey: string,
+): Promise<void> {
+  await deps.store.delete(audioKey)
+  await deps.store.delete(whisperReplyKey(meetingId))
+  await deps.pipeline.deleteForMeeting(meetingId)
+  await deps.index.deleteForMeeting(meetingId)
+  await deps.summaries.deleteForMeeting(meetingId)
+  await deps.transcripts.deleteForMeeting(meetingId)
 }
 
 export type DeletionOutcome
