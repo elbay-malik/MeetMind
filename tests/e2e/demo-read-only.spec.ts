@@ -229,6 +229,14 @@ describe('the demo meeting', () => {
     expect((await fetch(`/meetings/${demoId}${path}`, { headers: { accept: 'text/html' } })).status).toBe(200)
   })
 
+  // The page knows before any script runs, from the same setting as the guard.
+  it('renders the finished demo\'s progress page as read-only, with no driver to offer', async () => {
+    const html = await (await fetch(`/meetings/${demoId}/progress`, { headers: { accept: 'text/html' } })).text()
+    expect(html).toContain('This is the public demo meeting.')
+    expect(html).not.toContain('Try again')
+    expect(html).not.toContain('Rebuild the index')
+  })
+
   it('leaves every other meeting on the server to whoever holds its link', async () => {
     const id = await registerAndUpload('Not the demo')
     await driveTranscription(id)
