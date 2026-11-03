@@ -427,6 +427,7 @@ describe('every runtime setting', () => {
     inviteCode: 'fails closed by itself: uploads close without it',
     r2MaxStoredBytes: 'has a default, and refuses an unusable value by itself',
     r2RetentionDays: 'has a default',
+    retentionPurgeDays: 'off unless set, and any other value is off too',
     groqChatIntervalMs: 'has a default',
     embedIntervalMs: 'has a default',
     askMaxSlotWaitMs: 'has a default',

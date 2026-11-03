@@ -59,3 +59,13 @@ it('.env.example documents every setting the gate requires, under the name it lo
   expect(names).toHaveLength(9)
   for (const name of names) expect(example).toMatch(new RegExp(`^${name}=`, 'm'))
 })
+
+// Irreversible, so it is off in everything this repo hands anyone.
+it('.env.example documents the retention purge under the name it reads, and leaves it off', async () => {
+  const example = await readFile(fileURLToPath(new URL('../../.env.example', import.meta.url)), 'utf8')
+  const config = await readFile(fileURLToPath(new URL('../../nuxt.config.ts', import.meta.url)), 'utf8')
+  const wrangler = await readFile(fileURLToPath(new URL('../../wrangler.jsonc', import.meta.url)), 'utf8')
+  expect(example).toMatch(/^NUXT_RETENTION_PURGE_DAYS=$/m)
+  expect(config).toMatch(/^ {4}retentionPurgeDays: '', \/\/ NUXT_RETENTION_PURGE_DAYS$/m)
+  expect(wrangler).not.toMatch(/RETENTION_PURGE|retentionPurge/)
+})
