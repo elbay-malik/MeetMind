@@ -5,6 +5,7 @@ import type { SlotProvider } from './slots'
 import { actionItemToRow, decisionToRow } from './summaries'
 import {
   assertStorableResult,
+  assertValidExpiry,
   assertValidIndexBatch,
   assertValidLease,
   assertReleasable,
@@ -256,6 +257,14 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
         throw new Error('Supabase sweep selection returned an unusable answer')
       }
       return { meetingId: row.meeting_id, busy: row.busy as SlotProvider[] }
+    },
+
+    async nextExpired(options) {
+      assertValidExpiry(options)
+      const { data, error } = await db().rpc('next_expired_meeting', { p_days: options.days, p_exclude: options.excludeId })
+      if (error) fail('expired meeting selection', error)
+      if (data !== null && typeof data !== 'string') throw new Error('Supabase expired meeting selection returned an unusable answer')
+      return data
     },
   }
 }

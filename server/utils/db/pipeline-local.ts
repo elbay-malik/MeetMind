@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { createStorage, type Storage } from 'unstorage'
 import type { Meeting, MeetingSummary, TranscriptSegment } from '#shared/types/meeting'
+import { isPastRetention } from '#shared/utils/retention'
 import { serialize } from './local'
 import { hashTranscript } from './windows-local'
 import type { EmbeddedWindow, IndexMarker } from './windows'
@@ -10,6 +11,7 @@ import {
   afterInRotation,
   assertReleasable,
   assertStorableResult,
+  assertValidExpiry,
   assertValidIndexBatch,
   assertValidPage,
   assertValidLease,
@@ -403,6 +405,23 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
       await serialize(meetingId, async () => {
         await (await storageFor(base)).removeItem(ledgerKey(meetingId))
       })
+    },
+
+    async nextExpired(options) {
+      assertValidExpiry(options)
+      const { days, excludeId } = options
+      const s = await storageFor(base)
+      const now = Date.now()
+      const items = await s.getItems<Meeting>(await s.getKeys('meetings'))
+      const expired = items.map(item => item.value).filter((m): m is Meeting => !!m)
+        .filter(m => isPastRetention(m.createdAt, days, now) && m.id.toLowerCase() !== excludeId.toLowerCase())
+        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+      for (const meeting of expired) {
+        const ledger = await s.getItem<LedgerState>(ledgerKey(meeting.id))
+        const live = Object.values(ledger?.runs ?? {}).some(run => run.stepLeaseUntil != null && run.stepLeaseUntil > now)
+        if (!live) return meeting.id
+      }
+      return null
     },
 
     async nextForSweep({ model, excludeId, limitError }) {

@@ -135,7 +135,7 @@ export const SWEEP_CASES: SweepCase[] = [
 
 /** What a driver under test has to do for these cases. */
 export interface SweepDriver {
-  pipeline: Pick<PipelineRepository, 'nextForSweep'>
+  pipeline: Pick<PipelineRepository, 'nextForSweep' | 'nextExpired'>
   seed: (id: string, meeting: MeetingSeed) => Promise<void>
   seedSlots: (slots: Partial<Record<SlotProvider, SlotSeed>>) => Promise<void>
   /** Remove every meeting, and every slot's state. */
@@ -223,6 +223,89 @@ export function describeSweepSelection(name: string, driver: () => SweepDriver) 
       await seed(two, { status: 'uploaded', createdAgoMs: HOUR })
       expect((await pipeline.nextForSweep(options())).meetingId).toBe(one)
       expect((await pipeline.nextForSweep(options())).meetingId).toBe(two)
+    })
+  })
+}
+
+/** What a driver under test has to do for the purge's selection, which is about age and leases. */
+export function describeExpirySelection(name: string, driver: () => SweepDriver & { pipeline: Pick<PipelineRepository, 'nextExpired'> }) {
+  const DAY = 24 * HOUR
+  const DEMO = '99999999-9999-4999-8999-999999999999'
+  const ask = (days = 30) => driver().pipeline.nextExpired({ days, excludeId: DEMO })
+
+  describe(`what ${name} says has expired`, () => {
+    beforeEach(() => driver().clear())
+
+    it('says nothing has, of a meeting inside its days', async () => {
+      await driver().seed(randomUUID(), { status: 'ready', createdAgoMs: 29 * DAY })
+      expect(await ask()).toBeNull()
+    })
+
+    it('says so of a meeting past them, whatever its status', async () => {
+      for (const status of ['pending_upload', 'uploaded', 'transcribing', 'indexing', 'ready'] as const) {
+        const id = randomUUID()
+        await driver().clear()
+        await driver().seed(id, { status, createdAgoMs: 31 * DAY })
+        expect(await ask(), status).toBe(id)
+      }
+    })
+
+    it('says so of a failed one too', async () => {
+      const id = randomUUID()
+      await driver().seed(id, { status: 'failed', failedStage: 'transcription', errorMessage: 'it broke', createdAgoMs: 31 * DAY })
+      expect(await ask()).toBe(id)
+    })
+
+    it('goes by when the meeting was created, however recently it was touched', async () => {
+      const id = randomUUID()
+      await driver().seed(id, { status: 'ready', createdAgoMs: 31 * DAY, updatedAgoMs: 0 })
+      expect(await ask()).toBe(id)
+    })
+
+    it('says nothing of one touched long ago that is inside its days', async () => {
+      await driver().seed(randomUUID(), { status: 'ready', createdAgoMs: DAY, updatedAgoMs: 40 * DAY })
+      expect(await ask()).toBeNull()
+    })
+
+    it('honours the days it is given, one way and the other', async () => {
+      const id = randomUUID()
+      await driver().seed(id, { status: 'ready', createdAgoMs: 3 * DAY })
+      expect(await ask(4)).toBeNull()
+      expect(await ask(2)).toBe(id)
+    })
+
+    it('answers the oldest', async () => {
+      const [older, newer] = [randomUUID(), randomUUID()]
+      await driver().seed(newer, { status: 'ready', createdAgoMs: 31 * DAY })
+      await driver().seed(older, { status: 'ready', createdAgoMs: 60 * DAY })
+      expect(await ask()).toBe(older)
+    })
+
+    it('never answers the public demo, however old, written either way', async () => {
+      await driver().seed(DEMO, { status: 'ready', createdAgoMs: 400 * DAY })
+      expect(await ask()).toBeNull()
+      expect(await driver().pipeline.nextExpired({ days: 30, excludeId: DEMO.toUpperCase() })).toBeNull()
+    })
+
+    it('passes over a meeting a step is live on, and answers the next', async () => {
+      const [live, next] = [randomUUID(), randomUUID()]
+      await driver().seed(live, { status: 'indexing', createdAgoMs: 60 * DAY, runs: { summarization: { leaseInMs: 60_000 } } })
+      await driver().seed(next, { status: 'ready', createdAgoMs: 31 * DAY })
+      expect(await ask()).toBe(next)
+    })
+
+    it('answers one whose lease has run out, as a step that died leaves it', async () => {
+      const id = randomUUID()
+      await driver().seed(id, { status: 'indexing', createdAgoMs: 60 * DAY, runs: { summarization: { leaseInMs: -60_000 } } })
+      expect(await ask()).toBe(id)
+    })
+
+    it.each([0, -1, 1.5, Number.NaN])('refuses to look with %s days, which has no safe reading', async (days) => {
+      await expect(driver().pipeline.nextExpired({ days, excludeId: DEMO })).rejects.toThrow(/positive whole number/)
+    })
+
+    it('refuses to look with no demo named', async () => {
+      await expect(driver().pipeline.nextExpired({ days: 30, excludeId: '' })).rejects.toThrow(/public demo must be named/)
     })
   })
 }
