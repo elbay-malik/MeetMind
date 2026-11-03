@@ -597,6 +597,23 @@ describe('what it says closing the page does', () => {
     expect(page.text()).toContain('A one-hour recording takes about 30 steps.')
     expect(page.text()).not.toContain('when you open it again')
   })
+
+  it('promises no more than opening it again of a failed meeting, whose failure no tick retries, on a Worker', async () => {
+    useDeploymentFacts().value = { sweeps: true, purgeDays: null }
+    const failed = answer({
+      status: 'failed',
+      progress: { stage: 'summarization', done: 1, total: 3, etaSeconds: null },
+      index: { state: 'building', done: 0, total: null, retryAt: null },
+      next: 'wait',
+      retryAt: new Date(Date.now() + 60_000).toISOString(),
+      retryAfterMs: 60_000,
+    })
+    const { id } = aMeeting({ row: { status: 'failed', failedStage: 'summarization' }, pipeline: [ok(failed)], advance: [ok(failed)] })
+    const page = await open(id)
+    await vi.waitFor(() => expect(page.text()).toContain('This page is doing the work'))
+    expect(page.text()).toContain('it carries on from the same place when you open it again')
+    expect(page.text()).not.toContain('every 5 minutes')
+  })
 })
 
 describe('the public demo', () => {

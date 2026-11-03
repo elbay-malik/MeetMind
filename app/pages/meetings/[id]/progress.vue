@@ -272,7 +272,7 @@ function rebuild() {
             v-else-if="state.role === 'driving' && someTabIsWorking"
             class="text-sm text-muted"
           >
-            This page is doing the work, so keep it open. {{ ifClosedSentence(deployment.sweeps) }}
+            This page is doing the work, so keep it open. {{ ifClosedSentence(deployment.sweeps && status !== 'failed') }}
           </p>
         </div>
       </template>
