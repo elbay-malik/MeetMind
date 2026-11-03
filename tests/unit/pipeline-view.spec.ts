@@ -189,6 +189,27 @@ describe('the stepper', () => {
   })
 })
 
+describe('a failed extraction while its index builds', () => {
+  const failedExtraction = (next: PipelineResponse['next'], patch: Partial<PipelineResponse> = {}) => answer({ status: 'failed', next, progress: { stage: 'summarization', done: 1, total: null, etaSeconds: null }, index: { state: 'building', done: 16, total: null, retryAt: null }, ...patch })
+
+  it.each<PipelineResponse['next']>(['continue', 'wait'])('promises no retry on `%s`, which could be a transcript over the limit', (next) => {
+    const failure = failureOf(state({}, failedExtraction(next)), facts({ status: 'failed' }))!
+    expect(failure.title).toBe('Extraction did not finish')
+    expect(failure.description).toContain('The transcript is kept')
+    expect(failure.description).not.toMatch(/retry/i)
+  })
+
+  it('promises one when the server has said there is one', () => {
+    const failed = failedExtraction('failed', { retryAt: '2026-11-03T12:01:00.000Z', index: { state: 'complete', done: 16, total: 16, retryAt: null } })
+    expect(failureOf(state({ stop: 'failed' }, failed), facts({ status: 'failed' }))!.description).toMatch(/A retry carries on from there/)
+  })
+
+  it('promises one when the driver stopped on the retry being all that is on offer', () => {
+    const onOffer = failedExtraction('continue', { index: { state: 'complete', done: 16, total: 16, retryAt: null } })
+    expect(failureOf(state({ stop: 'failed', retryFrom: NOW }, onOffer), facts({ status: 'failed' }))!.description).toMatch(/A retry carries on from there/)
+  })
+})
+
 describe('the pause banner', () => {
   const blocked = (stageName: PipelineResponse['progress']['stage'], role: DriverState['role'] = 'driving', left = 3 * HOUR) =>
     bannerOf(state({ role, pause: 'wait', waitMs: left, nextRequestAt: NOW + left }, answer({ progress: { stage: stageName, done: 0, total: null, etaSeconds: null } })), NOW)
@@ -313,6 +334,8 @@ describe('the failure alert', () => {
   it('does not call a failure final while the index is still being built past it', () => {
     const stillGoing = answer({ status: 'failed', next: 'continue', progress: { stage: 'summarization', done: 1, total: 3, etaSeconds: null }, index: { state: 'building', done: 16, total: null, retryAt: null } })
     expect(failureOf(state({}, stillGoing), facts())!.title).toBe('Extraction did not finish')
+    // It may be over the limit, which no retry helps, and the answer cannot say yet.
+    expect(failureOf(state({}, stillGoing), facts())!.description).not.toMatch(/retry/i)
   })
 
   it('stays out of the way on the public demo, whose banner says all there is', () => {
