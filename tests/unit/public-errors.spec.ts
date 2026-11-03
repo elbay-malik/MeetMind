@@ -186,6 +186,51 @@ describe('publicMessage', () => {
   })
 })
 
+/** Each stage's sentence for what it has no rule for, by status class: an edit here is a decision about what visitors read. */
+const FIXED: Record<PublicStage, { rateLimited: string, otherwise: string }> = {
+  upload: { rateLimited: 'Uploads are being limited for now. Try again later.', otherwise: 'The uploaded audio was refused.' },
+  transcription: { rateLimited: 'Transcription is being rate limited for now. Try again later.', otherwise: 'Transcription did not finish. Try again later.' },
+  extraction: { rateLimited: 'Extraction is being rate limited for now. Try again later.', otherwise: 'Extraction did not finish. Try again later.' },
+  indexing: { rateLimited: 'Indexing is being rate limited for now. Try again later.', otherwise: 'Indexing did not finish. Try again later.' },
+  answering: { rateLimited: 'Answering is not available for now.', otherwise: 'The question could not be answered. Try again later.' },
+}
+
+/** Our sentences that go out as other words, so they are not in {@link AUTHORED}, which go out as they are. */
+const REPLACED: Record<PublicStage, string[]> = {
+  upload: [inspectStoredAudio({ audioBytes: 4096 }, { size: 4096, contentType: 'video/mp4' })!],
+  transcription: [],
+  extraction: [],
+  indexing: [],
+  answering: [],
+}
+
+/** Words that would say whose service this is or how it stores things. */
+const INTERNAL_WORDS = /groq|whisper|gpt|supabase|postgr|pgrst|cloudflare|workers ai|bge|\br2\b|\bhttp\b|constraint|org_|meetings\//i
+
+describe.each(STAGES)('what the %s stage may say', (stage) => {
+  it('is these fixed sentences', () => {
+    expect(fixedSentence(stage, 429)).toBe(FIXED[stage].rateLimited)
+    expect(fixedSentence(stage, 500)).toBe(FIXED[stage].otherwise)
+  })
+
+  it('has no rule that no sentence of ours needs, so adding one means naming what it passes', () => {
+    const unused = PUBLIC_RULES[stage].filter((rule) => {
+      if (typeof rule === 'string') return !AUTHORED[stage].includes(rule)
+      const regex = rule instanceof RegExp ? rule : rule.match
+      return ![...AUTHORED[stage], ...REPLACED[stage]].some(sentence => regex.test(sentence))
+    })
+    expect(unused).toEqual([])
+  })
+
+  it('names no service, and nothing of how things are stored', () => {
+    const sayings = [FIXED[stage].rateLimited, FIXED[stage].otherwise, fixedSentence(stage, 429), fixedSentence(stage, 500)]
+    for (const rule of PUBLIC_RULES[stage]) {
+      sayings.push(typeof rule === 'string' ? rule : rule instanceof RegExp ? rule.source : rule.say)
+    }
+    expect(sayings.filter(words => INTERNAL_WORDS.test(words))).toEqual([])
+  })
+})
+
 describe('what the guard on a rule calls a wildcard', () => {
   it.each([
     /^Supabase read failed: \S+$/,
