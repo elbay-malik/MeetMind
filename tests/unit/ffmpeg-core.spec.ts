@@ -150,7 +150,11 @@ describe('GET /ffmpeg/ffmpeg-core.wasm', () => {
   it('reads the one key, the whole object, from no input of the request', async () => {
     store.openRange.mockResolvedValueOnce(stored())
     // Nothing of a request is here to read: anything the handler reached for would throw.
-    const answer = await handler(new Proxy({}, { get: () => { throw new Error('read the request') } }))
+    const answer = await handler(new Proxy({}, {
+      get() {
+        throw new Error('read the request')
+      },
+    }))
     expect(store.openRange).toHaveBeenCalledExactlyOnceWith(FFMPEG_CORE_WASM_KEY, null)
     expect(answer.status).toBe(200)
     expect(new Uint8Array(await answer.arrayBuffer())).toEqual(new Uint8Array([0, 97, 115, 109]))
