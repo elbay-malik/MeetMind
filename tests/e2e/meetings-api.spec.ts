@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, Meeting, PublicMeeting } from '../../shared/types/meeting'
 import { MAX_AUDIO_BYTES } from '../../shared/utils/meeting'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 import { LOCAL_DRIVERS } from './helpers/local-drivers'
@@ -54,7 +54,14 @@ function putAudio(url: string, body: Uint8Array, contentType = 'audio/ogg') {
   return fetch(url, { method: 'PUT', headers: { 'content-type': contentType }, body })
 }
 
-const audioPath = (m: Meeting) => join(dataDir, 'audio', ...m.audioKey.split('/'))
+/** The row as stored: what a route answers does not carry the stored error. */
+async function storedMeeting(id: string): Promise<Meeting> {
+  const meeting = await createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) }).getItem<Meeting>(`meetings/${id}`)
+  if (!meeting) throw new Error(`no local meeting row for ${id}`)
+  return meeting
+}
+
+const audioPath = (m: PublicMeeting) => join(dataDir, 'audio', ...m.audioKey.split('/'))
 
 describe('POST /api/meetings', () => {
   it('registers a pending meeting and issues a local upload URL', async () => {
@@ -145,21 +152,21 @@ describe('upload → complete', () => {
     expect(stored.byteLength).toBe(audio.byteLength)
     expect(Buffer.from(audio).equals(stored)).toBe(true)
 
-    const { meeting: done } = await $fetch<{ meeting: Meeting }>(
+    const { meeting: done } = await $fetch<{ meeting: PublicMeeting }>(
       `/api/meetings/${meeting.id}/complete`, { method: 'POST' })
     expect(done.status).toBe('uploaded')
     expect(done.uploadedAt).not.toBeNull()
-    expect(done.errorMessage).toBeNull()
+    expect((await storedMeeting(meeting.id)).errorMessage).toBeNull()
 
-    const { meeting: fetched } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: fetched } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(fetched).toEqual(done)
   })
 
   it('completing twice is idempotent', async () => {
     const { meeting, upload } = await register()
     await putAudio(upload.url, audio)
-    const first = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
-    const second = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
+    const first = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
+    const second = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
     expect(second.meeting).toEqual(first.meeting)
   })
 
@@ -167,7 +174,7 @@ describe('upload → complete', () => {
     const { meeting } = await register()
     const res = await fetch(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
     expect(res.status).toBe(409)
-    const { meeting: still } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: still } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(still.status).toBe('pending_upload')
   })
 
@@ -184,9 +191,9 @@ describe('upload → complete', () => {
     const res = await fetch(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
     expect(res.status).toBe(409)
     await expect(stat(path)).rejects.toThrow()
-    const { meeting: failed } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: failed } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(failed.status).toBe('failed')
-    expect(failed.errorMessage).toMatch(/video\/mp4/)
+    expect((await storedMeeting(meeting.id)).errorMessage).toMatch(/video\/mp4/)
     // Recorded as the stage that actually failed. As 'transcription' — which
     // is what this used to write — the progress page offered "Try
     // transcription again" for audio this very request had just deleted, and
@@ -212,7 +219,7 @@ describe('upload → complete', () => {
     expect(body.message).toMatch(/upload the recording again/i)
     expect(body.message).not.toMatch(/missing from storage/i)
 
-    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: after } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(after.status).toBe('failed')
     expect(after.failedStage).toBe('upload')
   })
@@ -228,9 +235,9 @@ describe('upload → complete', () => {
     const res = await fetch(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
     expect(res.status).toBe(409)
     await expect(stat(path)).rejects.toThrow()
-    const { meeting: failed } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: failed } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     expect(failed.status).toBe('failed')
-    expect(failed.errorMessage).toMatch(/expected 4096/)
+    expect((await storedMeeting(meeting.id)).errorMessage).toMatch(/expected 4096/)
 
     // A failed meeting cannot be resurrected by uploading afterwards.
     const again = await fetch(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })

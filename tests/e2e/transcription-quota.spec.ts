@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting, PipelineResponse } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, Meeting, PipelineResponse, PublicMeeting } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 import { LOCAL_DRIVERS } from './helpers/local-drivers'
@@ -33,7 +33,7 @@ await setup({
 
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 
-async function uploadedMeeting(): Promise<Meeting> {
+async function uploadedMeeting(): Promise<PublicMeeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
     headers: inviteHeaders,
@@ -43,7 +43,7 @@ async function uploadedMeeting(): Promise<Meeting> {
     },
   })
   await fetch(upload.url, { method: 'PUT', headers: { 'content-type': 'audio/ogg' }, body: audio })
-  const done = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
+  const done = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
   return done.meeting
 }
 
@@ -63,13 +63,14 @@ describe('transcription quota exhaustion', () => {
     const res = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })
     expect(res.status).toBe(429)
 
-    const { meeting: after } = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)
+    const { meeting: after } = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}`)
     // The bug this guards: a retryable 429 used to reset straight to
     // `uploaded`, which has no cooldown gate at all — a client could
     // immediately hammer the same exhausted quota again.
     expect(after.status).toBe('failed')
     expect(after.failedStage).toBe('transcription')
-    expect(after.errorMessage).toMatch(/quota is exhausted/)
+    const stored = await createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) }).getItem<Meeting>(`meetings/${meeting.id}`)
+    expect(stored!.errorMessage).toMatch(/quota is exhausted/)
 
     // An instant retry must still be refused, with an accurate reason.
     const tooSoon = await fetch(`/api/meetings/${meeting.id}/transcribe`, { method: 'POST' })

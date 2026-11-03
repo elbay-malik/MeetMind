@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting, PipelineResponse, QuestionAnswer, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, Meeting, PipelineResponse, PublicMeeting, QuestionAnswer, SearchIndexStatus, TranscriptSegment } from '../../shared/types/meeting'
 import { DAILY_RESET_MARGIN_MS } from '../../server/utils/qa/embedder'
 import { indexUntilStopped } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
@@ -42,7 +42,7 @@ beforeEach(() => db.removeItem('slots/workers-ai-embed'))
 
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 
-async function transcribedMeeting(): Promise<Meeting> {
+async function transcribedMeeting(): Promise<PublicMeeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
     headers: inviteHeaders,
@@ -129,8 +129,7 @@ describe('the provider\'s daily limit', () => {
     const again = await oneStep(meeting.id)
     expectTheDailyLimit(again, await again.json() as Refusal)
     expect(await status(meeting.id)).toEqual(partial)
-    expect((await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)).meeting)
-      .toMatchObject({ status: meeting.status, errorMessage: null })
+    expect(await db.getItem<Meeting>(`meetings/${meeting.id}`)).toMatchObject({ status: meeting.status, errorMessage: null })
 
     // The day after, as far as the provider is concerned.
     await setStoredTranscript(meeting.id, longTranscript('the last line, as it really was'))
@@ -178,8 +177,7 @@ describe('POST .../advance at the daily limit', () => {
     // No sentence, and nothing else a provider or database said.
     expect(Object.keys(answer!).sort()).toEqual(['index', 'next', 'progress', 'retryAfterMs', 'retryAt', 'status'])
 
-    const row = (await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}`)).meeting
-    expect(row).toMatchObject({ status: 'ready', errorMessage: null, failedStage: null })
+    expect(await db.getItem<Meeting>(`meetings/${meeting.id}`)).toMatchObject({ status: 'ready', errorMessage: null, failedStage: null })
     expect((await status(meeting.id)).state).toBe('incomplete')
 
     // A read says the same. Asked again, it stays so, with no block moved.

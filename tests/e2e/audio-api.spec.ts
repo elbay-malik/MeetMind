@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, Meeting, PublicMeeting } from '../../shared/types/meeting'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
@@ -21,7 +21,7 @@ await setup({
 // Distinct bytes so a served window can be checked against its offset.
 const audio = new Uint8Array(5000).map((_, i) => i % 251)
 
-async function uploadedMeeting(): Promise<Meeting> {
+async function uploadedMeeting(): Promise<PublicMeeting> {
   const { meeting, upload } = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
     headers: inviteHeaders,
@@ -35,7 +35,7 @@ async function uploadedMeeting(): Promise<Meeting> {
     },
   })
   await fetch(upload.url, { method: 'PUT', headers: { 'content-type': 'audio/ogg' }, body: audio })
-  const done = await $fetch<{ meeting: Meeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
+  const done = await $fetch<{ meeting: PublicMeeting }>(`/api/meetings/${meeting.id}/complete`, { method: 'POST' })
   return done.meeting
 }
 
