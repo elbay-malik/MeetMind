@@ -124,3 +124,18 @@ describe('what the documents say a tick costs questions', () => {
     expect(orchestration).toContain('Groq\'s 200K TPD (about 5 one-hour meetings,')
   })
 })
+
+describe('what the documents say of a meeting past the ones looked at', () => {
+  // A complete meeting's row never moves again, so those ahead of a finished transcript stay
+  // ahead. tests/unit/helpers/sweep-cases.ts holds the limit itself, on both drivers.
+  it('does not tell a finished meeting to wait for those ahead of it, which never ends', async () => {
+    const [sql, adr] = await Promise.all([
+      readFile(join(rootDir, 'supabase/migrations/20261103180000_sweeper.sql'), 'utf8'),
+      readFile(join(rootDir, 'docs/adr/0012-pipeline-orchestration.md'), 'utf8'),
+    ])
+    expect(sql).not.toMatch(/a\s+(--\s+)?meeting waits for those ahead of it to move, or for a tab/)
+    expect(sql).toContain('waits for a tab alone')
+    expect(adr).not.toContain('So a meeting past those 50 waits for the ones ahead of it to move, or for a tab.')
+    expect(adr).toContain('A finished transcript past its 50 needs a tab, and nothing else')
+  })
+})
