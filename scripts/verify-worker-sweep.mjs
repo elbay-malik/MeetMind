@@ -576,6 +576,55 @@ try {
     })
   }
 
+  // Not the sweeper, but this is the script with real SQL behind a Worker build, and so the one
+  // place the order of ADR-0019 can be read from what the Worker really sent.
+  console.log('\n# Questions on the demo: gate, slot, take, and only then a provider')
+  await clearAll()
+  await pg.sql('delete from public.demo_question_days;')
+  await fullMeeting(DEMO, 1)
+  await fullMeeting(TWO, 1)
+  await withWorker({ ...EVERY_SETTING, NUXT_PUBLIC_DEMO_MEETING_ID: DEMO, NUXT_DEMO_QUESTIONS_PER_DAY: '1' }, async () => {
+    const counted = async () => (await pg.sql('select coalesce(sum(taken), 0) from public.demo_question_days;')).trim()
+    const askOf = async (id) => {
+      const before = sent.length
+      const res = await fetch(`${base}/api/meetings/${id}/ask`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: 'What did they agree?' }) })
+      const body = await res.json()
+      const steps = sent.slice(before).map(({ url }) => /\/rpc\/(demo_question_gate|read_index_state|reserve_slot|take_demo_question)/.exec(url)?.[1]
+        ?? (url.startsWith('/ai/') ? 'embed' : url.startsWith('/groq/') ? 'answer' : null)).filter(Boolean)
+      return { res, body, steps }
+    }
+    const held = () => pg.sql(`insert into public.provider_slots (provider, next_available_at) values ('groq-chat', now() + interval '1 hour')
+      on conflict (provider) do update set next_available_at = now() + interval '1 hour';`)
+
+    await held()
+    for (let i = 0; i < 5; i++) {
+      const { res, steps } = await askOf(DEMO)
+      check(res.status === 429 && !steps.includes('take_demo_question') && !steps.includes('embed'), `refused its slot, it takes no count and spends nothing: ${steps.join(', ')}`)
+    }
+    check(await counted() === '0', 'a loop refused its slot burned none of the day\'s questions')
+    await pg.sql('delete from public.provider_slots;')
+
+    const first = await askOf(DEMO)
+    check(first.steps.slice(0, 5).join() === 'demo_question_gate,read_index_state,reserve_slot,take_demo_question,embed', `in that order: ${first.steps.join(', ')}`)
+    check(await counted() === '1', 'it counted one')
+
+    const over = await askOf(DEMO)
+    check(over.res.status === 429 && over.body.message === 'The demo has used its questions for today.', `over the count: ${over.res.status} ${over.body.message}`)
+    check(over.steps.join() === 'demo_question_gate', `and it stopped at the gate: ${over.steps.join(', ')}`)
+    check(Number(over.res.headers.get('retry-after')) === over.body.data.retryAfterSec && new Date(over.body.data.retryAt).toISOString().endsWith('T00:00:00.000Z'), `until 00:00 UTC (${over.body.data.retryAt})`)
+
+    const other = await askOf(TWO)
+    check(!other.steps.some(step => step.includes('demo_question')), `another meeting calls none of it: ${other.steps.join(', ')}`)
+    check(other.res.status !== 429, `and is not refused by it (${other.res.status})`)
+    await pg.sql('delete from public.provider_slots; delete from public.demo_question_days;')
+
+    await pg.sql(`update public.meetings set status = 'summarizing' where id = '${TWO}';`)
+    const paused = await askOf(DEMO)
+    check(paused.res.status === 429 && paused.body.message === 'The demo pauses its questions while a meeting is being processed.', `with an extraction pending: ${paused.res.status} ${paused.body.message}`)
+    check(paused.steps.join() === 'demo_question_gate' && paused.body.data.retryAfterSec <= 60, `stopped at the gate, for about a minute (${paused.body.data.retryAfterSec} s)`)
+    check(await counted() === '0', 'and counted nothing')
+  })
+
   console.log('\n# The database out')
   await withWorker({ ...EVERY_SETTING, NUXT_SUPABASE_URL: 'http://127.0.0.1:9' }, async (logs) => {
     const { answer } = await tick()
