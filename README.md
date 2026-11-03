@@ -85,7 +85,7 @@ that can write, and what this does not do.
 | [0009](docs/adr/0009-workers-measurement-spike.md) | Workers measurement spike before Phase 9: what the runtime actually does, measured rather than inferred |
 | [0010](docs/adr/0010-r2-cost-controls.md) | R2 cost controls: a lifecycle rule bounds growth, an application storage budget is the hard stop, per-request op metering rejected |
 | [0011](docs/adr/0011-admin-meeting-delete.md) | Deleting a meeting is admin-only, behind `NUXT_ADMIN_TOKEN`; refused while anything could still write its data |
-| [0012](docs/adr/0012-pipeline-orchestration.md) | Pipeline orchestration on the Workers free plan: one bounded step per request, browser-driven, Postgres rate-limit slots, polling not SSE |
+| [0012](docs/adr/0012-pipeline-orchestration.md) | Pipeline orchestration on the Workers free plan: one bounded step per request, driven by the open page with no click and one driving tab per browser, Postgres rate-limit slots, polling not SSE |
 | [0013](docs/adr/0013-private-meeting-links.md) | A meeting is reached only through its unguessable link: no global list or cross-meeting search, \"Your meetings\" lives in this browser |
 | [0014](docs/adr/0014-workers-ai-embeddings.md) | Embeddings from Cloudflare Workers AI's bge-m3 at 1024 dimensions, replacing a provider whose terms require a paid plan in the EEA: measured batch limits, and a plain message at the daily limit |
 | [0015](docs/adr/0015-invite-only-uploads.md) | Visitors get the demo meeting, which can only be read and asked; uploading takes an invite code, and a missing code closes it. A guard for every route that can write |
@@ -260,7 +260,7 @@ indexing resumes from where it stopped. See
 | `pnpm test` / `pnpm test:watch` | Vitest unit + Nuxt-runtime tests |
 | `pnpm test:e2e` | Builds the app, then tests the Nitro routes against the local drivers |
 | `pnpm test:services` | Exercises the real R2, Supabase, Groq and Workers AI services; each group is skipped unless its keys are set, and the banner names which ones skipped |
-| `NUXT_INVITE_CODE=<code> node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: wrong code, right code, drop → extract → upload → progress page, then inspects storage. Takes the code the server was started with, and a server on local drivers, so started with `NUXT_ALLOW_LOCAL_DRIVERS=true` if built |
+| `NUXT_INVITE_CODE=<code> node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: wrong code, right code, drop → extract → upload → progress page, inspects storage, then checks the page reaches `ready` with no click, a second tab that only watches and takes over, leaving and coming back, and the read-only demo, all by the requests each tab was seen to send. Takes the code the server was started with, and a server on local drivers, so started with `NUXT_ALLOW_LOCAL_DRIVERS=true` if built |
 | `node scripts/drive-player.mjs <url> <meetingId>` | Headless Chromium: click-to-seek, active-line highlight, transcript keyboard navigation |
 | `NITRO_PRESET=cloudflare_module pnpm build && node scripts/verify-worker-gate.mjs` | Runs the Worker build under local workerd with fake services, and checks what it refuses and what it selects ([ADR-0016](docs/adr/0016-real-services-or-nothing.md)). Run `pnpm build` afterwards, since the other jobs need the Node build |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
@@ -281,8 +281,10 @@ Several playbook instructions were changed after re-checking their premises — 
 [ADR-0005](docs/adr/0005-audio-playback-and-transcript-sync.md),
 [ADR-0006](docs/adr/0006-structured-summaries.md),
 [ADR-0007](docs/adr/0007-semantic-qa.md) and
-[ADR-0008](docs/adr/0008-cross-meeting-search.md). Next: pipeline orchestration,
-rate limiting, Cloudflare Workers.
+[ADR-0008](docs/adr/0008-cross-meeting-search.md). Pipeline orchestration is built up to its
+browser driver: the progress page takes a meeting through every stage by itself, for as long as a
+tab has it open ([ADR-0012](docs/adr/0012-pipeline-orchestration.md)). Next: the cron sweeper that
+moves a meeting with no tab open, rate limiting, Cloudflare Workers.
 
 ## Acknowledgements
 
