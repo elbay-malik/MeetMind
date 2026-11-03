@@ -18,6 +18,15 @@ const STAGES: PublicStage[] = ['upload', 'transcription', 'extraction', 'indexin
 
 const say = (stage: PublicStage, message: string, statusCode = 500) => publicMessage(stage, { message, statusCode })
 
+/**
+ * Whether a rule's regex can read any word: a dot, a negated class, or the escapes that are
+ * one. Those escapes are looked for before escapes are taken out, as they would go with them.
+ */
+function hasWildcard(regex: RegExp): boolean {
+  if (/\\[SWD]/.test(regex.source)) return true
+  return /\.|\[\^/.test(regex.source.replace(/\\./g, '').replace(/\[(?!\^)[^\]]*\]/g, ''))
+}
+
 /** Every sentence of ours a route can be handed, by the stage that says it, with the code's own words where the code exports them. */
 const AUTHORED: Record<PublicStage, string[]> = {
   upload: [
@@ -119,7 +128,7 @@ describe('publicMessage', () => {
         expect(regex.source.endsWith('$'), regex.source).toBe(true)
         // `m` would make the anchors match at any line, and a dot or a negated class any word.
         expect(regex.flags, regex.source).toBe('')
-        expect(regex.source.replace(/\\./g, '').replace(/\[(?!\^)[^\]]*\]/g, ''), regex.source).not.toMatch(/\.|\[\^|\\S|\\W|\\D/)
+        expect(hasWildcard(regex), regex.source).toBe(false)
         // What goes out as it came carries digits or a status and no word of anyone else's.
         // Only a rule that says something else instead may read more than that.
         if (rule instanceof RegExp) expect(regex.source.replace(/\[\\d,\]/g, ''), regex.source).not.toMatch(/\\w|\[/)
@@ -174,6 +183,33 @@ describe('publicMessage', () => {
     'The answer did not match the expected shape: ✖ Invalid input',
   ])('does not take %j for answering', (message) => {
     expect(say('answering', message, 502)).toBe(fixedSentence('answering', 502))
+  })
+})
+
+describe('what the guard on a rule calls a wildcard', () => {
+  it.each([
+    /^Supabase read failed: \S+$/,
+    /^R2 GET \S+ failed$/,
+    /^x \D+$/,
+    /^x \W+$/,
+    /^x [\s\S]+$/,
+    /^x [\d\D]+$/,
+    /^x .+$/,
+    /^x [^a]+$/,
+  ])('takes %s for one', (regex) => {
+    expect(hasWildcard(regex)).toBe(true)
+  })
+
+  it.each([
+    /^Stored audio is \d+ bytes, expected \d+$/,
+    /^A sentence\. With a dot\.$/,
+    /^Uploaded object is [\w.+-]+\/[\w.+-]+$/,
+  ])('does not take %s for one', (regex) => {
+    expect(hasWildcard(regex)).toBe(false)
+  })
+
+  it('lets a rule like that read an object\'s key, which is why it has to find them', () => {
+    expect(/^R2 GET \S+ failed$/.test('R2 GET meetings/9b1d/audio.ogg failed')).toBe(true)
   })
 })
 
