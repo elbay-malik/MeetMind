@@ -1,5 +1,6 @@
 // What `pnpm secrets:worker` sends, apart from sending it, so a test can hold it with no wrangler
 // and no real .env: tests/unit/deploy-scripts.spec.ts.
+import { parse } from 'dotenv'
 
 /**
  * Every secret a deployment takes from .env, and nothing else goes. In particular not the
@@ -23,25 +24,12 @@ export const WORKER_SECRET_NAMES = [
 ]
 
 /**
- * One `NAME=value` a line, as dotenv reads the simple cases: a comment or blank line is
- * skipped, surrounding quotes go, and unquoted text stops at ` #`. Nothing is expanded. Not
- * `node:util`'s parseEnv, which takes the line after an empty value as part of it (Node 24).
+ * The JSON wrangler is given, holding those keys alone. Throws naming what is missing, and never
+ * a value. Read by dotenv itself, the version `pnpm dev` reads the same file with through c12,
+ * so a line cannot mean one thing here and another there. Nothing is expanded.
  */
-function readEnvFile(text) {
-  const env = {}
-  for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*(?:export\s+)?([\w.-]+)\s*=\s*(.*?)\s*$/.exec(line)
-    if (!match) continue
-    const [, name, raw] = match
-    const quoted = /^(["'])(.*)\1$/.exec(raw)
-    env[name] = quoted ? quoted[2] : raw.replace(/\s+#.*$/, '').replace(/^#.*$/, '')
-  }
-  return env
-}
-
-/** The JSON wrangler is given, holding those keys alone. Throws naming what is missing, and never a value. */
 export function workerSecretsPayload(envText) {
-  const env = readEnvFile(envText)
+  const env = parse(envText)
   const missing = WORKER_SECRET_NAMES.filter(name => !env[name]?.trim())
   if (missing.length > 0) throw new Error(`.env has no value for ${missing.join(', ')}, so nothing was sent.`)
   return JSON.stringify(Object.fromEntries(WORKER_SECRET_NAMES.map(name => [name, env[name]])))

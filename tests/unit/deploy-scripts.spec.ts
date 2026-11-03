@@ -3,6 +3,7 @@ import { access, chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parse } from 'dotenv'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { deployWorker, workerBuildProblem } from '../../scripts/lib/deploy-worker.mjs'
 import { pushWorkerSecrets, WORKER_SECRET_NAMES, workerSecretsPayload } from '../../scripts/lib/worker-secrets.mjs'
@@ -341,10 +342,31 @@ describe('pnpm secrets:worker', () => {
       NUXT_GROQ_API_KEY: 'quoted value',
       NUXT_R2_BUCKET: 'single',
       NUXT_SUPABASE_URL: 'spaced',
-      NUXT_R2_ACCOUNT_ID: 'before#after',
+      NUXT_R2_ACCOUNT_ID: 'before',
       NUXT_ADMIN_TOKEN: 'abc=',
     })
     expect(Object.keys(sent).sort()).toEqual([...WORKER_SECRET_NAMES].sort())
+  })
+
+  it.each([
+    ['a double-quoted value and a comment', '"abc" # note', 'abc'],
+    ['a single-quoted value and a comment', '\'abc\' # note', 'abc'],
+    ['a quoted value and a comment with no space', '"abc"#note', 'abc'],
+    ['a # inside quotes', '"a#b" # note', 'a#b'],
+    ['an unquoted #', 'a#b', 'a'],
+    ['a quote left open', '"abc # note', '"abc'],
+  ])('sends what dotenv reads from %s, not the quotes or the comment', (_name, written, read) => {
+    const line = `NUXT_ADMIN_TOKEN=${written}`
+    expect(parse(line).NUXT_ADMIN_TOKEN, 'the case itself must be what dotenv does').toBe(read)
+    const sent = JSON.parse(workerSecretsPayload(envFile({ ...VALUES, NUXT_ADMIN_TOKEN: written }))) as Record<string, string>
+    expect(sent.NUXT_ADMIN_TOKEN).toBe(read)
+  })
+
+  it('reads with the dotenv pnpm dev reads with, pinned, so the two cannot drift by a range', async () => {
+    const { devDependencies } = JSON.parse(await inRepo('package.json')) as { devDependencies: Record<string, string> }
+    expect(devDependencies.dotenv).toMatch(/^\d+\.\d+\.\d+$/)
+    const lockfile = await inRepo('pnpm-lock.yaml')
+    expect(lockfile.match(/^ {2}dotenv@[^:]+:$/gm)).toEqual([`  dotenv@${devDependencies.dotenv}:`])
   })
 
   it.each(WORKER_SECRET_NAMES as string[])('refuses when %s is missing, and when it is blank', (name) => {
