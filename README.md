@@ -58,8 +58,8 @@ limits.
 
 Public visitors get the demo meeting, and **uploading takes an invite code**. Set
 `NUXT_INVITE_CODE` to at least 32 characters (`openssl rand -hex 24`) and give it to whoever
-may upload; it is sent in a request header and kept only in the page's memory. Unlike every
-other setting, leaving it out does not select a stub: **unset or too short, uploads are closed
+may upload; it is sent in a request header and kept only in the page's memory. Leaving it out
+never selects a stub, even under `pnpm dev`: **unset or too short, uploads are closed
 for everyone**. It is one shared code, so rotating it locks everyone out of uploading, and
 existing links keep working.
 
@@ -89,6 +89,7 @@ that can write, and what this does not do.
 | [0013](docs/adr/0013-private-meeting-links.md) | A meeting is reached only through its unguessable link: no global list or cross-meeting search, \"Your meetings\" lives in this browser |
 | [0014](docs/adr/0014-workers-ai-embeddings.md) | Embeddings from Cloudflare Workers AI's bge-m3 at 1024 dimensions, replacing a provider whose terms require a paid plan in the EEA: measured batch limits, and a plain message at the daily limit |
 | [0015](docs/adr/0015-invite-only-uploads.md) | Visitors get the demo meeting, which can only be read and asked; uploading takes an invite code, and a missing code closes it. A guard for every route that can write |
+| [0016](docs/adr/0016-real-services-or-nothing.md) | A deployment runs on the real services or answers 503: stubs and local stores need an explicit opt-in, are refused beside real stored data, and do not exist on a Worker |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -120,11 +121,13 @@ cp .env.example .env  # then set NUXT_INVITE_CODE, and any cloud credentials (se
 pnpm dev            # http://localhost:3000
 ```
 
-Without any credentials the app is fully usable: uploaded audio and meeting rows are
-kept under `.data/` by the local drivers, and a stub transcriber stands in for Groq.
-The one setting you need even so is `NUXT_INVITE_CODE`, since without it uploading is
-closed (see [Who can upload](#who-can-upload)). Set the variables below to switch to the
-production services (each group is independent).
+Under `pnpm dev`, without any credentials, the app is fully usable: uploaded audio and
+meeting rows are kept under `.data/` by the local drivers, and stubs stand in for Groq and
+Workers AI. The one setting you need even so is `NUXT_INVITE_CODE`, since without it uploading
+is closed (see [Who can upload](#who-can-upload)). Set the variables below to switch to the
+production services. Groq and Workers AI can each be switched alone, while the stores are
+local. Supabase and R2 go together, and with either of them everything has to be real (see
+[What a deployment needs](#what-a-deployment-needs)).
 
 Once real keys are in place, `pnpm test:services` checks each one against the driver
 that uses it — presigned uploads and CORS on R2, the schema and triggers on Supabase,
@@ -132,6 +135,28 @@ whether Groq's response really has the shape the parser assumes, and that Worker
 returns 1024-dimension vectors, refuses an input over its limit rather than cutting it,
 and ranks the right passage first for a reworded question in English and in German.
 Those contracts are the one thing the offline tests cannot prove.
+
+### What a deployment needs
+
+A built server has no stand-ins. It needs `NUXT_GROQ_API_KEY`, `NUXT_WORKERS_AI_ACCOUNT_ID`,
+`NUXT_WORKERS_AI_API_TOKEN`, `NUXT_SUPABASE_URL`, `NUXT_SUPABASE_SERVICE_KEY`,
+`NUXT_R2_ACCOUNT_ID`, `NUXT_R2_ACCESS_KEY_ID`, `NUXT_R2_SECRET_ACCESS_KEY` and `NUXT_R2_BUCKET`.
+With any of them missing, every route that needs a provider or store answers 503 with one message
+that names nothing, before anything is claimed, called or written, and the server log names
+what is missing, never a value. The home page and `/api/health` still answer, and a meeting's page
+shows a plain failure. [ADR-0016](docs/adr/0016-real-services-or-nothing.md) has the reasons.
+
+| Running | Every setting present | Some missing, stores local | A real database or bucket, something else missing | Half of a group |
+| --- | --- | --- | --- | --- |
+| A Cloudflare Worker | Real services | **503** | **503** | **503** |
+| A built server | Real services | **503** | **503** | **503** |
+| A built server with `NUXT_ALLOW_LOCAL_DRIVERS=true` | Real services | Stand-ins for what is missing | **503** | **503** |
+| `pnpm dev` | Real services | Stand-ins for what is missing | **503** | **503** |
+
+`NUXT_ALLOW_LOCAL_DRIVERS=true` is for the e2e and browser jobs, which run a production build
+on local drivers. A deployment does not set it: a Worker ignores it outright, and so does
+any server beside a real database. It does not belong in `wrangler.jsonc`, or in a real `.env`.
+`pnpm preview` and `node .output/server/index.mjs` are built servers, so they refuse without it.
 
 ### Storage setup (Cloudflare R2)
 
@@ -191,8 +216,8 @@ Those contracts are the one thing the offline tests cannot prove.
 
 ### Transcription setup (Groq)
 
-Set `NUXT_GROQ_API_KEY` to transcribe with Whisper Large v3 Turbo. Without it the
-server uses a deterministic stub transcriber, so the whole pipeline still runs.
+Set `NUXT_GROQ_API_KEY` to transcribe with Whisper Large v3 Turbo. Without it `pnpm dev`
+uses a deterministic stub transcriber, so the whole pipeline still runs.
 
 Note the free tier allows 7,200 audio-seconds per rolling hour, about two hours of
 audio. A recording longer than that uploads successfully and then hits the provider's
@@ -202,7 +227,7 @@ quota; the UI reports it as such.
 
 Set `NUXT_WORKERS_AI_ACCOUNT_ID` and `NUXT_WORKERS_AI_API_TOKEN` (both, or neither) to
 index meetings with `@cf/baai/bge-m3`. The token should be scoped to Workers AI alone.
-Without them the server embeds with a deterministic stub, so indexing and questions still
+Without them `pnpm dev` embeds with a deterministic stub, so indexing and questions still
 run.
 
 The Workers Free plan allows 10,000 neurons a day, resetting at 00:00 UTC, and has no
@@ -232,8 +257,9 @@ indexing resumes from where it stopped. See
 | `pnpm test` / `pnpm test:watch` | Vitest unit + Nuxt-runtime tests |
 | `pnpm test:e2e` | Builds the app, then tests the Nitro routes against the local drivers |
 | `pnpm test:services` | Exercises the real R2, Supabase, Groq and Workers AI services; each group is skipped unless its keys are set, and the banner names which ones skipped |
-| `NUXT_INVITE_CODE=<code> node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: wrong code, right code, drop → extract → upload → progress page, then inspects storage. Takes the code the server was started with |
+| `NUXT_INVITE_CODE=<code> node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: wrong code, right code, drop → extract → upload → progress page, then inspects storage. Takes the code the server was started with, and a server on local drivers, so started with `NUXT_ALLOW_LOCAL_DRIVERS=true` if built |
 | `node scripts/drive-player.mjs <url> <meetingId>` | Headless Chromium: click-to-seek, active-line highlight, transcript keyboard navigation |
+| `NITRO_PRESET=cloudflare_module pnpm build && node scripts/verify-worker-gate.mjs` | Runs the Worker build under local workerd with fake services, and checks what it refuses and what it selects ([ADR-0016](docs/adr/0016-real-services-or-nothing.md)). Run `pnpm build` afterwards, since the other jobs need the Node build |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
 | `pnpm db:migrate` | Applies `supabase/migrations/` to the real project at `SUPABASE_DB_URL`, in order, skipping what a ledger says is already there. Run `verify-migrations.sh` first; pass `--dry-run` to see what is pending |
 | `pnpm ci:local` | Runs every job in `.github/workflows/ci.yml` on this machine — a PR can be judged green without waiting on GitHub. A job it cannot run counts as a failure, not a skip |

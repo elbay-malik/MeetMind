@@ -11,8 +11,8 @@ export const MIN_INVITE_CODE_LENGTH = MIN_ADMIN_TOKEN_LENGTH
  * every route it guards, so a refused caller costs no body parsing, budget check,
  * storage or provider call.
  *
- * FAILS CLOSED, unlike every other setting here, where absent config selects a stub:
- * with no usable code, nobody may upload, and that includes someone presenting the
+ * FAILS CLOSED, even under `pnpm dev`, where other absent settings select a stub
+ * (ADR-0016): with no usable code, nobody may upload, and that includes someone presenting the
  * short code exactly. A missing setting must never read as "open". Whitespace does not
  * count towards the length, since a header cannot carry it to compare against: a secret
  * store that kept a pasted newline would otherwise lock everyone out with no warning.
