@@ -9,6 +9,7 @@ import { $fetch, fetch, setup, startServer } from '@nuxt/test-utils/e2e'
 import type { SlotState } from '../../server/utils/db/slots'
 import type { CreateMeetingResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
 import { DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE } from '../../shared/utils/meeting'
+import { tooManyChunksMessage } from '../../server/utils/summary/steps'
 import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
@@ -104,7 +105,7 @@ async function expectPaused(res: Response) {
 }
 
 /** A meeting left in this state, and put back afterwards. */
-async function withMeetingIn(id: string, state: Pick<Meeting, 'status' | 'failedStage'>, work: () => Promise<void>) {
+async function withMeetingIn(id: string, state: Pick<Meeting, 'status' | 'failedStage'> & Partial<Pick<Meeting, 'errorMessage'>>, work: () => Promise<void>) {
   const row = await db.getItem<Meeting>(`meetings/${id}`)
   await db.setItem(`meetings/${id}`, { ...row!, ...state })
   try {
@@ -227,7 +228,7 @@ describe('questions on the public demo', () => {
     })
   })
 
-  it.each([['zero', '0'], ['blank', ''], ['a word', 'lots'], ['a fraction', '2.5'], ['less than nothing', '-1']])('refuses every demo question with the setting %s, and no other meeting\'s', async (_name, value) => {
+  it.each([['zero', '0'], ['blank', ''], ['a word', 'lots'], ['a fraction', '2.5'], ['less than nothing', '-1'], ['the word null', 'null'], ['the word undefined', 'undefined'], ['either word in capitals, with spaces', ' NULL ']])('refuses every demo question with the setting %s, and no other meeting\'s', async (_name, value) => {
     await startServer({ env: { NUXT_PUBLIC_DEMO_MEETING_ID: demoId, NUXT_DEMO_QUESTIONS_PER_DAY: value } })
     await expectUsed(await ask(demoId))
     expect(await countToday()).toBe(0)
