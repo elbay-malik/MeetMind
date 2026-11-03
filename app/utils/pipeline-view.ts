@@ -1,4 +1,4 @@
-import type { Meeting, MeetingStatus } from '#shared/types/meeting'
+import type { MeetingStatus, PublicMeeting } from '#shared/types/meeting'
 import { PROVIDER_BLOCKED_ERROR, transcriptionFinished } from '#shared/utils/meeting'
 import { LONG_WAIT_MS, type DriverState, type TroubleCause } from './pipeline-driver'
 
@@ -72,7 +72,7 @@ export function indexMoves(sweeps: boolean, started: boolean): string {
 
 export interface PipelineFacts {
   status: MeetingStatus
-  failedStage: Meeting['failedStage']
+  failedStage: PublicMeeting['failedStage']
   /** Null until the transcript has been read for the status shown. */
   segmentCount: number | null
   audioLabel: string
@@ -134,7 +134,7 @@ function statusOf(state: DriverState, facts: PipelineFacts): MeetingStatus {
  * earlier may be behind it: `progress.stage` is that stage, except that a rejected upload and a
  * row from before the column both say `upload`, and only the row tells those apart.
  */
-function failedAt(state: DriverState, facts: PipelineFacts): Meeting['failedStage'] {
+function failedAt(state: DriverState, facts: PipelineFacts): PublicMeeting['failedStage'] {
   if (statusOf(state, facts) !== 'failed') return null
   const stage = state.answer?.progress.stage
   if (stage === 'transcription' || stage === 'summarization') return stage
@@ -391,7 +391,7 @@ export interface RetryView {
 /** Only after something stopped, and only when asking again can do anything: else nothing. */
 export function retryOf(state: DriverState, facts: PipelineFacts, now: number): RetryView | null {
   if (state.role === 'read-only' || !state.stop || state.retryFrom === null) return null
-  const labels: Partial<Record<NonNullable<Meeting['failedStage']>, string>> = {
+  const labels: Partial<Record<NonNullable<PublicMeeting['failedStage']>, string>> = {
     transcription: 'Try transcription again',
     summarization: 'Try extraction again',
   }

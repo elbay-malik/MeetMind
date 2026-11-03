@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import ProgressPage from '~/pages/meetings/[id]/progress.vue'
+import { toPublicMeeting } from '../../server/utils/public-errors'
 import type { Meeting, PipelineResponse } from '../../shared/types/meeting'
 import { DEMO_READ_ONLY_MESSAGE } from '../../shared/utils/meeting'
 
@@ -86,7 +87,7 @@ function aMeeting(scenario: Scenario) {
     return { statusCode: 500, statusMessage: 'Internal Server Error' }
   }
   registerEndpoint(`/api/meetings/${id}`, (event: Handler) =>
-    scenario.rowFails?.(++reads.row) ? failed(event) : { meeting: meetingRow(id, row) })
+    scenario.rowFails?.(++reads.row) ? failed(event) : { meeting: toPublicMeeting(meetingRow(id, row)) })
   registerEndpoint(`/api/meetings/${id}/transcript`, (event: Handler) =>
     scenario.transcriptFails?.(++reads.transcript) ? failed(event) : { segments: scenario.segments ?? [] })
   registerEndpoint(`/api/meetings/${id}/pipeline`, (event: Handler) => take('pipeline', scenario.pipeline, event))

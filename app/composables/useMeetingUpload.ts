@@ -1,4 +1,4 @@
-import type { CreateMeetingInput, CreateMeetingResponse, Meeting } from '#shared/types/meeting'
+import type { CreateMeetingInput, CreateMeetingResponse, PublicMeeting } from '#shared/types/meeting'
 
 export type UploadStatus
   = 'idle' | 'registering' | 'uploading' | 'confirming' | 'done' | 'cancelled' | 'error'
@@ -9,7 +9,7 @@ export interface UploadState {
   ratio: number
   sentBytes: number
   totalBytes: number
-  meeting: Meeting | null
+  meeting: PublicMeeting | null
   error: string | null
   /** The server refused the invite code, rather than anything about the upload. */
   inviteRefused: boolean
@@ -82,7 +82,7 @@ export function useMeetingUpload() {
     })
   }
 
-  async function upload(job: UploadJob): Promise<Meeting | null> {
+  async function upload(job: UploadJob): Promise<PublicMeeting | null> {
     if (busy.value) return null
     if (state.meeting && ['cancelled', 'error'].includes(state.status)) abandonedId = state.meeting.id
     Object.assign(state, {
@@ -116,7 +116,7 @@ export function useMeetingUpload() {
       await putWithProgress(created.upload.url, created.upload.headers, job.audio)
 
       state.status = 'confirming'
-      const confirmed = await $fetch<{ meeting: Meeting }>(
+      const confirmed = await $fetch<{ meeting: PublicMeeting }>(
         `/api/meetings/${created.meeting.id}/complete`,
         { method: 'POST' },
       )

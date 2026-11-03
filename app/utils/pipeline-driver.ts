@@ -311,8 +311,8 @@ export const REBUILD_REFUSED = 'The index could not be rebuilt. What is stored h
 export const REBUILD_ELSEWHERE = 'Another tab of this browser is working on this meeting, so nothing was rebuilt. Rebuild it from that tab, or try again when it has finished.'
 
 /**
- * That route's own sentences, which are written for visitors, and nothing else. A 500 from
- * further down can be anything, and this page does not show raw errors (step 9 addendum).
+ * That route's own sentences, and nothing else: the route says only what is safe to show
+ * (`publicMessage`), while a 500 from further down has words of its own.
  */
 function rebuildRefusal(body: unknown): string {
   const { statusMessage, message } = (body ?? {}) as { statusMessage?: unknown, message?: unknown }

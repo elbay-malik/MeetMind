@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import type { Meeting, MeetingSummary, TranscriptSegment } from '#shared/types/meeting'
+import type { MeetingSummary, PublicMeeting, TranscriptSegment } from '#shared/types/meeting'
 
 const route = useRoute()
 const meetingId = computed(() => String(route.params.id))
 
-const { data, error } = await useFetch<{ meeting: Meeting }>(`/api/meetings/${meetingId.value}`)
+const { data, error } = await useFetch<{ meeting: PublicMeeting }>(`/api/meetings/${meetingId.value}`)
 if (error.value) {
   throw createError({
     statusCode: error.value.statusCode ?? 500,

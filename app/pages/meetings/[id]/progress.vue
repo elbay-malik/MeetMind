@@ -1,15 +1,11 @@
 <script setup lang="ts">
-import type { Meeting, MeetingStatus, PipelineResponse, TranscriptSegment } from '#shared/types/meeting'
+import type { MeetingStatus, PipelineResponse, PublicMeeting, TranscriptSegment } from '#shared/types/meeting'
 import type { StageState } from '~/utils/pipeline-view'
 
 const route = useRoute()
 const meetingId = computed(() => String(route.params.id))
 
-// Without the stored error, which this page has its own words for, so that it is not in the
-// server's render either: it can hold a provider's or a database's own words.
-const { data, error, refresh } = await useFetch<{ meeting: Meeting }>(`/api/meetings/${meetingId.value}`, {
-  transform: ({ meeting }) => ({ meeting: { ...meeting, errorMessage: null } }),
-})
+const { data, error, refresh } = await useFetch<{ meeting: PublicMeeting }>(`/api/meetings/${meetingId.value}`)
 if (error.value) {
   throw createError({
     statusCode: error.value.statusCode ?? 500,
