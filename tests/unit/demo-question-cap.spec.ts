@@ -4,7 +4,7 @@ import { nextUtcMidnight, utcDay, type DemoQuestionRepository } from '../../serv
 import { fixedSentence, publicMessage } from '../../server/utils/public-errors'
 import { AnswerError, AnswerSlotBusyError, type Answerer } from '../../server/utils/qa/answerer'
 import { askMeeting } from '../../server/utils/qa/ask'
-import { demoQuestionAllowance, demoQuestionLimit, DemoQuestionRefusedError, EXTRACTION_PENDING_RETRY_MS } from '../../server/utils/qa/demo-questions'
+import { demoQuestionAllowance, demoQuestionLimit, demoQuestionSetting, DemoQuestionRefusedError, EXTRACTION_PENDING_RETRY_MS } from '../../server/utils/qa/demo-questions'
 import { MODEL } from './helpers/sweep-cases'
 
 /**
@@ -234,6 +234,20 @@ describe('the setting', () => {
     ['quoted', '25'],
   ])('reads %s as a limit of zero, never as no limit', (_name, value) => {
     expect(demoQuestionLimit(value)).toBe(0)
+  })
+
+  it.each(['null', 'NULL', ' null ', 'undefined', 'Undefined', '\tundefined\n'])('reads the text %j as a bad value, whatever default Nitro kept in its place', (written) => {
+    expect(demoQuestionLimit(demoQuestionSetting(25, written))).toBe(0)
+  })
+
+  it.each<[string | undefined, unknown]>([
+    [undefined, 25],
+    ['7', 7],
+    ['abc', 'abc'],
+    ['', ''],
+    ['nullish', 'nullish'],
+  ])('leaves the text %j to what the runtime config made of it', (written, configured) => {
+    expect(demoQuestionSetting(configured, written)).toBe(configured)
   })
 
   it('warns by name and never with the value', () => {

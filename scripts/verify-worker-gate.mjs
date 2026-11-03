@@ -64,11 +64,12 @@ await writeFile(join(dir, 'wrangler.json'), JSON.stringify({
 }))
 
 const realCalls = []
+let answer = '[]'
 const fakeSupabase = createServer((req, res) => {
   realCalls.push(`${req.method} ${req.url}`)
   req.resume()
   res.setHeader('content-type', 'application/json')
-  res.end('[]')
+  res.end(answer)
 })
 await new Promise(resolve => fakeSupabase.listen(0, '127.0.0.1', resolve))
 
@@ -201,6 +202,32 @@ await withWorker({ ...ALWAYS, ...EVERY_SETTING }, async (logs) => {
   }
   check((await ask(ROUTES[0])).status === 204, 'the invite check accepts the code')
   check(!logs().includes('refusing requests'), 'refused nothing')
+})
+
+console.log('\n# A demo question, with a limit Nitro\'s env layer reads as nothing')
+const now = new Date().toISOString()
+answer = JSON.stringify([{
+  id: MEETING, created_at: now, updated_at: now, title: 'Demo', status: 'ready', source_file_name: 'd.mp4',
+  source_bytes: 1, source_mime: null, duration_sec: 10, audio_key: null, audio_bytes: null,
+  audio_mime: null, uploaded_at: now, error_message: null, failed_stage: null,
+}])
+const askDemo = ROUTES.find(([, path]) => path.endsWith('/ask'))
+const WARNED = 'NUXT_DEMO_QUESTIONS_PER_DAY is not a positive whole number'
+for (const written of ['null', 'undefined', ' NULL ', 'abc']) {
+  await withWorker({ ...ALWAYS, ...EVERY_SETTING, NUXT_PUBLIC_DEMO_MEETING_ID: MEETING, NUXT_DEMO_QUESTIONS_PER_DAY: `"${written}"` }, async (logs) => {
+    const res = await ask(askDemo)
+    const { message } = await res.json()
+    check(res.status === 429 && message === 'The demo has used its questions for today.', `${written}: refused as over the count (got ${res.status}: ${message})`)
+    check(!realCalls.some(call => call.includes('/rpc/')), `${written}: called no function, at any limit (${realCalls.join(', ')})`)
+    for (let i = 0; i < 20 && !logs().includes(WARNED); i++) await new Promise(resolve => setTimeout(resolve, 100))
+    check(logs().includes(WARNED), `${written}: logged the setting by name`)
+  })
+}
+// The same request with a real limit, so the refusals above are the setting's and nothing else's.
+await withWorker({ ...ALWAYS, ...EVERY_SETTING, NUXT_PUBLIC_DEMO_MEETING_ID: MEETING, NUXT_DEMO_QUESTIONS_PER_DAY: '5' }, async (logs) => {
+  await (await ask(askDemo)).body?.cancel()
+  check(realCalls.some(call => call.includes('/rpc/demo_question_gate')), `5: asks the gate (${realCalls.join(', ')})`)
+  check(!logs().includes(WARNED), '5: logs nothing about the setting')
 })
 
 fakeSupabase.close()
