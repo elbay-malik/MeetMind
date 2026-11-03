@@ -6,15 +6,15 @@ export default defineNuxtConfig({
   runtimeConfig: {
     // Server-only secrets, overridden by NUXT_* env vars at runtime.
     groqApiKey: '', // NUXT_GROQ_API_KEY
-    // Cloudflare Workers AI embeddings (ADR-0014). Both must be set to activate
-    // the driver; otherwise a local stub embeds. The token should be scoped to
-    // Workers AI alone: it is not the wrangler token, nor the R2 keys.
+    // Cloudflare Workers AI embeddings (ADR-0014). Both are needed, or a local stub
+    // embeds where ADR-0016 allows one. The token should be scoped to Workers AI alone:
+    // it is not the wrangler token, nor the R2 keys.
     workersAiAccountId: '', // NUXT_WORKERS_AI_ACCOUNT_ID
     workersAiApiToken: '', // NUXT_WORKERS_AI_API_TOKEN
     supabaseUrl: '', // NUXT_SUPABASE_URL
     supabaseServiceKey: '', // NUXT_SUPABASE_SERVICE_KEY
-    // Cloudflare R2 (S3 API) for compressed audio. All four must be set to
-    // activate the R2 driver; otherwise the local filesystem driver is used.
+    // Cloudflare R2 (S3 API) for compressed audio. All four are needed, or the
+    // local filesystem driver is used where ADR-0016 allows it.
     r2AccountId: '', // NUXT_R2_ACCOUNT_ID
     r2AccessKeyId: '', // NUXT_R2_ACCESS_KEY_ID
     r2SecretAccessKey: '', // NUXT_R2_SECRET_ACCESS_KEY
@@ -35,8 +35,7 @@ export default defineNuxtConfig({
     // refuse to run. Generate with `openssl rand -base64 32`.
     adminToken: '', // NUXT_ADMIN_TOKEN
     // The code POST /api/meetings asks for (ADR-0015). At least 32 characters.
-    // Empty or shorter closes uploads for everyone: this is the one setting whose
-    // absence must not select a stub, and it never belongs under `public`.
+    // Empty or shorter closes uploads for everyone, and it never belongs under `public`.
     // Generate with `openssl rand -hex 24`.
     inviteCode: '', // NUXT_INVITE_CODE
     // Minimum gap between Groq chat requests (extraction chunks and questions)
@@ -53,9 +52,18 @@ export default defineNuxtConfig({
     // 429 and Retry-After. Short, so a question never queues behind a whole
     // extraction and the queue stays bounded (ADR-0012).
     askMaxSlotWaitMs: 20_000, // NUXT_ASK_MAX_SLOT_WAIT_MS
+    // ADR-0016. A built server missing any setting above refuses every request that
+    // needs a provider or store, unless this is exactly true, which lets it run on stubs
+    // and local stores: for the e2e and browser jobs. `pnpm dev` needs no flag. Ignored
+    // outright on a Cloudflare Worker, and no help beside a real database or bucket. Stays
+    // false here and out of wrangler.jsonc.
+    allowLocalDrivers: false, // NUXT_ALLOW_LOCAL_DRIVERS
     // Local drivers only (dev/tests): HMAC secret for upload URLs and data root.
     uploadTokenSecret: '', // NUXT_UPLOAD_TOKEN_SECRET (random per process when empty)
     dataDir: '.data', // NUXT_DATA_DIR
+    // The five test-only flags below are read only when a stub is built, so they do
+    // nothing without ADR-0016's opt-in and nothing at all on a Worker.
+    //
     // Test-only: makes the stub summarizer emit one item whose quote does not
     // occur in the transcript, so tests can prove reconciliation actually
     // drops it over the real HTTP path rather than only in a unit test that
