@@ -11,6 +11,7 @@ import type { CreateMeetingResponse, Meeting, QuestionAnswer, TranscriptSegment 
 import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
+import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-ask-'))
@@ -21,7 +22,7 @@ await setup({
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
   // The gap between embedding requests would make a first step answer "wait" with
   // nothing stored, depending on what the test before it did.
-  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret', NUXT_INVITE_CODE: INVITE_CODE, NUXT_EMBED_INTERVAL_MS: '0' },
+  env: { ...LOCAL_DRIVERS, NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret', NUXT_INVITE_CODE: INVITE_CODE, NUXT_EMBED_INTERVAL_MS: '0' },
 })
 
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)

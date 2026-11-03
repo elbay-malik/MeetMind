@@ -9,6 +9,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { fetch, setup } from '@nuxt/test-utils/e2e'
 import type { Meeting } from '../../shared/types/meeting'
 import { audioObjectKey } from '../../shared/utils/meeting'
+import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 const dataDir = await mkdtemp(join(tmpdir(), 'meetmind-delete-short-'))
@@ -27,6 +28,7 @@ await setup({
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
   env: {
+    ...LOCAL_DRIVERS,
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
     NUXT_ADMIN_TOKEN: SHORT_TOKEN,

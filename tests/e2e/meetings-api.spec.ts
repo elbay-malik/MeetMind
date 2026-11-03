@@ -9,6 +9,7 @@ import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
 import { MAX_AUDIO_BYTES } from '../../shared/utils/meeting'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
+import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 
@@ -23,6 +24,7 @@ await setup({
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
   env: {
+    ...LOCAL_DRIVERS,
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
     NUXT_INVITE_CODE: INVITE_CODE,

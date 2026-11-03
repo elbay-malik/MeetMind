@@ -162,7 +162,9 @@ run_browser_job() {
   local data_dir
   data_dir=$(mktemp -d)
   printf '%s' "$data_dir" > "$DATA_DIR_FILE"
-  NUXT_DATA_DIR="$data_dir" NUXT_UPLOAD_TOKEN_SECRET=ci-secret PORT="$port" \
+  # NUXT_ALLOW_LOCAL_DRIVERS: a real production build, which refuses local drivers
+  # unless told otherwise (ADR-0016).
+  NUXT_ALLOW_LOCAL_DRIVERS=true NUXT_DATA_DIR="$data_dir" NUXT_UPLOAD_TOKEN_SECRET=ci-secret PORT="$port" \
     node .output/server/index.mjs > "$LOG_DIR/server.log" 2>&1 &
   printf '%s' "$!" > "$PID_FILE"
 

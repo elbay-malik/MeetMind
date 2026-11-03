@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, Meeting } from '../../shared/types/meeting'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
+import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
 /**
  * ADR-0013: a meeting's id is the capability to read it, so nothing may hand an
@@ -19,7 +20,7 @@ await setup({
   rootDir,
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
-  env: { NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret', NUXT_INVITE_CODE: INVITE_CODE },
+  env: { ...LOCAL_DRIVERS, NUXT_DATA_DIR: dataDir, NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret', NUXT_INVITE_CODE: INVITE_CODE },
 })
 
 let meeting: Meeting

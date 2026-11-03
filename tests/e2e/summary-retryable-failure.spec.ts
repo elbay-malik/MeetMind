@@ -7,6 +7,7 @@ import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, ExtractionStepResponse, Meeting } from '../../shared/types/meeting'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
+import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
 // Isolated from summary-api.spec.ts: NUXT_SUMMARY_STUB_FAIL_ONCE_RETRYABLE
 // makes the stub throw a retryable error exactly ONCE for the whole server
@@ -20,6 +21,7 @@ await setup({
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
   env: {
+    ...LOCAL_DRIVERS,
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
     NUXT_INVITE_CODE: INVITE_CODE,

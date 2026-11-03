@@ -11,6 +11,7 @@ import type { CreateMeetingResponse, Meeting, QuestionAnswer, TranscriptSegment 
 import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
+import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
 // Isolated from ask-api.spec.ts: NUXT_ANSWER_STUB_PACED puts every question on
 // the slot ledger, which the other file's tests have no reason to wait on.
@@ -25,6 +26,7 @@ await setup({
   build: false,
   nuxtConfig: { nitro: { output: { dir: join(rootDir, '.output') } } },
   env: {
+    ...LOCAL_DRIVERS,
     NUXT_DATA_DIR: dataDir,
     NUXT_UPLOAD_TOKEN_SECRET: 'e2e-secret',
     NUXT_INVITE_CODE: INVITE_CODE,

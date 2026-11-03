@@ -158,6 +158,14 @@ describe('ci:local parity with ci.yml', () => {
     ).toEqual([])
   })
 
+  // ci.yml runs nowhere at the moment, so nothing else would notice it drifting: its
+  // browser job is a production build on local drivers, which refuses them otherwise.
+  it('gives the browser job\'s server the opt-in for local drivers, in both', async () => {
+    const [yaml, script] = await Promise.all([readFile(workflowPath, 'utf8'), readFile(scriptPath, 'utf8')])
+    expect(yaml).toMatch(/^ {10}NUXT_ALLOW_LOCAL_DRIVERS: 'true'$/m)
+    expect(script).toMatch(/^ {2}NUXT_ALLOW_LOCAL_DRIVERS=true NUXT_DATA_DIR=/m)
+  })
+
   it('declares a command for every job it claims to run', async () => {
     const script = await readFile(scriptPath, 'utf8')
     const declared = /^JOBS=\(([^)]+)\)/m.exec(script)
