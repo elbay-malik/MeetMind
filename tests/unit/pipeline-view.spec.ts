@@ -261,15 +261,34 @@ describe('the pause banner', () => {
   })
 
   it('names the stage that is blocked', () => {
+    expect(blocked('transcription')!.description).toContain(PROVIDER_BLOCKED_ERROR)
     expect(blocked('summarization')!.description).toContain('extraction provider')
-    expect(blocked('search_index')!.description).toContain('indexing provider')
   })
 
-  it('blames the index, on a failed meeting, since nothing else there can be waiting', () => {
-    const failed = answer({ status: 'failed', next: 'wait', progress: { stage: 'summarization', done: 1, total: 3, etaSeconds: null } })
-    const banner = bannerOf(state({ pause: 'wait', waitMs: 3 * 60_000, nextRequestAt: NOW + 3 * 60_000 }, failed), NOW)!
-    expect(banner.description).toContain('indexing provider')
-    expect(banner.description).not.toContain('extraction provider')
+  describe('a long wait that is the index\'s', () => {
+    const left = 4 * 60_000
+    const paused = (a: PipelineResponse) => state({ pause: 'wait', waitMs: left, nextRequestAt: NOW + left }, a)
+    const RETRY_AT = '2026-11-03T12:04:00.000Z'
+    const building = { state: 'building' as const, done: 16, total: null, retryAt: RETRY_AT }
+
+    it.each<[string, PipelineResponse]>([
+      ['on a ready meeting', answer({ status: 'ready', next: 'wait', retryAt: RETRY_AT, progress: { stage: 'search_index', done: 16, total: null, etaSeconds: null }, index: building })],
+      ['on a failed meeting, where nothing else can be waiting', answer({ status: 'failed', next: 'wait', retryAt: RETRY_AT, progress: { stage: 'summarization', done: 1, total: 3, etaSeconds: null }, index: building })],
+      ['during extraction, which has no wait of its own', answer({ status: 'summarizing', next: 'wait', retryAt: RETRY_AT, progress: { stage: 'summarization', done: 1, total: 3, etaSeconds: null }, index: building })],
+    ])('does not blame anyone\'s quota as if that were known, %s', (_name, a) => {
+      const banner = bannerOf(paused(a), NOW)!
+      expect(banner.title).toBe('Paused: indexing is resting')
+      expect(banner.description).toMatch(/quota may be used up, or a run kept stopping/)
+      expect(banner.description).not.toMatch(/quota is used up/)
+      expect(banner.description).toMatch(/Nothing is wrong with this meeting/)
+      expect(banner.description).toMatch(/carries on by itself in 4 minutes/)
+      expect(announcementOf(paused(a), facts({ status: a.status }), false)).toBe('Paused: indexing is resting. It carries on by itself.')
+    })
+
+    it('still names extraction when the wait is that stage\'s own', () => {
+      const a = answer({ status: 'summarizing', next: 'wait', retryAt: RETRY_AT, progress: { stage: 'summarization', done: 1, total: 3, etaSeconds: null }, index: { ...building, retryAt: '2026-11-03T12:05:00.000Z' } })
+      expect(bannerOf(paused(a), NOW)!.description).toContain('extraction provider')
+    })
   })
 
   it('says who has to stay open, which from a second tab is not this one', () => {
