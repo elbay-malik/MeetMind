@@ -11,6 +11,61 @@ import { LONG_WAIT_MS, type DriverState, type TroubleCause } from './pipeline-dr
  */
 
 /** What this reads of the meeting's own row, since `/pipeline` has no error stage or size. */
+/**
+ * How the cron sweeper's pace is said, wherever it is said, so a page never promises more than
+ * one tick does. wrangler.jsonc's cron is what makes this true, and tests/unit/sweep-source.spec.ts
+ * holds the two together. No time on purpose: how long a meeting takes depends on what else is
+ * waiting, and on what each provider allows, and nobody has measured that.
+ */
+export const SWEEP_PACE = 'at most one step every 5 minutes, shared with every other meeting'
+
+/**
+ * ADR-0012's measured hour, in steps: the Whisper call, about 9 pages and the last of them, 9
+ * chunks, the summary, about 7 batches of the index and the step that finishes it.
+ */
+export const SWEEP_SCALE = 'A one-hour recording takes about 30 steps.'
+
+/** The footer's sentence for a page driving a meeting: what closing it does. */
+export function ifClosedSentence(sweeps: boolean): string {
+  return sweeps
+    ? `If you close it, nothing is lost, and the server carries on from the same place by itself, but very slowly: ${SWEEP_PACE}. ${SWEEP_SCALE} Opening this page again goes back to full speed.`
+    : 'If you close it, nothing is lost: it carries on from the same place when you open it again.'
+}
+
+/** The banner's: a provider's block, which a tick waits out as well, or an index that may stay stopped. */
+function ifClosedDuringAWait(sweeps: boolean, indexing: boolean): string {
+  const whenOpened = 'If you close it, it carries on from the same place when you open it again.'
+  if (!sweeps) return whenOpened
+  return indexing
+    ? `${whenOpened} The server may also carry on by itself once this wait is over, ${SWEEP_PACE}, but not if a run kept stopping.`
+    : `If you close it, the server carries on from the same place by itself once this wait is over, but very slowly: ${SWEEP_PACE}. Opening this page again goes back to full speed.`
+}
+
+/** A transcription under way, for the meeting's own page. */
+export function transcriptionMoves(sweeps: boolean, subject: 'It' | 'Transcription'): string {
+  return sweeps
+    ? `${subject} moves very slowly with its pipeline page closed, ${SWEEP_PACE}. Open Pipeline and it goes at full speed.`
+    : `${subject} moves only while its pipeline page is open. Open Pipeline and it carries on by itself.`
+}
+
+/** A meeting uploaded and not started, for its own page. */
+export function transcriptionStarts(sweeps: boolean): string {
+  const after = 'The meeting\'s words appear here when it has finished.'
+  return sweeps
+    ? `Transcription starts by itself, very slowly, ${SWEEP_PACE}. Open Pipeline and it goes at full speed. ${after}`
+    : `Open Pipeline and transcription starts by itself. ${after}`
+}
+
+/** An index with work left and nothing stopping it, for the Questions card. */
+export function indexMoves(sweeps: boolean, started: boolean): string {
+  if (sweeps) {
+    return `${started ? 'This meeting\'s index is not finished.' : 'This meeting has not been indexed for questions yet.'} It moves at full speed while its pipeline page is open, and otherwise very slowly, ${SWEEP_PACE}.`
+  }
+  return started
+    ? 'This meeting\'s index is not finished. It moves only while its pipeline page is open.'
+    : 'This meeting has not been indexed for questions yet. That happens by itself while its pipeline page is open.'
+}
+
 export interface PipelineFacts {
   status: MeetingStatus
   failedStage: Meeting['failedStage']
@@ -217,7 +272,7 @@ function isFinishedMeeting(state: DriverState): boolean {
  * The banner for anything that has paused or stopped the work and is not the meeting failing.
  * Not a live region: it holds a countdown, and {@link announcementOf} is what gets announced.
  */
-export function bannerOf(state: DriverState, now: number): BannerView | null {
+export function bannerOf(state: DriverState, now: number, sweeps = false): BannerView | null {
   const left = state.nextRequestAt === null ? null : state.nextRequestAt - now
   const when = left !== null && left > 0 ? `in ${formatWait(left)}` : 'shortly'
 
@@ -279,7 +334,7 @@ export function bannerOf(state: DriverState, now: number): BannerView | null {
       : PROVIDER_OF[state.answer?.progress.stage ?? 'transcription'] ?? PROVIDER_BLOCKED_ERROR
     return {
       title: indexing ? INDEX_RESTING : 'Paused: waiting for the provider',
-      description: `${why} Nothing is wrong with this meeting, and nothing is lost. It carries on by itself ${when}${clock} while ${who} open. If you close it, it carries on from the same place when you open it again.`,
+      description: `${why} Nothing is wrong with this meeting, and nothing is lost. It carries on by itself ${when}${clock} while ${who} open. ${ifClosedDuringAWait(sweeps, indexing)}`,
       icon: 'i-lucide-pause',
       color: 'info',
     }

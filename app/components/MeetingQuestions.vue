@@ -27,6 +27,8 @@ const { data: pipeline, refresh: refreshPipeline } = await useFetch<PipelineResp
 /** Nothing on the pipeline page can move the public demo (ADR-0015), so nothing here sends anyone there. */
 const isDemo = computed(() => isDemoMeetingId(useRuntimeConfig().public.demoMeetingId, props.meetingId))
 
+const deployment = useDeploymentFacts()
+
 const notFinished = computed(() => {
   if (isDemo.value) return { text: 'This demo meeting\'s index is not finished, so it cannot be asked questions.', action: null }
   switch (pipeline.value?.index.state) {
@@ -47,8 +49,8 @@ const notFinished = computed(() => {
       }
   }
   return index.value?.state === 'none'
-    ? { text: 'This meeting has not been indexed for questions yet. That happens by itself while its pipeline page is open.', action: 'Index it on the pipeline page' }
-    : { text: 'This meeting\'s index is not finished. It moves only while its pipeline page is open.', action: 'Finish the index on the pipeline page' }
+    ? { text: indexMoves(deployment.value.sweeps, false), action: 'Index it on the pipeline page' }
+    : { text: indexMoves(deployment.value.sweeps, true), action: 'Finish the index on the pipeline page' }
 })
 
 const question = ref('')

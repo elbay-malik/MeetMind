@@ -6,6 +6,12 @@ import {
   STAGE_STATE_TEXT,
   announcementOf,
   bannerOf,
+  ifClosedSentence,
+  indexMoves,
+  SWEEP_PACE,
+  SWEEP_SCALE,
+  transcriptionMoves,
+  transcriptionStarts,
   countdownOf,
   failureOf,
   formatClock,
@@ -242,6 +248,28 @@ describe('a failed extraction while its index builds', () => {
   })
 })
 
+describe('what closing the page does, away from a wait', () => {
+  it('holds the footer to the same two cases', () => {
+    expect(ifClosedSentence(false)).toBe('If you close it, nothing is lost: it carries on from the same place when you open it again.')
+    expect(ifClosedSentence(true)).toContain(SWEEP_PACE)
+    expect(ifClosedSentence(true)).toContain(SWEEP_SCALE)
+    expect(ifClosedSentence(true)).toContain('nothing is lost')
+  })
+
+  it('holds the meeting\'s own page and its Questions card to them, naming no pace without a cron', () => {
+    for (const said of [transcriptionMoves(false, 'It'), transcriptionMoves(false, 'Transcription'), transcriptionStarts(false), indexMoves(false, true), indexMoves(false, false)]) {
+      expect(said).not.toContain('step')
+      expect(said).toMatch(/open/i)
+    }
+    expect(transcriptionMoves(false, 'Transcription')).toBe('Transcription moves only while its pipeline page is open. Open Pipeline and it carries on by itself.')
+    expect(indexMoves(false, true)).toBe('This meeting\'s index is not finished. It moves only while its pipeline page is open.')
+    for (const said of [transcriptionMoves(true, 'It'), transcriptionStarts(true), indexMoves(true, true), indexMoves(true, false)]) {
+      expect(said).toContain(SWEEP_PACE)
+      expect(said).not.toContain('only while')
+    }
+  })
+})
+
 describe('the pause banner', () => {
   const blocked = (stageName: PipelineResponse['progress']['stage'], role: DriverState['role'] = 'driving', left = 3 * HOUR) =>
     bannerOf(state({ role, pause: 'wait', waitMs: left, nextRequestAt: NOW + left }, answer({ progress: { stage: stageName, done: 0, total: null, etaSeconds: null } })), NOW)
@@ -288,6 +316,35 @@ describe('the pause banner', () => {
     it('still names extraction when the wait is that stage\'s own', () => {
       const a = answer({ status: 'summarizing', next: 'wait', retryAt: RETRY_AT, progress: { stage: 'summarization', done: 1, total: 3, etaSeconds: null }, index: { ...building, retryAt: '2026-11-03T12:05:00.000Z' } })
       expect(bannerOf(paused(a), NOW)!.description).toContain('extraction provider')
+    })
+  })
+
+  describe('what closing the page does', () => {
+    const closed = (a: PipelineResponse, sweeps: boolean, left = 3 * HOUR) =>
+      bannerOf(state({ pause: 'wait', waitMs: left, nextRequestAt: NOW + left }, a), NOW, sweeps)!.description
+    const stage = (name: PipelineResponse['progress']['stage']) => answer({ progress: { stage: name, done: 0, total: null, etaSeconds: null } })
+
+    it('says it waits for the page on a server with no cron, and promises nothing else', () => {
+      expect(closed(stage('transcription'), false)).toMatch(/carries on from the same place when you open it again/)
+      expect(closed(stage('transcription'), false)).not.toMatch(/step|server/)
+      // The same as asking with no fact at all: no cron is what is assumed.
+      expect(bannerOf(state({ pause: 'wait', waitMs: 3 * HOUR, nextRequestAt: NOW + 3 * HOUR }, stage('transcription')), NOW)!.description).toBe(closed(stage('transcription'), false))
+    })
+
+    it('says the server carries on, slowly, in steps and not in a time nobody measured, on a Worker', () => {
+      const said = closed(stage('summarization'), true)
+      expect(said).toContain('the server carries on from the same place by itself once this wait is over')
+      expect(said).toContain(SWEEP_PACE)
+      expect(said).toContain('full speed')
+      expect(said).not.toMatch(/when you open it again/)
+      expect(said).not.toMatch(/\b\d+ (?:hours?|minutes?) (?:to|for)\b/)
+    })
+
+    it('does not promise an index that may have kept stopping will carry on, on a Worker', () => {
+      const RETRY_AT = '2026-11-03T12:04:00.000Z'
+      const said = closed(answer({ status: 'ready', next: 'wait', retryAt: RETRY_AT, progress: { stage: 'search_index', done: 16, total: null, etaSeconds: null }, index: { state: 'building', done: 16, total: null, retryAt: RETRY_AT } }), true, 4 * 60_000)
+      expect(said).toContain('when you open it again')
+      expect(said).toContain(`may also carry on by itself once this wait is over, ${SWEEP_PACE}, but not if a run kept stopping`)
     })
   })
 
