@@ -212,6 +212,13 @@ describe('the pause banner', () => {
     expect(blocked('search_index')!.description).toContain('indexing provider')
   })
 
+  it('blames the index, on a failed meeting, since nothing else there can be waiting', () => {
+    const failed = answer({ status: 'failed', next: 'wait', progress: { stage: 'summarization', done: 1, total: 3, etaSeconds: null } })
+    const banner = bannerOf(state({ pause: 'wait', waitMs: 3 * 60_000, nextRequestAt: NOW + 3 * 60_000 }, failed), NOW)!
+    expect(banner.description).toContain('indexing provider')
+    expect(banner.description).not.toContain('extraction provider')
+  })
+
   it('says who has to stay open, which from a second tab is not this one', () => {
     expect(blocked('transcription', 'driving')!.description).toContain('while this page stays open')
     expect(blocked('transcription', 'watching')!.description).toContain('while a tab of this browser stays open')
