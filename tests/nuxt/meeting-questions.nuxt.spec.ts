@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import MeetingQuestions from '~/components/MeetingQuestions.vue'
+import { fixedSentence } from '../../server/utils/public-errors'
 
 const ID = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
 
@@ -61,6 +62,23 @@ describe('the question form at the provider\'s daily limit', () => {
     expect(wrapper.find('[role="alert"]').text()).toContain('out of capacity')
     expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.text()).not.toMatch(/Questions can be asked again at/)
+  })
+})
+
+describe('the question form when a provider failed and its retry got no slot', () => {
+  const REFUSAL = { statusCode: 429, message: fixedSentence('answering', 429), data: { retryAt: '2026-11-03T00:00:00.000Z', retryAfterSec: 3_600 } }
+
+  it('says when to try again once, in the page\'s own time', async () => {
+    const said = (await askWith(REFUSAL)).find('[role="alert"]').text()
+    expect(said).toContain(REFUSAL.message)
+    expect(said.match(/try again/gi)).toHaveLength(1)
+    expect(said).toMatch(/Try again at /)
+    // The slot can be far off, so nothing else may promise it is near.
+    expect(said).not.toMatch(/shortly|later/i)
+  })
+
+  it('does not call an outage a rate limit', async () => {
+    expect((await askWith(REFUSAL)).find('[role="alert"]').text()).not.toMatch(/rate limit/i)
   })
 })
 

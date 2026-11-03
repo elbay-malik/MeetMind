@@ -6,6 +6,7 @@ import { QuestionError } from '../../server/utils/qa/ask'
 import { EmbeddingError } from '../../server/utils/qa/embedder'
 import { createGroqAnswerer } from '../../server/utils/qa/groq-answerer'
 import { createWorkersAiEmbedder } from '../../server/utils/qa/workers-ai'
+import { ProviderBusyError } from '../../server/utils/summary/groq'
 
 /**
  * What the route does with an embedding failure the e2e specs cannot cause: their
@@ -85,6 +86,29 @@ describe('POST /api/meetings/:id/ask, of what a provider said', () => {
       data: { retryAt: retryAt.toISOString(), retryAfterSec: expect.any(Number) },
     })
     expect(headers.get('retry-after')).toBeGreaterThan(0)
+  })
+
+  it('leaves when to ask again to the page, for a provider that failed and whose retry got no slot', async () => {
+    const retryAt = new Date(Date.now() + 90_000)
+    const pacer = {
+      wait: vi.fn(async () => {
+        throw new ProviderBusyError(retryAt)
+      }),
+      rateLimited: async () => {},
+    }
+    const reply = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('upstream sentinel', { status: 503 }))
+    const failure = await createGroqAnswerer({ apiKey: 'k', pacer })
+      .answer({ question: 'q', segments: [] }, { slotHeld: true })
+      .catch((err: unknown) => err)
+      .finally(() => reply.mockRestore())
+    // The real text this path throws, which no rule takes, so it is the fixed sentence that goes out.
+    expect(failure).toMatchObject({ statusCode: 429, retryAt, message: 'Answering service is unavailable (HTTP 503). Retrying needs the next request slot.' })
+
+    askMeeting.mockRejectedValueOnce(failure)
+    const refused = await handler({}).catch((err: unknown) => err) as { message: string, data: { retryAfterSec: number } }
+    expect(refused.message).toBe(fixedSentence('answering', 429))
+    expect(refused.data.retryAfterSec).toBeGreaterThan(0)
+    expect(refused.message).not.toMatch(/try again|shortly|later|rate limit/i)
   })
 
   it('passes on a refusal of the app\'s own, and does not log what nothing went wrong to cause', async () => {
