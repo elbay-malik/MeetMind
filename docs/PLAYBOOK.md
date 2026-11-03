@@ -229,7 +229,7 @@
 
 **Packages:** `wrangler` (Cloudflare deploy), Nitro Cloudflare preset.
 **Key decision:** **Cloudflare Workers free tier over Vercel Hobby.** Verdict: MeetMind offloads heavy compute to the browser, so Cloudflare's 10ms CPU limit is not a blocker for I/O-bound AI proxies, and it permits a public portfolio demo (Vercel Hobby is non-commercial and its function model is less favorable here). Rejected Cloudflare paid ($5/mo) as unnecessary without server-side heavy compute.
-**Acceptance:** Public URL live with preloaded demo; the sweeper's ticks reaching Supabase (`sweep_state.last_tick_at` moving); a meeting with no open tab reaches `ready`; costs at 0 EUR.
+**Acceptance:** Public URL live with preloaded demo; the sweeper's ticks firing, by Past Cron Events (`sweep_state.last_tick_at` moves for `pnpm test:services` too, so it is no proof alone); a meeting with no open tab reaches `ready`; costs at 0 EUR.
 
 ### Phase 14 — README Whitepaper, ADRs, Demo Video (0.5-1 week, ~8h)
 **Goal:** Portfolio-grade documentation.
