@@ -1,7 +1,8 @@
 import type { MeetingStatus, MeetingSummary, TranscriptSegment } from '#shared/types/meeting'
 import { attestedChunkSchema, type AttestedChunk } from '../summary/reconcile'
 import { EMBEDDING_DIMENSIONS } from '../qa/embedder'
-import type { EmbeddedWindow } from './windows'
+import type { SlotProvider, SlotState } from './slots'
+import type { EmbeddedWindow, IndexMarker } from './windows'
 
 /**
  * The run ledger (ADR-0012 §3): how far each stage of a meeting's pipeline has
@@ -209,6 +210,100 @@ export interface PipelineRepository {
   finishIndex(meetingId: string, token: string, plan: { textHash: string, model: string, windowCount: number }): Promise<IndexFinish>
   /** Remove the meeting's runs, chunks and index marker. Idempotent; a cascade on Supabase. */
   deleteForMeeting(meetingId: string): Promise<void>
+  /**
+   * The cron sweeper's one read: a meeting a step can be taken of now, or none, and which
+   * providers cannot be asked right now. Moves the rotation on to the meeting it answers,
+   * before anything else happens to it, and records that a tick ran, meeting or not.
+   * One request, reading at most {@link SWEEP_POOL} of each kind of meeting.
+   */
+  nextForSweep(options: SweepOptions): Promise<SweepChoice>
+}
+
+/** What `nextForSweep` needs to be told. */
+export interface SweepOptions {
+  /** The current embedding model, since an index belongs to one. */
+  model: string
+  /** The public demo, which nothing moves. Null when no meeting is the demo. */
+  excludeId: string | null
+  /** The one error on an index's run that ends by itself, once its time has passed: the daily limit. */
+  limitError: string
+}
+
+export interface SweepChoice {
+  meetingId: string | null
+  busy: SlotProvider[]
+}
+
+/**
+ * Meetings of each kind `nextForSweep` looks at: those in progress that have waited longest,
+ * and finished transcripts touched most recently. What keeps a tick's read the same size
+ * however many meetings there are.
+ */
+export const SWEEP_POOL = 50
+
+/** What {@link sweepCanMove} rests on: one meeting's rows, as it reads them. */
+export interface SweepFacts {
+  status: MeetingStatus
+  failedStage: 'transcription' | 'summarization' | 'upload' | null
+  runs: Partial<Record<PipelineStage, Pick<PipelineRun, 'cursor' | 'lastError' | 'retryAt' | 'stepLeaseUntil'>>>
+  /** The current extraction run has a planned chunk with no result. */
+  unfinishedChunk: boolean
+  marker: Pick<IndexMarker, 'model' | 'complete'> | null
+  hasLines: boolean
+  hasWindows: boolean
+  /** A window is stored under a model other than the current one. */
+  hasOtherModelWindows: boolean
+}
+
+/** What `reserve_slot` would refuse at no wait, by provider. Whisper takes no slot, only a block. */
+export function busyProviders(slots: Partial<Record<SlotProvider, SlotState>>, now: number): SlotProvider[] {
+  return (['groq-chat', 'groq-whisper', 'workers-ai-embed'] as const).filter((provider) => {
+    const slot = slots[provider]
+    if (!slot) return false
+    return (provider === 'groq-whisper' ? slot.blockedUntil : Math.max(slot.nextAvailableAt, slot.blockedUntil)) > now
+  })
+}
+
+/**
+ * Whether a step of this meeting can be taken now, with nobody watching. A deliberate mirror
+ * of `public.sweep_can_move`, for the local driver, which `unattendedStep` decides the step
+ * from what `GET .../pipeline` reads. They differ in one way on purpose: a complete marker
+ * counts as settled here, because telling that it no longer adds up takes hashing the
+ * transcript, and that is not a cost to pay for each meeting looked at.
+ */
+export function sweepCanMove(facts: SweepFacts, { model, limitError, busy, now }: Pick<SweepOptions, 'model' | 'limitError'> & { busy: readonly SlotProvider[], now: number }): boolean {
+  const { status, failedStage, runs } = facts
+  const waiting = (run: SweepFacts['runs'][PipelineStage]) =>
+    (run?.stepLeaseUntil != null && run.stepLeaseUntil.getTime() > now) || (run?.retryAt != null && run.retryAt.getTime() > now)
+
+  if (status === 'uploaded') return !busy.includes('groq-whisper')
+  if (status === 'transcribing') {
+    if (waiting(runs.transcription)) return false
+    return (runs.transcription?.cursor as { reply?: unknown } | undefined)?.reply != null || !busy.includes('groq-whisper')
+  }
+  if (status === 'summarizing' || status === 'indexing') {
+    if (!waiting(runs.summarization) && (!facts.unfinishedChunk || !busy.includes('groq-chat'))) return true
+  }
+  else if (status !== 'ready' && !(status === 'failed' && failedStage === 'summarization')) {
+    return false
+  }
+
+  if (busy.includes('workers-ai-embed')) return false
+  if (facts.marker?.complete || (facts.marker && facts.marker.model !== model)) return false
+  const index = runs.search_index
+  if (waiting(index)) return false
+  if (index?.lastError != null && (index.lastError !== limitError || index.retryAt == null)) return false
+  const pass = (index?.cursor as { pass?: { model?: string } } | undefined)?.pass
+  if (pass?.model != null && pass.model !== model) return false
+  if (facts.hasOtherModelWindows) return false
+  return facts.hasLines || facts.hasWindows
+}
+
+/** Whether `row` comes after the meeting the rotation last chose, by when it was created and then its id. */
+export function afterInRotation(row: { createdAt: string, id: string }, last: { createdAt: string, id: string } | null): boolean {
+  if (!last) return true
+  const created = Date.parse(row.createdAt) - Date.parse(last.createdAt)
+  return created > 0 || (created === 0 && row.id > last.id)
 }
 
 /** The largest lease Postgres's `integer` holds; both drivers refuse more, alike. */

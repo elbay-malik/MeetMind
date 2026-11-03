@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from './database.types'
 import type { SupabaseOptions } from './supabase'
+import type { SlotProvider } from './slots'
 import { actionItemToRow, decisionToRow } from './summaries'
 import {
   assertStorableResult,
@@ -239,6 +240,22 @@ export function createSupabasePipelineRepository(options: SupabaseOptions): Pipe
       if (runs.error) fail('pipeline runs delete', runs.error)
       const marker = await db().from('meeting_index_state').delete().eq('meeting_id', meetingId)
       if (marker.error) fail('index marker delete', marker.error)
+    },
+
+    async nextForSweep({ model, excludeId, limitError }) {
+      const { data, error } = await db().rpc('sweep_next_meeting', {
+        p_model: model,
+        p_exclude: excludeId,
+        p_limit_error: limitError,
+      })
+      if (error) fail('sweep selection', error)
+      const row = data?.[0]
+      // Not "nothing to do", which would hide this for as long as it went on. A provider
+      // left off the list would be asked while it is blocked.
+      if (!row || !Array.isArray(row.busy) || (row.meeting_id !== null && typeof row.meeting_id !== 'string')) {
+        throw new Error('Supabase sweep selection returned an unusable answer')
+      }
+      return { meetingId: row.meeting_id, busy: row.busy as SlotProvider[] }
     },
   }
 }

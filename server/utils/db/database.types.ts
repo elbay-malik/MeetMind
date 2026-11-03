@@ -30,6 +30,12 @@ export interface Database {
         Update: Partial<SummaryChunkRow>
         Relationships: []
       }
+      sweep_state: {
+        Row: { id: boolean, last_tick_at: string, last_created_at: string | null, last_meeting_id: string | null }
+        Insert: { id?: boolean, last_tick_at?: string, last_created_at?: string | null, last_meeting_id?: string | null }
+        Update: Partial<{ id: boolean, last_tick_at: string, last_created_at: string | null, last_meeting_id: string | null }>
+        Relationships: []
+      }
       meeting_index_state: {
         Row: { meeting_id: string, text_hash: string, model: string, window_count: number, complete: boolean, updated_at: string }
         Insert: { meeting_id: string, text_hash: string, model: string, window_count?: number, complete?: boolean, updated_at?: string }
@@ -187,6 +193,11 @@ export interface Database {
         Args: { p_meeting: string, p_token: string, p_text_hash: string, p_model: string, p_window_count: number }
         /** 'complete', 'changed' or 'lost'. */
         Returns: string
+      }
+      sweep_next_meeting: {
+        Args: { p_model: string, p_exclude: string | null, p_limit_error: string }
+        /** Always one row. `busy` names the providers that cannot be asked right now. */
+        Returns: { meeting_id: string | null, busy: string[] }[]
       }
       finalize_summary: {
         /** p_decisions and p_action_items: rows in the tables' own column names. */
