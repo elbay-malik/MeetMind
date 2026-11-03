@@ -291,7 +291,12 @@ export function failureOf(state: DriverState, facts: PipelineFacts): FailureView
   if (stage === 'summarization') {
     return forGood
       ? { title: 'This transcript is too long to extract from', description: 'It would take more requests than one meeting is allowed, so decisions and action items cannot be extracted. The transcript is kept and can still be read.' }
-      : { title: 'Extraction did not finish', description: 'The transcript is kept, and so is every part already extracted. A retry carries on from there.' }
+      : {
+          title: 'Extraction did not finish',
+          // While the index builds the answer cannot tell a cooldown from a transcript over the
+          // limit, which no retry helps. It can once `failed` says so, or the driver has stopped.
+          description: `The transcript is kept, and so is every part already extracted.${state.answer?.next === 'failed' || state.stop ? ' A retry carries on from there.' : ''}`,
+        }
   }
   return { title: 'Something went wrong', description: 'This meeting stopped, and nothing here can move it on.' }
 }
