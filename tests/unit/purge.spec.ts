@@ -375,6 +375,17 @@ describe('with it on', () => {
     })
   })
 
+  it('says only the kind of error when the purge\'s migration was not applied, which is all the README promises', async () => {
+    await fullMeeting(31)
+    const deps = nothingToDo()
+    const noFunction = { ...deps, pipeline: { ...deps.pipeline, nextExpired: async () => {
+      throw new Error('Supabase expired meeting selection failed (PGRST202): Could not find the function')
+    } } }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await reportTick(() => purge(noFunction))
+    expect(warn.mock.calls).toEqual([['[meetmind] sweep failed: Error']])
+  })
+
   it('says one line for a meeting deleted, with no id in it, and nothing for one left', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     await reportTick(async () => ({ kind: 'purged' }))

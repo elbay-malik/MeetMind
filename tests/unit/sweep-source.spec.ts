@@ -80,3 +80,24 @@ describe('the cron', () => {
     expect(SWEEP_PACE).toContain('at most one step every 5 minutes')
   })
 })
+
+describe('what the documents say the purge and its promise depend on', () => {
+  const text = (path: string) => readFile(join(rootDir, path), 'utf8')
+
+  // The page reads no database (ADR-0017), so it cannot know of a demo id naming no meeting, nor of
+  // a migration not applied, and an operator told otherwise would not look.
+  it('tells the operator the upload page can promise deletion while nothing is deleted', async () => {
+    const [readme, env, adr] = await Promise.all([text('README.md'), text('.env.example'), text('docs/adr/0017-retention-purge.md')])
+    expect(readme).not.toContain('only while all that is so')
+    expect(readme).toContain('it goes on promising deletion in both of those cases')
+    expect(env).not.toContain('promises deletion only while it is really on')
+    expect(env).toContain('deletes nothing while the page still promises it')
+    expect(adr).toContain('A purge migration not applied')
+  })
+
+  it('says what a migration not applied logs, which is no reason', async () => {
+    const readme = await text('README.md')
+    expect(readme).not.toContain('or it does nothing and logs why')
+    expect(readme).toContain('`sweep failed: Error`')
+  })
+})

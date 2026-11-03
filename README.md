@@ -272,8 +272,11 @@ Nothing has been deployed yet. When it is:
 `wrangler secret put` to have a tick with nothing else to do delete one meeting past that many days:
 its row, transcript, summary, index and audio, for good, at most 288 a day. It needs
 `20261103190000_retention_purge.sql` applied, and `NUXT_PUBLIC_DEMO_MEETING_ID` naming a real
-meeting, or it does nothing and logs why. The upload page says how many days only while all
-that is so. Run the query in [ADR-0017](docs/adr/0017-retention-purge.md) first, to see what
+meeting, or it deletes nothing. A demo id naming no meeting says so once per isolate, and a
+migration not applied says only `sweep failed: Error`, on each tick with nothing else to do. The
+upload page says how many days from the setting, a well-formed id and being a Worker, with no
+read of the database, so it goes on promising deletion in both of those cases: check both when
+turning this on. Run the query in [ADR-0017](docs/adr/0017-retention-purge.md) first, to see what
 the first days would delete.
 
 The sweeper is also what keeps a free Supabase project from pausing: every tick writes one row,
