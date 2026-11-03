@@ -577,7 +577,7 @@ describe('what it says closing the page does', () => {
   const working = answer({ status: 'transcribing', next: 'wait', retryAt: new Date(Date.now() + 60_000).toISOString(), retryAfterMs: 60_000 })
 
   afterEach(() => {
-    useDeploymentFacts().value = { sweeps: false }
+    useDeploymentFacts().value = { sweeps: false, purgeDays: null }
   })
 
   it('says the meeting waits for the page, on a server with no cron', async () => {
@@ -589,7 +589,7 @@ describe('what it says closing the page does', () => {
   })
 
   it('says the server carries on, at most one step every 5 minutes and how many steps that is, on a Worker', async () => {
-    useDeploymentFacts().value = { sweeps: true }
+    useDeploymentFacts().value = { sweeps: true, purgeDays: null }
     const { id } = aMeeting({ pipeline: [ok(working)], advance: [ok(working)] })
     const page = await open(id)
     await vi.waitFor(() => expect(page.text()).toContain('This page is doing the work'))

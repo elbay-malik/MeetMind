@@ -14,6 +14,10 @@ if (configuredDemoId && !demoMeetingId) {
   console.warn('NUXT_PUBLIC_DEMO_MEETING_ID is not a meeting id, so the home page shows no demo link')
 }
 
+/** Only what the purge really runs at (ADR-0017). With it off, this page promises no deletion. */
+const deployment = useDeploymentFacts()
+const purgeDays = computed(() => deployment.value.purgeDays)
+
 const { state, extract, cancel, reset: resetExtraction } = useAudioExtract()
 const uploader = useMeetingUpload()
 const { code: inviteCode, status: inviteStatus, error: inviteError, check: checkInvite, forget: forgetInvite } = useInviteCode()
@@ -204,6 +208,9 @@ async function uploadAndContinue() {
         <p class="mt-1 text-default">
           There are no accounts. Anyone with the link to your meeting can view it, including
           the file's name, and you cannot delete it yourself.
+          <template v-if="purgeDays">
+            The meeting and everything stored for it are deleted about {{ purgeDays }} {{ purgeDays === 1 ? 'day' : 'days' }} after upload.
+          </template>
         </p>
       </template>
     </UAlert>

@@ -55,7 +55,7 @@ const LINE = { idx: 0, startMs: 0, endMs: 1000, text: 'We agreed to ship on Frid
 
 afterEach(() => {
   useRuntimeConfig().public.demoMeetingId = ''
-  useDeploymentFacts().value = { sweeps: false }
+  useDeploymentFacts().value = { sweeps: false, purgeDays: null }
 })
 
 describe.each<[string, Record<string, unknown>, unknown[]]>([
@@ -91,7 +91,7 @@ describe('what moves a meeting whose page is closed', () => {
     ['transcribing, with no lines', { status: 'transcribing' }, []],
     ['transcribing, with lines', { status: 'transcribing' }, [LINE]],
   ])('is the server as well on a Worker, slowly: %s', async (_name, status, segments) => {
-    useDeploymentFacts().value = { sweeps: true }
+    useDeploymentFacts().value = { sweeps: true, purgeDays: null }
     const page = await open(status, segments)
     expect(page.text()).toContain('at most one step every 5 minutes, shared with every other meeting')
     expect(page.text()).not.toContain('only while')
@@ -101,13 +101,13 @@ describe('what moves a meeting whose page is closed', () => {
     ['a failure with no lines', { status: 'failed', failedStage: 'transcription' }, []],
     ['a failure with lines', { status: 'failed', failedStage: 'transcription' }, [LINE]],
   ])('promises nothing of the server for %s, which a tick does not retry, on a Worker', async (_name, status, segments) => {
-    useDeploymentFacts().value = { sweeps: true }
+    useDeploymentFacts().value = { sweeps: true, purgeDays: null }
     const page = await open(status, segments)
     expect(page.text()).not.toContain('every 5 minutes')
   })
 
   it('promises nothing of it on the demo, which it leaves alone, on a Worker', async () => {
-    useDeploymentFacts().value = { sweeps: true }
+    useDeploymentFacts().value = { sweeps: true, purgeDays: null }
     useRuntimeConfig().public.demoMeetingId = ID
     const page = await open({ status: 'transcribing' }, [])
     expect(page.text()).not.toContain('every 5 minutes')
