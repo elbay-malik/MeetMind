@@ -133,6 +133,7 @@ describe('the question card when the index is not finished', () => {
       await flushPromises()
       expect(wrapper.text()).toContain(words)
       expect(wrapper.text()).toContain('at most one step every 5 minutes, shared with every other meeting')
+      expect(wrapper.text()).toContain('unless a step of it has failed')
       expect(wrapper.text()).not.toMatch(/moves only while|happens by itself while/)
     })
 
