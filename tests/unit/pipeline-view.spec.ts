@@ -268,6 +268,14 @@ describe('what closing the page does, away from a wait', () => {
       expect(said).not.toContain('only while')
     }
   })
+
+  // `/pipeline` says `building` of an index whose last step failed, once its short park is
+  // over, and a tick never takes that step: tests/unit/helpers/sweep-cases.ts holds that half.
+  it('promises no tick to an index that may have stopped, which only its page carries on', () => {
+    for (const said of [indexMoves(true, true), indexMoves(true, false)]) {
+      expect(said).toContain('unless a step of it has failed, which only that page carries on')
+    }
+  })
 })
 
 describe('the pause banner', () => {

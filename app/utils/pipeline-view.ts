@@ -56,10 +56,14 @@ export function transcriptionStarts(sweeps: boolean): string {
     : `Open Pipeline and transcription starts by itself. ${after}`
 }
 
-/** An index with work left and nothing stopping it, for the Questions card. */
+/**
+ * An index with work left and no park or refusal to name, for the Questions card. On a Worker that
+ * can still be an index whose last step failed, which a tick leaves alone for good: `/pipeline`
+ * calls it `building` once its short park is over, and carries no error to tell it by.
+ */
 export function indexMoves(sweeps: boolean, started: boolean): string {
   if (sweeps) {
-    return `${started ? 'This meeting\'s index is not finished.' : 'This meeting has not been indexed for questions yet.'} It moves at full speed while its pipeline page is open, and otherwise very slowly, ${SWEEP_PACE}.`
+    return `${started ? 'This meeting\'s index is not finished.' : 'This meeting has not been indexed for questions yet.'} It moves at full speed while its pipeline page is open, and otherwise very slowly, ${SWEEP_PACE}, unless a step of it has failed, which only that page carries on.`
   }
   return started
     ? 'This meeting\'s index is not finished. It moves only while its pipeline page is open.'
