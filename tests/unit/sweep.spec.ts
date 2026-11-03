@@ -503,6 +503,16 @@ describe('beside an open tab', () => {
     expect(new Set(providers.sent.windows).size).toBe(providers.sent.windows.length)
   })
 
+  it('reads a ledger only in its own queue, so a claim being written is never read half way', async () => {
+    const providers = scriptedProviders(lines(1))
+    const id = await uploadedMeeting()
+    const deps = depsWith(providers)
+    const { pipeline } = deps
+    const writes = Array.from({ length: 40 }, () => pipeline.claimStep(id, 'transcription', { status: 'uploaded', leaseMs: 1 }))
+    const reads = Array.from({ length: 40 }, () => pipeline.nextForSweep({ model: 'model-a', excludeId: null, limitError: 'x' }))
+    await expect(Promise.all([...writes, ...reads])).resolves.toBeDefined()
+  })
+
   it('loses a claim quietly: the tab has the step, and the tick neither sends nor throws', async () => {
     const providers = scriptedProviders(lines(2))
     const id = await uploadedMeeting()

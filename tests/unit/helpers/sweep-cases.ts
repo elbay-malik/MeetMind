@@ -214,6 +214,15 @@ export function describeSweepSelection(name: string, driver: () => SweepDriver) 
       expect(picked).toEqual([first, last, first, last])
     })
 
+    it('copes with a step writing to a meeting while it reads, on any number of tries', async () => {
+      const { pipeline, seed } = driver()
+      const id = randomUUID()
+      await seed(id, { status: 'uploaded', createdAgoMs: HOUR })
+      const asked = Array.from({ length: 30 }, () => pipeline.nextForSweep(options()))
+      const written = Array.from({ length: 30 }, () => seed(randomUUID(), { status: 'ready', lines: 1 }))
+      await Promise.all([...asked, ...written])
+    })
+
     it('moves on from the last meeting it chose, even if nothing was ever done with it', async () => {
       // Nothing here takes a step, as a tick killed straight after choosing would not: the
       // meeting's own row has not changed, and that must not make it the next choice too.
