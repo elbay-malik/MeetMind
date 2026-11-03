@@ -1,3 +1,6 @@
+import { rm } from 'node:fs/promises'
+import { join } from 'node:path'
+
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   modules: ['@nuxt/ui', '@nuxt/eslint'],
@@ -114,6 +117,16 @@ export default defineNuxtConfig({
     '/spike/**': { ssr: false },
   },
   compatibilityDate: '2025-07-15',
+  hooks: {
+    // ffmpeg's wasm is over the 25 MiB asset limit, so a Worker build leaves it out and a route
+    // serves it from R2 (ADR-0018). Here, before Nitro lists its assets: a file only left
+    // behind by .assetsignore stays in that list, and the Worker sends the path to the assets
+    // and answers 404 without running the route. A Node build and dev keep the public file.
+    async 'nitro:build:public-assets'(nitro) {
+      if (!nitro.options.preset.startsWith('cloudflare')) return
+      await rm(join(nitro.options.output.publicDir, 'ffmpeg/ffmpeg-core.wasm'), { force: true })
+    },
+  },
   vite: {
     // ffmpeg.wasm resolves its internal worker via new URL(..., import.meta.url);
     // esbuild pre-bundling relocates the module and breaks that resolution.
