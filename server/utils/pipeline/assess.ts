@@ -1,5 +1,5 @@
 import type { Meeting, PipelineResponse } from '#shared/types/meeting'
-import { transcriptionFinished } from '#shared/utils/meeting'
+import { extractionInProgress, transcriptionFinished } from '#shared/utils/meeting'
 import type { MeetingRepository } from '../db/meetings'
 import type { ChunkCounts, PipelineRepository, PipelineRun, PipelineStage } from '../db/pipeline'
 import type { SlotProvider } from '../db/slots'
@@ -43,13 +43,6 @@ export interface PipelineReadDeps {
 }
 
 const NO_CHUNKS: ChunkCounts = { done: 0, total: 0 }
-
-/** Extraction has a plan worth counting only while it is going on or stopped. */
-function extractionInProgress(meeting: Pick<Meeting, 'status' | 'failedStage'>): boolean {
-  return meeting.status === 'summarizing'
-    || meeting.status === 'indexing'
-    || (meeting.status === 'failed' && meeting.failedStage === 'summarization')
-}
 
 /**
  * Read what deciding takes: at most 5 subrequests on any length of meeting. The meeting and

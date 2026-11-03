@@ -70,6 +70,18 @@ export function transcribedButEmpty(
 }
 
 /**
+ * Extraction is going on or stopped: it has a plan worth counting, and until it is finished
+ * or the meeting deleted, it can still want Groq's slots. A deliberate mirror of the partial
+ * index and `demo_question_gate` in supabase/migrations/20261104120000_demo_question_cap.sql,
+ * which the same cases in tests/unit/helpers/demo-question-cases.ts hold together.
+ */
+export function extractionInProgress(meeting: Pick<Meeting, 'status' | 'failedStage'>): boolean {
+  return meeting.status === 'summarizing'
+    || meeting.status === 'indexing'
+    || (meeting.status === 'failed' && meeting.failedStage === 'summarization')
+}
+
+/**
  * Whether transcription has completed for this meeting, whatever happened after.
  *
  * `failed` + 'summarization' counts: extraction only ever runs against a
@@ -108,6 +120,14 @@ export const PROVIDER_BLOCKED_ERROR = 'The transcription provider\'s quota is us
  * from a 403 by anything in front of the app: a WAF rule's says nothing about the meeting.
  */
 export const DEMO_READ_ONLY_MESSAGE = 'The demo meeting is read-only: it can be read and asked questions, not changed.'
+
+/**
+ * What a refused question on the demo is told (ADR-0019). The question form follows either with
+ * its own "Try again at <time>.", so neither says when. Each goes out through
+ * server/utils/public-errors.ts.
+ */
+export const DEMO_QUESTIONS_USED_MESSAGE = 'The demo has used its questions for today.'
+export const DEMO_QUESTIONS_PAUSED_MESSAGE = 'The demo pauses its questions while a meeting is being processed.'
 
 /**
  * Whether this id is the public demo's (ADR-0015), for the guard on the server and for a page

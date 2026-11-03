@@ -1570,5 +1570,147 @@ check "applying the purge's migration again keeps its posture" \
   "select not has_function_privilege('anon', 'public.next_expired_meeting(integer, uuid)', 'execute')
           and has_function_privilege('service_role', 'public.next_expired_meeting(integer, uuid)', 'execute')"
 
+echo "checking the demo's question cap (ADR-0019) ..."
+CAP_MIGRATION=supabase/migrations/20261104120000_demo_question_cap.sql
+psql -q -c "delete from public.meetings; delete from public.demo_question_days;"
+TODAY="(clock_timestamp() at time zone 'utc')::date"
+take() { psql -q -At -c "select public.take_demo_question($1);"; }
+gate() { psql -q -At -F ' ' -c "select over_count, extraction_pending from public.demo_question_gate($1, '$DEMO_ID');"; }
+expect_gate() { # expect_gate <description> <limit> <'t f' as over_count extraction_pending>
+  local got
+  got=$(gate "$2")
+  [ "$got" = "$3" ] || fail "$1 (got '$got', wanted '$3')"
+  echo "  ok: $1"
+}
+expect_take() { # expect_take <description> <limit> <t or f>
+  local got
+  got=$(take "$2")
+  [ "$got" = "$3" ] || fail "$1 (got '$got', wanted '$3')"
+  echo "  ok: $1"
+}
+check "demo_question_days has RLS on and no policies" \
+  "select c.relrowsecurity and not exists (select 1 from pg_policy where polrelid = c.oid)
+   from pg_class c where c.oid = 'public.demo_question_days'::regclass"
+expect_gate "the first question of a day is under its limit, with nothing pending" 2 "f f"
+check "and reading it writes no row" "select count(*) = 0 from public.demo_question_days"
+expect_take "a take within the limit is granted" 2 t
+expect_take "and the next" 2 t
+expect_gate "the gate reads the count reached" 2 "t f"
+expect_take "a take past the limit is refused" 2 f
+check "and counts nothing" "select taken = 2 from public.demo_question_days where day = $TODAY"
+expect_gate "a higher limit has room again" 3 "f f"
+expect_gate "a limit of zero is over from the first question" 0 "t f"
+expect_take "and takes nothing" 0 f
+expect_take "and nor does a negative one" -1 f
+check "and neither touched the count" "select taken = 2 from public.demo_question_days where day = $TODAY"
+reject "the gate has no safe reading of no limit" "select * from public.demo_question_gate(null, '$DEMO_ID');" "the limit must be given"
+reject "the gate has no safe reading of no demo" "select * from public.demo_question_gate(5, null);" "public demo must be named"
+reject "a take has no safe reading of no limit" "select public.take_demo_question(null);" "the limit must be given"
+reject "a count below nothing is refused" "insert into public.demo_question_days (day, taken) values ('2000-01-01', -1);" "demo_question_days_taken_check"
+
+psql -q -c "insert into public.demo_question_days (day, taken) values ($TODAY - 1, 99), ($TODAY - 40, 7);"
+check "the gate reads only today" "select not over_count from public.demo_question_gate(3, '$DEMO_ID')"
+check "reading deletes nothing of earlier days" "select count(*) = 3 from public.demo_question_days"
+expect_take "a take still counts today" 3 t
+check "and deletes the earlier days, so the table never grows" \
+  "select count(*) = 1 and bool_and(day = $TODAY and taken = 3) from public.demo_question_days"
+psql -q -c "insert into public.demo_question_days (day, taken) values ($TODAY - 1, 99);"
+expect_take "a take refused over the limit" 3 f
+check "still deletes earlier days" "select count(*) = 1 and bool_and(day = $TODAY) from public.demo_question_days"
+psql -q -c "delete from public.demo_question_days;"
+
+# Many at once, each its own session. A limit of 5 grants 5, which only the WHERE on the conflict can say.
+for i in $(seq 1 20); do take 5 > "$TMPDIR_SWEEP/take_$i" & done
+wait
+granted=$(cat "$TMPDIR_SWEEP"/take_* | grep -c '^t$' || true)
+[ "$granted" = "5" ] || fail "20 takes at once with a limit of 5 granted $granted"
+echo "  ok: 20 takes at once with a limit of 5 grant exactly 5"
+check "and the count says 5" "select taken = 5 from public.demo_question_days where day = $TODAY"
+psql -q -c "delete from public.demo_question_days;"
+
+# What counts as pending, each state its own row, and the same three states as extractionInProgress
+# in shared/utils/meeting.ts, whose cases over real SQL are in tests/postgrest/demo-questions.spec.ts.
+pending_state() { # pending_state <description> <status> <failed_stage or null> <t or f>
+  mk "$SW1" "$2" "$3"
+  expect_gate "$1" 5 "f $4"
+  gone "$SW1"
+}
+pending_state "an upload that has not arrived is not pending" pending_upload null f
+pending_state "an uploaded meeting is not pending" uploaded null f
+pending_state "a meeting transcribing is not pending" transcribing null f
+pending_state "a meeting summarizing is pending" summarizing null t
+pending_state "a meeting indexing is pending" indexing null t
+pending_state "a ready meeting is not pending" ready null f
+pending_state "a failed upload is not pending" failed "'upload'" f
+pending_state "a failed transcription is not pending" failed "'transcription'" f
+pending_state "a failed extraction is pending" failed "'summarization'" t
+mk "$DEMO_ID" failed "'summarization'"
+expect_gate "the demo's own row does not count" 5 "f f"
+check "and in capitals, which is the same row to Postgres" \
+  "select not extraction_pending from public.demo_question_gate(5, upper('$DEMO_ID')::uuid)"
+mk "$SW1" indexing
+expect_gate "another meeting beside it does" 5 "f t"
+gone "$SW1"
+gone "$DEMO_ID"
+
+check "the gate writes nothing, so a read-only caller could not make it take a question" \
+  "select provolatile = 's' from pg_proc where proname = 'demo_question_gate'"
+reject "and a read-only transaction cannot take one" \
+  "begin read only; select public.take_demo_question(5); commit;" "read-only transaction"
+
+# What the gate reads, by Postgres's own count, among as many finished meetings as there are,
+# with the demo itself and another meeting in the states the index holds.
+psql -q -c "insert into public.meetings (id,title,status,source_file_name,source_bytes,audio_key,audio_bytes)
+              select gen_random_uuid(), 'x', 'ready', 'a.mp4', 1, 'cap_read_' || g, 10 from generate_series(1, 20000) g;
+            analyze public.meetings;"
+gate_reads() {
+  psql -q -At -c "begin;
+    select count(*) from public.demo_question_gate(5, '$DEMO_ID');
+    select coalesce(sum(coalesce(seq_tup_read, 0) + coalesce(idx_tup_fetch, 0)), 0) || ' ' || coalesce(sum(seq_scan), 0)
+      from pg_stat_xact_user_tables where relname = 'meetings';
+    rollback;" | tail -1
+}
+read_none=$(gate_reads)
+echo "  (rows of meetings read to answer, then scans of a whole table, with 20,000 finished meetings: $read_none)"
+[ "${read_none%% *}" -le 2 ] || fail "the gate read too many meetings: $read_none"
+[ "${read_none##* }" = "0" ] || fail "the gate scanned the whole table: $read_none"
+mk "$DEMO_ID" indexing
+mk "$SW1" indexing
+read_some=$(gate_reads)
+echo "  (and with the demo and one other meeting in progress: $read_some)"
+[ "${read_some%% *}" -le 2 ] || fail "the gate read too many meetings: $read_some"
+[ "${read_some##* }" = "0" ] || fail "the gate scanned the whole table: $read_some"
+echo "  ok: the gate reads at most the demo and one other row, however many meetings there are"
+gone "$SW1"
+gone "$DEMO_ID"
+psql -q -c "delete from public.meetings where audio_key like 'cap_read_%';"
+
+check "the cap's functions pin their search_path" \
+  "select bool_and('search_path=public' = any(proconfig)) and count(*) = 2 from pg_proc
+    where proname in ('demo_question_gate', 'take_demo_question')"
+check_cap_posture() {
+  for fn in 'public.demo_question_gate(integer, uuid)' 'public.take_demo_question(integer)'; do
+    check "$1: $fn is executable by service_role and not by PUBLIC, anon or authenticated" \
+      "select has_function_privilege('service_role', '$fn', 'execute')
+              and not has_function_privilege('anon', '$fn', 'execute')
+              and not has_function_privilege('authenticated', '$fn', 'execute')
+              and not exists (select 1 from pg_proc p, aclexplode(p.proacl) a
+                               where p.oid = '$fn'::regprocedure and a.grantee = 0)"
+  done
+  check "$1: demo_question_days is for service_role and neither API role" \
+    "select has_table_privilege('service_role', 'public.demo_question_days', 'select, insert, update, delete')
+            and not has_table_privilege('anon', 'public.demo_question_days', 'select, insert, update, delete')
+            and not has_table_privilege('authenticated', 'public.demo_question_days', 'select, insert, update, delete')"
+}
+check_cap_posture "as applied"
+
+# Repeatable: a second apply fails on nothing, and keeps today's count.
+expect_take "a question counted before applying again" 5 t
+psql -q < "$CAP_MIGRATION"
+check "applying the cap's migration again keeps the count" \
+  "select count(*) = 1 and bool_and(taken = 1) from public.demo_question_days"
+check_cap_posture "after a second apply"
+psql -q -c "delete from public.demo_question_days;"
+
 echo
 echo "RESULT: PASS — $(ls supabase/migrations/*.sql | wc -l | tr -d ' ') migrations applied, all invariants hold"
