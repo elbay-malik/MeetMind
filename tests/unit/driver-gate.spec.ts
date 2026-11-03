@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { H3Event } from 'h3'
 import { DRIVERS_REFUSED_MESSAGE, isDriverRefusal, REQUIRED_SETTINGS } from '../../server/utils/drivers'
 import { withoutInternals } from '../../server/utils/pipeline/errors'
+import { runScheduledTick, scheduledEvent } from '../../server/utils/pipeline/sweep'
 import { REAL_SETTINGS_ABSENT } from '../e2e/helpers/local-drivers'
 
 /**
@@ -166,6 +167,8 @@ describe.each<[string, Record<string, unknown>, H3Event]>([
   ['half of Supabase, with the opt-in', { supabaseUrl: 'x', allowLocalDrivers: true }, OK_EVENT],
   ['half of Workers AI, with the opt-in', { workersAiApiToken: 'x', allowLocalDrivers: true }, OK_EVENT],
   ['a Worker by its request context, with the opt-in and every flag', { ...LOCAL_ONLY, allowLocalDrivers: true }, { context: { cloudflare: {} } } as unknown as H3Event],
+  ['a scheduled invocation, with the opt-in and every flag', { ...LOCAL_ONLY, allowLocalDrivers: true }, scheduledEvent({ env: {}, context: {} })],
+  ['a scheduled invocation, with one group missing', { ...ALL_BUT('groq'), allowLocalDrivers: true }, scheduledEvent({ env: {}, context: {} })],
 ])('%s', (_name, settings, event) => {
   it.each(SELECTORS)('%s answers 503 in the one generic message, and calls nothing', (_selector, select) => {
     configure(settings)
@@ -203,6 +206,76 @@ describe('on a Worker known by what it was built for', () => {
   it.each([['cloudflare-module', true], ['cloudflare-pages', true], ['node-server', false]])('built for %s, it says %s', async (preset, worker) => {
     const clause = (await signal())!.replaceAll('import.meta.preset', JSON.stringify(preset))
     expect(new Function(`return ${clause}`)()).toBe(worker)
+  })
+})
+
+// A cron has no request, so no H3 event. What it hands the selectors in place of one.
+describe('in a scheduled invocation', () => {
+  const invocation = () => scheduledEvent({ env: {}, context: {} })
+
+  it.each(SELECTORS)('%s reads nothing of the event but its context, and selects the real driver', (_selector, select) => {
+    configure(EVERY_SETTING)
+    expect(kindsIn(select(invocation())).filter(kind => kind === 'stub' || kind === 'local')).toEqual([])
+    expect(fetched).not.toHaveBeenCalled()
+  })
+
+  it('fails where something reads a request it does not have, rather than finding undefined', () => {
+    const event = invocation() as unknown as Record<string, unknown>
+    expect(event.context).toEqual({ nitro: {}, cloudflare: { env: {}, context: {} } })
+    for (const key of ['node', 'path', 'method', 'headers', 'web', 'handled']) {
+      expect(() => event[key], key).toThrow(/has no request/)
+    }
+  })
+
+  it('is judged a Worker without the opt-in being read, by the signal a request gives', () => {
+    useRuntimeConfig.mockReturnValue(new Proxy({}, {
+      get(_target, key) {
+        if (key === 'allowLocalDrivers') throw new Error('the opt-in was read on a Worker')
+        return undefined
+      },
+    }))
+    expect(refusalOf(() => MODULES.db.useMeetingRepository(invocation())).statusCode).toBe(503)
+  })
+
+  describe('a whole tick', () => {
+    const tick = () => runScheduledTick({ env: {}, context: {} })
+    let warned: ReturnType<typeof vi.spyOn>
+
+    beforeEach(() => {
+      vi.resetModules()
+      warned = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    })
+
+    it('refuses before it sends anything, throws nothing, and says why in the one line it has', async () => {
+      configure(ALL_BUT('workersAi'))
+      const fresh = await import('../../server/utils/pipeline/sweep')
+      await expect(fresh.runScheduledTick({ env: {}, context: {} })).resolves.toBeUndefined()
+      expect(fetched).not.toHaveBeenCalled()
+      expect(logged).toHaveBeenCalledTimes(1)
+      expect(String(logged.mock.calls[0]![0])).toContain('NUXT_WORKERS_AI_ACCOUNT_ID')
+      expect(warned).not.toHaveBeenCalled()
+    })
+
+    it('makes one real database request when nothing can move, and says nothing', async () => {
+      configure({ ...EVERY_SETTING, public: { demoMeetingId: '' } })
+      fetched.mockImplementationOnce(async () => new Response(JSON.stringify([{ meeting_id: null, busy: [] }]), { status: 200, headers: { 'content-type': 'application/json' } }))
+      await tick()
+      expect(fetched).toHaveBeenCalledTimes(1)
+      const [request] = fetched.mock.calls[0] as unknown as [string | Request]
+      expect(typeof request === 'string' ? request : request.url).toMatch(/\/rest\/v1\/rpc\/sweep_next_meeting$/)
+      expect(logged).not.toHaveBeenCalled()
+      expect(warned).not.toHaveBeenCalled()
+    })
+
+    it('says one line, with no value in it, when the database cannot be reached, and throws nothing', async () => {
+      configure({ ...EVERY_SETTING, public: { demoMeetingId: '' } })
+      fetched.mockImplementationOnce(async () => {
+        throw new Error('could not reach value-of-supabaseServiceKey')
+      })
+      await expect(tick()).resolves.toBeUndefined()
+      expect(warned).toHaveBeenCalledTimes(1)
+      expect(JSON.stringify(warned.mock.calls)).not.toMatch(/value-of/)
+    })
   })
 })
 

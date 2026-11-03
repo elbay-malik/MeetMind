@@ -23,6 +23,14 @@
     "binding": "ASSETS"
   },
 
+  // ADR-0012's sweeper: one step of one meeting, or the keep-alive when there is none. On a
+  // deployed Worker only, since `wrangler dev` does not run these by itself and a Node server
+  // has none. The free plan allows 5 across the account. The page says "every 5 minutes", and
+  // tests/unit/sweep-source.spec.ts holds the two together.
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+
   "observability": {
     // CPU time per invocation is the number this spike exists to get.
     "enabled": true
