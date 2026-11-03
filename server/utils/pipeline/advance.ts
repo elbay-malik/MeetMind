@@ -2,7 +2,7 @@ import type { MeetingRepository } from '../db/meetings'
 import type { SummaryRepository } from '../db/summaries'
 import type { TranscriptRepository } from '../db/transcripts'
 import type { PipelineRepository } from '../db/pipeline'
-import type { SlotRepository } from '../db/slots'
+import type { SlotProvider, SlotRepository } from '../db/slots'
 import type { TranscriptIndexRepository } from '../db/windows'
 import type { Embedder } from '../qa/embedder'
 import { advanceIndexing } from '../qa/steps'
@@ -11,7 +11,7 @@ import { advanceExtraction } from '../summary/steps'
 import type { Summarizer } from '../summary/summarizer'
 import { advanceTranscription } from '../transcription/steps'
 import type { Transcriber } from '../transcription/transcriber'
-import { assessPipeline, readPipeline, type PipelineAssessment, type PipelineStep } from './assess'
+import { assessPipeline, readPipeline, unattendedStep, type PipelineAssessment, type PipelineStep } from './assess'
 
 /**
  * `POST /api/meetings/:id/advance` (ADR-0012 §1): the one runnable step, whichever it is.
@@ -45,16 +45,15 @@ export type AdvanceOutcome
     /** `complete` has not confirmed the upload, and a driver cannot do that for it. */
     | { kind: 'not-uploaded' }
 
-async function takeStep(step: PipelineStep, meetingId: string, deps: PipelineDeps): Promise<void> {
+/** Take the step, and say how it went in the step's own one word, which holds nothing of why. */
+async function takeStep(step: PipelineStep, meetingId: string, deps: PipelineDeps): Promise<string> {
   switch (step) {
     case 'transcription':
-      await advanceTranscription(meetingId, deps)
-      return
+      return (await advanceTranscription(meetingId, deps)).kind
     case 'extraction':
-      await advanceExtraction(meetingId, deps)
-      return
+      return (await advanceExtraction(meetingId, deps)).kind
     case 'indexing':
-      await advanceIndexing(meetingId, deps, { unattended: true })
+      return (await advanceIndexing(meetingId, deps, { unattended: true })).kind
   }
 }
 
@@ -76,4 +75,19 @@ export async function advancePipeline(meetingId: string, deps: PipelineDeps): Pr
   const after = await readPipeline(meetingId, model, deps)
   if (!after) return { kind: 'missing' }
   return { kind: 'assessed', assessment: assessPipeline(after, { model, now: now() }) }
+}
+
+/**
+ * One tick's step of one meeting (ADR-0012's step 11 addendum): the same step `/advance` takes,
+ * from the same read, chosen by {@link unattendedStep}. Nobody is waiting to be told where
+ * that leaves it, so the second read is not made. Null when no step can be taken.
+ */
+export async function advanceUnattended(meetingId: string, deps: PipelineDeps, busy: readonly SlotProvider[]): Promise<{ step: PipelineStep, outcome: string } | null> {
+  const now = deps.now ?? Date.now
+  const { model } = deps.embedder
+  const snapshot = await readPipeline(meetingId, model, deps)
+  if (!snapshot) return null
+  const step = unattendedStep(snapshot, { model, now: now(), busy })
+  if (!step) return null
+  return { step, outcome: await takeStep(step, meetingId, deps) }
 }
