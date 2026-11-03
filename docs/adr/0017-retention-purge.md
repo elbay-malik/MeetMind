@@ -2,7 +2,7 @@
 
 - **Status:** Accepted, and **off until the user turns it on**. Nothing in this repo turns it on, `wrangler.jsonc` included.
 - **Date:** 2026-11-03
-- **Supersedes:** Nothing whole. Amends ADR-0013 §4 (the upload page may now promise deletion, when it is true), ADR-0011 (its delete has a second caller) and ADR-0012's step 11 (a tick with no step can do this instead). Addresses the retention half of SEC-11 in the security audit.
+- **Supersedes:** Nothing whole. Amends ADR-0013 §4 (the upload page may now promise deletion, when it is true), ADR-0011 (its delete has a second caller, which removes the objects first) and ADR-0012's step 11 (a tick with no step can do this instead). Addresses the retention half of SEC-11 in the security audit.
 
 ## Context
 
@@ -22,14 +22,16 @@ A tick does one thing, and a person may be waiting on a step. So a backlog of st
 
 ### 3. Through the delete there is.
 
-`deleteMeeting` in `server/utils/meeting-deletion.ts`, as the admin route calls it: the blocker, the delete fenced on the row as read, then the objects and rows left. The rows go first, as they do there. So one cleanup that fails leaves objects with no row, which the lifecycle rule removes; there is nothing to choose it by next time, so it is not retried. The only change is that `removeMeetingData` now takes what it needs through `removeDataWith`, so the purge need not choose its drivers twice.
+`deleteMeeting` in `server/utils/meeting-deletion.ts`, with its blocker and its fence on the row, in one different order: **the audio and the raw Whisper reply go first, and then the row and what is left.** The admin route has the row go first, because its caller holds the id and is told to repeat a delete left incomplete (ADR-0011). Nobody here holds the id, the log leaves it out on purpose, and `next_expired_meeting` chooses from rows. With the row gone first, an R2 outage or an invocation killed in between would strand the most sensitive object with nothing to choose it by and nothing counting it, for as long as a lifecycle rule that nothing checks takes, or for ever with none. So a failure leaves the row, and the next tick with nothing else to do takes the same meeting again: every part can be repeated, and a key already gone is not a failure.
+
+What this gives up: **a claim landing between the blocker's read and the fence** keeps the row, as ever, but its objects are gone by then. That is a request in a moment's gap on a meeting past its days, which a later tick then deletes anyway. A step it started finds no audio, which ends it. A meeting whose objects keep failing holds the purge at that meeting, one line a tick, with nothing lost, as an R2 refusing one object and not the next is not a case.
 
 ### 4. What it never does.
 
 | Never | How |
 | --- | --- |
 | Touch the public demo | Left out by id in the SQL, which refuses to run with no id at all, and compared again before anything is read. **With `NUXT_PUBLIC_DEMO_MEETING_ID` empty, not an id, or naming no meeting, the purge does not run**, and that is logged. There is then no telling which meeting is the demo, and `wrangler deploy` removing a dashboard variable (ADR-0015) is an easy way to get there. |
-| Delete a meeting a step is live on | Passed over in the selection. If a lease lands after that, `deletionBlocker` reads it. If one lands after that, the delete's fence on `updated_at` stops it, since a claim moves that. |
+| Delete a meeting a step is live on | Passed over in the selection. If a lease lands after that, `deletionBlocker` reads it, before anything is removed. If one lands after that, the delete's fence on `updated_at` keeps the row, since a claim moves that, and a later tick finishes it (decision 3). |
 | Judge age by anything a client can send or the page can move | `created_at`, which only the database's default writes, against the database's own clock: not `updated_at`, which every step moves, nor `uploaded_at`. The Worker then checks the same row by its own clock, so a disagreement between the two leaves the meeting. |
 | Delete another meeting by a mistake in choosing | The selection answers one id and writes nothing. That row is read again and checked before anything happens, then deleted fenced on what was read. A wrong answer from the database, tested as one, deletes nothing. `audio_key` is unique, so no two rows can name one object. |
 
@@ -51,10 +53,10 @@ Checked on 2026-11-03, on this machine, and on nothing real.
 
 | Where | How | What it showed |
 | --- | --- | --- |
-| A Worker build under local workerd | `scripts/verify-worker-sweep.mjs`, against real SQL on a throwaway Postgres and a fake bucket | Off: nothing deleted at 400 days, no promise on the page. At 30 days: the oldest meeting gone from every table and the bucket, the next untouched until the next tick, a meeting inside its days, the demo at 400 days and one with a live lease all left, the last gone once its lease ended, the page saying 30. Set wrongly, or with a mistyped demo: nothing deleted, one line saying why, with no value |
+| A Worker build under local workerd | `scripts/verify-worker-sweep.mjs`, against real SQL on a throwaway Postgres and a fake bucket | Off: nothing deleted at 400 days, no promise on the page. At 30 days: a bucket answering 500 leaving the oldest meeting's row, and the next tick finishing it, the oldest meeting gone from every table and the bucket, the next untouched until the next tick, a meeting inside its days, the demo at 400 days and one with a live lease all left, the last gone once its lease ended, the page saying 30. Set wrongly, or with a mistyped demo: nothing deleted, one line saying why, with no value |
 | The real Supabase driver over real SQL | `pnpm test:postgrest` | The same questions of the selection as the local driver |
 | A plain Postgres | `verify-migrations.sh`, in `pnpm ci:local` | Age, the demo, leases, refusals, who may run it, how much it reads, running it twice |
-| Local drivers | `tests/unit/purge.spec.ts` | Everything in decision 4, including a database that answers wrongly, and a claim landing mid-delete |
+| Local drivers | `tests/unit/purge.spec.ts` | Everything in decision 4, including a database that answers wrongly, and a claim landing mid-delete. An object that cannot be removed, and an invocation killed before the row, each finished on the next tick |
 | A Node build with the setting on | `tests/e2e/retention-notice.spec.ts` | No promise, and nothing deleted |
 
 ## What stays unproven until Phase 13

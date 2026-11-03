@@ -55,6 +55,7 @@ if (!preset.startsWith('cloudflare')) {
 /** Every request the Worker sent outside itself, in order. */
 const sent = []
 const objects = new Map()
+let r2DeletesFail = false
 const script = {
   /** What Whisper answers with: nothing means a good reply, otherwise a status and a body. */
   whisper: null,
@@ -86,6 +87,11 @@ function answerR2(req, res, body, key) {
     return
   }
   if (req.method === 'DELETE') {
+    if (r2DeletesFail) {
+      res.statusCode = 500
+      res.end()
+      return
+    }
     objects.delete(key)
     res.statusCode = 204
     res.end()
@@ -514,6 +520,12 @@ try {
     check(home.includes('deleted about 30 days after upload'), 'the upload page says the true number of days')
     const list = await (await fetch(`${base}/meetings`, { headers: { accept: 'text/html' } })).text()
     check(list.includes('deployment-facts') && list.includes('purgeDays'), 'and a visit that lands on another page has it for the next one')
+
+    r2DeletesFail = true
+    const failed = await tick()
+    r2DeletesFail = false
+    check(failed.answer.outcome === 'ok', 'a bucket that refuses the delete does not fail the tick')
+    check(await rowsOf(EXPIRED) === 'meeting 1, lines 1, summary 1, marker 1, windows 1' && objects.has(`meetings/${EXPIRED}/audio.ogg`), 'and leaves the row, for the next tick to choose it by')
 
     const first = await tick()
     check(first.answer.outcome === 'ok' && first.claims === 0 && first.providers === 0, 'a tick deletes with no claim and no provider')

@@ -3,7 +3,7 @@ import { meetingIdSchema } from '#shared/schemas/meeting'
 import { isDemoMeetingId } from '#shared/utils/meeting'
 import { isPastRetention, purgeDaysInEffect, readRetentionDays } from '#shared/utils/retention'
 import { isDriverRefusal } from '../drivers'
-import { deleteMeeting, removeDataWith } from '../meeting-deletion'
+import { deleteMeeting, removeObjectsWith, removeRowsWith } from '../meeting-deletion'
 import { DAILY_LIMIT_MESSAGE } from '../qa/embedder'
 import { withoutLogs } from '../quiet-logs'
 import { advanceUnattended, type PipelineDeps } from './advance'
@@ -25,7 +25,7 @@ export type SweepOutcome
     | { kind: 'step', step: PipelineStep, outcome: string }
     /** No step, and the retention purge deleted one expired meeting: its row and its objects. */
     | { kind: 'purged' }
-    /** No step, and the one expired meeting it chose was not deleted. A later tick asks again. */
+    /** No step, and the row of the one expired meeting it chose was not deleted. A later tick asks again. */
     | { kind: 'purge-left' }
     /** No step, and the purge did not look: the configured demo names no meeting. */
     | { kind: 'purge-no-demo' }
@@ -67,7 +67,7 @@ export async function sweepOnce(deps: PipelineDeps, settings: SweepSettings): Pr
 
 /**
  * Delete one meeting past its retention days (ADR-0017), through the same delete as the admin
- * route, with its blocker and its fence. Irreversible and unattended, so the row the database
+ * route, with its blocker and its fence on the row. Irreversible and unattended, so the row the database
  * named is read and checked again before anything is touched: a mistake in choosing, a wrong
  * clock or a wrong demo id stops here. Null when nothing has expired.
  */
@@ -82,10 +82,13 @@ export async function purgeOneExpired(deps: PipelineDeps, demoMeetingId: unknown
   const meeting = await deps.meetings.get(id)
   if (!meeting || !isPastRetention(meeting.createdAt, days, (deps.now ?? Date.now)())) return { kind: 'purge-left' }
 
+  // The objects before the row, unlike the admin route: nobody here holds the id to repeat a
+  // delete that stopped halfway, and only the row can have a later tick choose it again.
   const outcome = await deleteMeeting(id, {
     meetings: deps.meetings,
     pipeline: deps.pipeline,
-    removeData: (meetingId, audioKey) => removeDataWith(deps, meetingId, audioKey),
+    removeObjectsFirst: (meetingId, audioKey) => removeObjectsWith(deps.store, meetingId, audioKey),
+    removeData: meetingId => removeRowsWith(deps, meetingId),
     now: deps.now,
   })
   return { kind: outcome.kind === 'deleted' ? 'purged' : 'purge-left' }
