@@ -1424,6 +1424,64 @@ describe('a hidden tab', () => {
   })
 })
 
+describe('a Retry-After the server sent', () => {
+  const told = (status = 429) => reply(status, {}, String(HOUR / 1000))
+  /** Stopped for trouble, on an answer that said an hour, after four that said nothing. */
+  async function stoppedOnAHint() {
+    const server = fakeServer({ [READ]: [reply(500), reply(500), reply(500), reply(500), told()] })
+    const driver = tab(server)
+    driver.start()
+    await pass(5_000 + 15_000 + 45_000 + 60_000)
+    expect(driver.state().stop).toBe('trouble')
+    return { server, driver, stoppedAt: Date.now() }
+  }
+
+  it('opens the stop\'s retry only once that time is up', async () => {
+    const { driver, stoppedAt } = await stoppedOnAHint()
+    expect(driver.state().retryFrom).toBe(stoppedAt + HOUR)
+  })
+
+  it('holds against a tab coming back into view, until that time is up', async () => {
+    const { server, driver } = await stoppedOnAHint()
+    const before = server.calls.length
+
+    await pass(RELOOK_AFTER_MS)
+    driver.wake('visible')
+    await settle()
+    expect(server.calls.length).toBe(before)
+
+    await pass(HOUR)
+    driver.wake('visible')
+    await settle()
+    expect(server.calls.length).toBe(before + 1)
+  })
+
+  it('holds against every later return to view, while the look that followed it sleeps', async () => {
+    const { server, driver } = await stoppedOnAHint()
+    await pass(HOUR)
+    driver.wake('visible')
+    await settle()
+    const before = server.calls.length
+
+    for (let returns = 0; returns < 5; returns++) {
+      await pass(RELOOK_AFTER_MS + 1)
+      driver.wake('visible')
+      await settle()
+    }
+    expect(server.calls.length).toBe(before)
+  })
+
+  it.each<[string, number]>([['a 503', 503], ['a 500', 500]])('is not cut short by the connection coming back, on %s', async (_name, status) => {
+    const server = fakeServer({ [READ]: [told(status)] })
+    const driver = tab(server)
+    driver.start()
+    await pass(60_000)
+    driver.wake('online')
+    await settle()
+    expect(server.count(READ)).toBe(1)
+  })
+})
+
 describe('the public demo', () => {
   it('asks nothing, holds nothing and sets no timer when the page already has an answer', async () => {
     const locks = fakeLocks()

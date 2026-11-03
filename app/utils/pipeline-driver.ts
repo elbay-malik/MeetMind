@@ -317,6 +317,8 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
   /** Network errors in a row, which are not. */
   let outages = 0
   let lastAskAt = Number.NEGATIVE_INFINITY
+  /** Until when the server said to leave it alone, which nothing but a click goes against. */
+  let holdOffUntil = Number.NEGATIVE_INFINITY
 
   /** Every state seen, so that A, B, A, B does not pass for progress. */
   const seen = new Set<string>()
@@ -452,6 +454,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
     // nobody anything, so they have no bound beyond that.
     if (cause === 'network') return troubleDelayMs(++outages, null) + jitter()
     outages = 0
+    if (hintMs !== null) holdOffUntil = now() + hintMs
     if (++troubles > MAX_TROUBLE_RETRIES && bounded) return null
     return troubleDelayMs(troubles, hintMs) + jitter()
   }
@@ -534,7 +537,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
       }
       if (reply.kind === 'trouble') {
         const ms = delayFor(reply.cause, reply.hintMs, true)
-        if (ms === null) return finish('trouble', now(), reply.cause)
+        if (ms === null) return finish('trouble', Math.max(now(), holdOffUntil), reply.cause)
         update({ pause: reply.cause, nextRequestAt: now() + ms })
         await sleep(ms)
         if (mine !== loop) return
@@ -745,12 +748,12 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
 
     wake(reason) {
       if (!live || state.role === 'read-only') return
-      // Throttled timers are the one case of this: it fires late, and it just asks again.
-      const troubled = state.pause === 'network' || state.pause === 'server' || state.pause === 'unavailable'
-      if (sleeper && (sleeper.until <= now() || (reason === 'online' && troubled))) endSleep()
+      // Throttled timers are the one case of this: it fires late, and it just asks again. The
+      // connection coming back says nothing about a server that answered, whatever it answered.
+      if (sleeper && (sleeper.until <= now() || (reason === 'online' && state.pause === 'network'))) endSleep()
       // A tab that had stopped comes back to something another tab, or the clock, has moved.
       const stoppedWithMore = state.stop === 'failed' || state.stop === 'trouble' || (state.stop === 'finished' && state.retryFrom !== null)
-      if (stoppedWithMore && now() - lastAskAt >= RELOOK_AFTER_MS) begin()
+      if (stoppedWithMore && now() >= holdOffUntil && now() - lastAskAt >= RELOOK_AFTER_MS) begin()
     },
   }
 }

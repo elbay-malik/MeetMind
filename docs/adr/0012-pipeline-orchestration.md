@@ -602,11 +602,11 @@ Opening `/meetings/:id/progress` now takes a meeting from `uploaded` to `ready` 
 
 | Reply | What it does |
 | --- | --- |
-| A network error, or no reply in 8 min (30 s for a read) | Not a failure of the meeting. Backs off 5, 15, 45, then 60 s, for as long as it lasts, with no click needed. The `online` event ends the wait. A minute apart, it costs nothing |
+| A network error, or no reply in 8 min (30 s for a read) | Not a failure of the meeting. Backs off 5, 15, 45, then 60 s, for as long as it lasts, with no click needed. The `online` event ends this wait. A minute apart, it costs nothing |
 | 500, other 5xx or 4xx, a 200 of another shape | Backs off the same, at most 4 retries, then stops with "Try again". None of its words are kept |
 | 503 from the gate (ADR-0016) | The same, and it says MeetMind is not available |
 | 429 | The same, and it says the server asked it to slow down |
-| `Retry-After` or `retryAfterMs` on any of those | Never sooner than that, up to an hour |
+| `Retry-After` or `retryAfterMs` on any of those | Never sooner than that, up to an hour: not the next try, not the "Try again" of a stop, and not a tab coming back into view. The `online` event ends only the wait of a network error. Only a click on rebuilding goes against it |
 | 403 | The page is read-only from then on, as below, with no more steps |
 | 404 | Says the meeting no longer exists, with no retry |
 | 409 | Sends no more steps. Looks after 1–3 s, and then as for `wait` with no time |
