@@ -287,6 +287,26 @@ async function uploaded(id, status = 'uploaded', extra = '') {
     values ('${id}','Sweep','${status}','a.mp4',1,'meetings/${id}/audio.ogg',4096,now()${extra});`)
   objects.set(`meetings/${id}/audio.ogg`, Buffer.alloc(4096, 7))
 }
+/** A finished meeting with something in every store, created that many days ago. */
+async function fullMeeting(id, daysOld) {
+  await uploaded(id, 'ready')
+  objects.set(`meetings/${id}/whisper-reply.json`, Buffer.from('{}'))
+  const vector = `array_fill(0.1::real, array[1024])::extensions.vector`
+  await pg.sql(`
+    update public.meetings set created_at = now() - make_interval(days => ${daysOld}) where id = '${id}';
+    insert into public.transcript_segments (meeting_id, idx, start_ms, end_ms, text) values ('${id}', 0, 0, 1000, 'hello');
+    insert into public.meeting_summaries (meeting_id, summary, provider) values ('${id}', 'They agreed.', 'groq');
+    insert into public.transcript_windows (meeting_id, idx, first_segment_idx, last_segment_idx, start_ms, end_ms, content, content_hash, model, embedding)
+      values ('${id}', 0, 0, 0, 0, 1000, 'hello', '${'a'.repeat(64)}', '@cf/baai/bge-m3', ${vector});
+    insert into public.meeting_index_state (meeting_id, text_hash, model, window_count, complete)
+      values ('${id}', public.transcript_hash('${id}'), '@cf/baai/bge-m3', 1, true);`)
+}
+/** How many rows of it each table holds, in one line. */
+const rowsOf = async id => (await pg.sql(`select 'meeting ' || (select count(*) from public.meetings where id = '${id}')
+  || ', lines ' || (select count(*) from public.transcript_segments where meeting_id = '${id}')
+  || ', summary ' || (select count(*) from public.meeting_summaries where meeting_id = '${id}')
+  || ', marker ' || (select count(*) from public.meeting_index_state where meeting_id = '${id}')
+  || ', windows ' || (select count(*) from public.transcript_windows where meeting_id = '${id}');`)).trim()
 const statusOf = async id => (await pg.sql(`select status from public.meetings where id = '${id}';`)).trim()
 const indexOf = async id => (await pg.sql(`select coalesce((select complete from public.meeting_index_state where meeting_id = '${id}'), false);`)).trim()
 const clearAll = () => pg.sql(`delete from public.meetings; delete from public.provider_slots;
@@ -296,6 +316,7 @@ const ONE = '00000000-0000-4000-8000-000000000001'
 const TWO = '00000000-0000-4000-8000-000000000002'
 const DEMO = '00000000-0000-4000-8000-00000000000d'
 const FAILS = '00000000-0000-4000-8000-00000000000f'
+const EXPIRED = '00000000-0000-4000-8000-00000000000e'
 
 try {
   console.log('\n# No settings at all, with the opt-in and every stub flag')
@@ -463,6 +484,80 @@ try {
     check(whisper === 1, `Whisper was asked once (${whisper})`)
   })
   script.holdWhisper = null
+
+  console.log('\n# The retention purge, off as it is by default')
+  await clearAll()
+  await fullMeeting(EXPIRED, 400)
+  await pg.sql(`update public.sweep_state set last_created_at = null, last_meeting_id = null;`)
+  await withWorker({ ...EVERY_SETTING, NUXT_PUBLIC_DEMO_MEETING_ID: DEMO }, async () => {
+    for (let i = 0; i < 3; i++) await tick()
+    check(await rowsOf(EXPIRED) === 'meeting 1, lines 1, summary 1, marker 1, windows 1', 'nothing is deleted, however old')
+    check(objects.has(`meetings/${EXPIRED}/audio.ogg`), 'and neither is its audio')
+    const home = await (await fetch(`${base}/`, { headers: { accept: 'text/html' } })).text()
+    check(home.includes('you cannot delete it yourself') && !home.includes('deleted about'), 'and the upload page promises no deletion')
+  })
+
+  console.log('\n# The retention purge, on')
+  await clearAll()
+  const STALE = '00000000-0000-4000-8000-0000000000c1'
+  const YOUNG = '00000000-0000-4000-8000-0000000000c2'
+  const LEASED = '00000000-0000-4000-8000-0000000000c3'
+  await fullMeeting(EXPIRED, 90)
+  await fullMeeting(STALE, 60)
+  await fullMeeting(YOUNG, 10)
+  await fullMeeting(LEASED, 300)
+  await fullMeeting(DEMO, 400)
+  await pg.sql(`insert into public.pipeline_runs (meeting_id, stage, step_token, step_lease_until)
+    values ('${LEASED}', 'summarization', gen_random_uuid(), now() + interval '1 hour');`)
+  await withWorker({ ...EVERY_SETTING, NUXT_PUBLIC_DEMO_MEETING_ID: DEMO, NUXT_RETENTION_PURGE_DAYS: '30' }, async (logs) => {
+    const home = await (await fetch(`${base}/`, { headers: { accept: 'text/html' } })).text()
+    check(home.includes('deleted about 30 days after upload'), 'the upload page says the true number of days')
+
+    const first = await tick()
+    check(first.answer.outcome === 'ok' && first.claims === 0 && first.providers === 0, 'a tick deletes with no claim and no provider')
+    check(first.spent.length <= 22, `within what the spec adds up (${first.spent.length} subrequests)`)
+    check(await rowsOf(EXPIRED) === 'meeting 0, lines 0, summary 0, marker 0, windows 0', 'the oldest expired meeting has no row left anywhere')
+    check(!objects.has(`meetings/${EXPIRED}/audio.ogg`) && !objects.has(`meetings/${EXPIRED}/whisper-reply.json`), 'and no object')
+    check(await rowsOf(STALE) === 'meeting 1, lines 1, summary 1, marker 1, windows 1' && objects.has(`meetings/${STALE}/audio.ogg`), 'one a tick: the next expired one is untouched')
+
+    await tick()
+    check(await rowsOf(STALE) === 'meeting 0, lines 0, summary 0, marker 0, windows 0' && !objects.has(`meetings/${STALE}/audio.ogg`), 'the next tick takes it')
+
+    for (let i = 0; i < 3; i++) await tick()
+    check(await rowsOf(YOUNG) === 'meeting 1, lines 1, summary 1, marker 1, windows 1' && objects.has(`meetings/${YOUNG}/audio.ogg`), 'a meeting inside its days stays')
+    check(await rowsOf(DEMO) === 'meeting 1, lines 1, summary 1, marker 1, windows 1' && objects.has(`meetings/${DEMO}/audio.ogg`), 'the public demo stays, 400 days old')
+    check(await rowsOf(LEASED) === 'meeting 1, lines 1, summary 1, marker 1, windows 1' && objects.has(`meetings/${LEASED}/audio.ogg`), 'a meeting a step is live on stays')
+
+    await pg.sql(`update public.pipeline_runs set step_token = null, step_lease_until = null where meeting_id = '${LEASED}';`)
+    await tick()
+    check(await rowsOf(LEASED) === 'meeting 0, lines 0, summary 0, marker 0, windows 0', 'and goes once its step is over')
+    await new Promise(resolve => setTimeout(resolve, 500))
+    const lines = sweepLines(logs).filter(line => line.includes('deleted one meeting'))
+    check(lines.length === 3, `one line for each one deleted (${lines.length})`)
+    check(![EXPIRED, STALE, LEASED].some(id => logs().includes(id)), 'and no id in the log, since an id is the way in')
+  })
+
+  console.log('\n# The retention purge, set wrongly')
+  await clearAll()
+  await fullMeeting(EXPIRED, 400)
+  for (const [name, vars, says] of [
+    ['not a whole number', { NUXT_RETENTION_PURGE_DAYS: 'thirty', NUXT_PUBLIC_DEMO_MEETING_ID: DEMO }, 'NUXT_RETENTION_PURGE_DAYS is not a positive whole number'],
+    ['a fraction', { NUXT_RETENTION_PURGE_DAYS: '30.5', NUXT_PUBLIC_DEMO_MEETING_ID: DEMO }, 'NUXT_RETENTION_PURGE_DAYS is not a positive whole number'],
+    ['with no demo to leave out', { NUXT_RETENTION_PURGE_DAYS: '30' }, 'NUXT_PUBLIC_DEMO_MEETING_ID is not a meeting id'],
+    ['with a mistyped demo', { NUXT_RETENTION_PURGE_DAYS: '30', NUXT_PUBLIC_DEMO_MEETING_ID: '00000000-0000-4000-8000-000000000bad' }, 'NUXT_PUBLIC_DEMO_MEETING_ID names no meeting'],
+  ]) {
+    await withWorker({ ...EVERY_SETTING, ...vars }, async (logs) => {
+      for (let i = 0; i < 3; i++) await tick()
+      check(await rowsOf(EXPIRED) === 'meeting 1, lines 1, summary 1, marker 1, windows 1', `${name}: nothing is deleted`)
+      const home = await (await fetch(`${base}/`, { headers: { accept: 'text/html' } })).text()
+      // A mistyped id looks like any other from the page, and its demo link opens a 404: ADR-0017.
+      if (name !== 'with a mistyped demo') check(!home.includes('deleted about'), `${name}: and the upload page promises none`)
+      await new Promise(resolve => setTimeout(resolve, 500))
+      const lines = sweepLines(logs).filter(line => line.includes(says))
+      check(lines.length >= 1 && lines.length <= 3, `${name}: and it says why, without the value (${lines.length} lines in 3 ticks)`)
+      check(!sweepLines(logs).some(line => line.includes('thirty') || line.includes('30.5')), `${name}: no value`)
+    })
+  }
 
   console.log('\n# The database out')
   await withWorker({ ...EVERY_SETTING, NUXT_SUPABASE_URL: 'http://127.0.0.1:9' }, async (logs) => {
