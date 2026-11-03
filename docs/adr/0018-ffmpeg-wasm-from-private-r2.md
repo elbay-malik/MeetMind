@@ -25,7 +25,7 @@ The bucket `meet-mind` holds every meeting's audio and raw Whisper reply, reache
 
 **To upgrade:** upload the new key first, then deploy, and leave the old key there so a rollback still finds its file.
 
-**What else touches the object: nothing.** No store can list a bucket. Admin delete and the purge delete keys from a row or built from a meeting's id, all under `meetings/`. The storage budget adds up rows, so it does not count these bytes, and its 8 GiB ceiling leaves 2 GB under R2's free 10 GB for this and for the estimate being behind. The lifecycle rule is scoped to `meetings/`.
+**What else touches the object: nothing.** No store can list a bucket. Admin delete and the purge delete keys from a row or built from a meeting's id, all under `meetings/`. The storage budget adds up rows, so it does not count these bytes, and its 8 GiB ceiling leaves over a gigabyte under R2's free 10 GB for this and for the estimate being behind. The lifecycle rule is scoped to `meetings/`.
 
 ## Consequences
 

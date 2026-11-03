@@ -510,6 +510,7 @@ describe('every runtime setting', () => {
     groqChatIntervalMs: 'has a default',
     embedIntervalMs: 'has a default',
     askMaxSlotWaitMs: 'has a default',
+    demoQuestionsPerDay: 'has a default, and any other value refuses every demo question by itself',
     uploadTokenSecret: 'read only inside the local store',
     dataDir: 'read only inside the local stores',
     summaryStubCanary: 'read only inside a stub',
