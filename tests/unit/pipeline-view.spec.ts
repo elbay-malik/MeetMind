@@ -189,6 +189,38 @@ describe('the stepper', () => {
   })
 })
 
+describe('a meeting deleted while its page was open', () => {
+  const gone = (a: PipelineResponse) => state({ stop: 'missing' }, a)
+  const summarizing = answer({ status: 'summarizing', progress: { stage: 'summarization', done: 1, total: 4, etaSeconds: null }, index: { state: 'building', done: 16, total: null, retryAt: null } })
+
+  it('has no stage in progress, and nothing marked as current', () => {
+    const stages = stagesOf(gone(summarizing), facts({ status: 'summarizing' }))
+    expect(stages.map(s => s.state)).toEqual(['done', 'done', 'unfinished', 'unfinished'])
+    expect(stages.every(s => !s.current)).toBe(true)
+    expect(JSON.stringify(stages)).not.toMatch(/In progress|16 passages/)
+  })
+
+  it('says nothing of a stage being able to carry on', () => {
+    const parked = parkedUntil('2026-11-04T00:00:00.000Z')
+    expect(stage(gone(parked), 'index', facts({ status: 'ready' }))).toMatchObject({ state: 'unfinished', detail: 'This meeting no longer exists.' })
+  })
+
+  it.each<[string, PipelineResponse]>([
+    ['being indexed', summarizing],
+    ['finished', answer(READY)],
+    ['held', HELD],
+    ['stopped', STOPPED],
+    ['parked', parkedUntil('2026-11-04T00:00:00.000Z')],
+  ])('offers no way on from a Questions card %s', (_name, a) => {
+    expect(questionsOf(gone(a), NOW)).toEqual({ text: 'This meeting no longer exists, so it cannot be asked questions.', link: null, rebuildLabel: null })
+  })
+
+  it('does not go on about why a failure stopped', () => {
+    const failed = answer({ status: 'failed', next: 'failed', progress: { stage: 'summarization', done: 1, total: 3, etaSeconds: null } })
+    expect(failureOf(gone(failed), facts({ status: 'failed' }))).toBeNull()
+  })
+})
+
 describe('a failed extraction while its index builds', () => {
   const failedExtraction = (next: PipelineResponse['next'], patch: Partial<PipelineResponse> = {}) => answer({ status: 'failed', next, progress: { stage: 'summarization', done: 1, total: null, etaSeconds: null }, index: { state: 'building', done: 16, total: null, retryAt: null }, ...patch })
 

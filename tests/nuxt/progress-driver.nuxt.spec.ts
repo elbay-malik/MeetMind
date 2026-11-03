@@ -124,6 +124,27 @@ const SUMMARIZING = answer({ status: 'summarizing', progress: { stage: 'summariz
 /** Long enough for a read the status set off, and the one retry `useFetch` makes of it, to be over. */
 const readsSettled = () => new Promise(resolve => setTimeout(resolve, 300))
 
+describe('a meeting deleted while the page drives it', () => {
+  it('stops showing work, its status, and a way to a page that is gone', async () => {
+    const { id } = aMeeting({ row: { status: 'summarizing' }, pipeline: [ok(SUMMARIZING)], advance: [{ status: 404, body: {} }] })
+    const page = await open(id)
+    await vi.waitFor(() => expect(page.text()).toContain('This meeting no longer exists'))
+
+    expect(page.text()).not.toContain('In progress')
+    expect(page.findAll('.animate-spin')).toEqual([])
+    expect(page.text().toLowerCase()).not.toContain('summarizing')
+    expect(links(page)).not.toContain('Transcript & player')
+    expect(links(page)).toContain('Upload another')
+  })
+
+  it('does not go on waiting for an upload', async () => {
+    const { id } = aMeeting({ row: { status: 'pending_upload' }, pipeline: [{ status: 404, body: {} }] })
+    const page = await open(id)
+    await vi.waitFor(() => expect(page.text()).toContain('This meeting no longer exists'))
+    expect(page.text()).not.toContain('Waiting for audio')
+  })
+})
+
 describe('a 403 from something in front of the app', () => {
   it('does not call an ordinary meeting the demo, or give up on it', async () => {
     const { id, sent } = aMeeting({ pipeline: [ok(answer())], advance: [{ status: 403, body: { message: 'Blocked by a rule' } }] })
