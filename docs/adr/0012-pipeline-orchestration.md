@@ -567,3 +567,70 @@ The step's embedder makes one attempt (`useStepEmbedder`), as extraction's summa
 - **An explicit `POST .../search-index` honours a park `/advance` set,** and answers `wait` for up to 15 min. The current page would sleep through it, but nothing calls `/advance` from a page yet. Step 10 has to offer that retry differently.
 - **Indexing moves `meetings.updated_at`** (step 8's note). A failed extraction's cooldown therefore restarts with each index claim, so its `retryAt` moves out while the index runs. Bounded by the index's length, and honest, since the figure read is the stored one.
 - **`event.waitUntil` around the step** is still not done.
+
+## Addendum: the client driver as built (step 10, 2026-11-03)
+
+Opening `/meetings/:id/progress` now takes a meeting from `uploaded` to `ready` with no click. The per-stage buttons and the page's own loops are gone. The logic is `app/utils/pipeline-driver.ts`, which is handed its clock, timers, `fetch` and lock manager, so all of it runs in a test in fake time. `app/utils/pipeline-view.ts` is every sentence the page says, as plain functions of the driver's state. `usePipelineDriver` gives the first a browser and starts it in `onMounted`, so no lock or timer code runs on the server, and a server's render moves nothing. **No migration, and no change to what `/advance` or `/pipeline` answer.**
+
+**What an answer does:**
+
+| Answer | The driving tab | A watching tab |
+| --- | --- | --- |
+| `continue` | Asks again at once, up to the spin bound below | Looks again in 5 s |
+| `continue` on a `failed` meeting with `index.state` not `building` | Stops, and offers the retry: the only step on offer is the retry, and that takes a click | Same |
+| `wait` with a time | Sleeps `retryAfterMs` plus 0–2 s, at least 1 s, at most 5 min at a time, and asks again | Looks in 5 s, or in 1 min if the wait is 2 min or more |
+| `wait` with no time | Sends no step. Looks with `GET .../pipeline` once a minute, and drives if that changes | Looks once a minute |
+| `done` | Stops and gives up the lock. Reads `index.state` for what to say | Stops and leaves the queue |
+| `failed` | Stops, whatever its `retryAt`. A retry is offered from then, and with none, not at all | Same |
+
+**It reads first.** Every driver starts with `GET .../pipeline` and only then sends a step, on opening, on taking over the lock, and on a retry. So a finished meeting's page sends no POST, and neither does a `pending_upload`'s, which could only answer 409, or a tab taking over from one that just finished. It costs one read per start, at most 5 subrequests.
+
+**Decisions to reverse if they turn out wrong:**
+- **A retry takes a click, including on opening the page.** Step 9 lets "the next driver to ask" retry, and that could have been opening the link. It is not, because that retry can spend quota, and a page reloaded every minute would then spend it every minute. The cost: reopening a failed meeting does nothing until someone presses the button. There is one way past this: a failed extraction with `index.state: 'building'` keeps driving, as step 9 says it should, and once the cooldown is over the server's row 1 takes the retry instead of the batch. The answer does not say which it would be, and nothing here changes the route.
+- **A parked index does not hold a page open.** `done` with a parked index stops, and the page offers "Carry on indexing" from `retryAt` on, which calls `/advance`. It does not offer `POST .../search-index`, which honours the park and answers `wait` for up to 15 minutes, and it does not run a timer to resume at midnight in a tab nobody is looking at. A tab coming back into view after `retryAt` does carry on by itself, as opening the page does.
+- **The Questions card still has one explicit action,** because step 9 says only `POST .../search-index` can move an index that is `held` or `stopped`: "Rebuild the index" and "Try indexing again". Offering a rebuild spends quota and overwrites stored vectors, which the card says. The route's own refusal is shown only if it says `statusMessage: 'Indexing failed'`, as that route writes its messages for visitors; anything else gets a sentence of this page's.
+- **A step already out when the page goes away is left to finish.** Aborting it would hang up on a Worker, which kills the step, and its lease (up to ~7 min for Whisper) then has to run out. Its answer is not read, and nothing follows it. A read is aborted. This is why "leaving stops requests" means no new ones.
+- **`LONG_WAIT_MS` (2 min) is how the page tells a provider's block from pacing.** The answer carries no reason, on purpose. A slot is at most a minute off and a retryable park 5 s, so a wait of 2 min or more can only be a 429's block, and the banner says the provider's quota is used up for now. That is an inference, not something the server said.
+- **`index.retryAt` at exactly 00:00 UTC is read as the daily limit.** Parked has two causes and the answer does not say which. A 15-minute park landing on midnight would be called the daily limit, and be wrong for up to 15 minutes.
+
+**How it cannot spin, and how it cannot hammer:**
+- **A `continue` showing nothing new** counts. "New" is a state of the figures this tab has not seen before, so A, B, A, B is not progress. 10 in a row (`MAX_IDLE_CONTINUES`) pauses for 30 s; the third time it stops and offers "Try again": at most 30 requests with nothing moving. A wait between them starts the count over, since the wait is itself the pacing. A step legitimately moves no figure about five times at most: a segment bigger than its window, doubling. A pass over an index that has started over walks figures it has already seen, so past 10 batches it pauses, and a long one could stop and need the button. Only `/advance` answers count.
+- **A wait** goes by the server's duration, not `retryAt` against this browser's clock, and uses `retryAt` only if there is nothing else. It sleeps at least `SHORTEST_WAIT_MS` (1 s), so one already past cannot loop. It sleeps at most `LONGEST_SLEEP_MS` (5 min), and asks again: a request with no step takes no claim, so a day's block is 288 free requests, and a block that ended early or a clock that was wrong cannot strand the tab. The countdown stays on the time the server said, not on that next look. 26 h with nothing new stops it, since a block lasts a day at most.
+- **A hidden tab** needs nothing special. A timer that fires late just asks again. Coming back into view ends a sleep whose time has passed, and a stopped tab looks once, if it has not asked for 30 s. A step's own `await` is not a timer and is not throttled.
+
+**What is not an answer:**
+
+| Reply | What it does |
+| --- | --- |
+| A network error, or no reply in 8 min (30 s for a read) | Not a failure of the meeting. Backs off 5, 15, 45, then 60 s, for as long as it lasts, with no click needed. The `online` event ends the wait. A minute apart, it costs nothing |
+| 500, other 5xx or 4xx, a 200 of another shape | Backs off the same, at most 4 retries, then stops with "Try again". None of its words are kept |
+| 503 from the gate (ADR-0016) | The same, and it says MeetMind is not available |
+| 429 | The same, and it says the server asked it to slow down |
+| `Retry-After` or `retryAfterMs` on any of those | Never sooner than that, up to an hour |
+| 403 | The page is read-only from then on, as below, with no more steps |
+| 404 | Says the meeting no longer exists, with no retry |
+| 409 | Sends no more steps. Looks after 1–3 s, and then as for `wait` with no time |
+
+A watching tab backs off the same way and never stops for trouble, since it spends nothing.
+
+**One driving tab per browser.** `navigator.locks` with the name `meeting:<id>`. A tab asks with `ifAvailable`, because a request cannot have both that and a `signal`, and if the lock is taken it queues with a `signal` and watches in the meantime. The lock goes with the tab, so closing the driving tab hands over in milliseconds (56 ms in the browser job). Stopping for any reason gives it up, and each tab queued behind reads, sees the same answer and stops, sending no step. A watching tab that reads `done` or `failed` leaves the queue. Two browsers both drive, which the server's claim makes safe: the second is told `wait` while a step is live.
+
+**With no `navigator.locks`** (plain http, or an old browser) there is a choice. Letting every tab drive is safe, and would double the requests for as long as both are open, each mostly hearing `wait`. Refusing to drive would leave the page doing nothing over http. So `softLocks` stands in: a lease in `localStorage`, implementing the same small interface, renewed every 20 s and removed on the way out, and only the driving tab has one. It lasts 90 s so that a hidden tab's once-a-minute timers cannot lose it while it drives, which is also the longest a crashed tab holds up the next. Its key is a hash of the lock's name, since a meeting's id is the capability to read it. It is weaker than a lock: two tabs can both believe they won, and refused storage makes it say yes to everyone. Both only cost the requests this is here to save. A rejected `locks.request` drives with no lock, for the same reason.
+
+**The public demo** is recognised on the client by `isDemoMeetingId`, the same check as the server's guard. Its page takes no lock, sets no timer and sends nothing unless its first read failed, in which case it reads at most 3 times, and never a step. It says it is read-only and not finished, offers no button, and a finished one shows no banner and leads on to asking. If the setting ever disagrees with the server, the 403 turns the page read-only there and then.
+
+**What is said, and where.**
+- **The live region** has one sentence, always mounted, that depends on nothing that ticks: not the time, not bytes, not batches. Parts of extraction are the only count, each being a provider request, a minute apart. The banner, the countdown and the figures are outside it. The browser job watches it for changes during a countdown.
+- **The stepper** gives every state its own word and its own icon. `aria-current="step"` is on the first stage with anything going on. `prefers-reduced-motion` stills every `animate-spin` in the app, which includes the UI library's loading buttons.
+- **`etaSeconds` is not shown.** The only times on the page are the ones the server said, in the visitor's own terms and clock: "2 hours 5 minutes (14:20)".
+- **The hydration mismatch** was `createdAt` rendered with `toLocaleString()` on both sides. Until mounted it now reads as UTC on both, and nothing else on the page uses the time or the language until then, since `now` is 0. The browser job loads the page in `de-DE` in Auckland and fails on any hydration error.
+- **`MeetingQuestions.vue`** read only the status, which cannot tell parked from held. When the index is not finished it now reads `/pipeline` as well, says which it is, and leaves the link out on the demo.
+
+**Raw errors.** `/advance` and `/pipeline` carry none, and this page shows none. It has its own sentence for each failure, chosen by `progress.stage` and whether `retryAt` is null: a transcription or extraction that did not finish, audio missing or changed, a transcript over `MAX_CHUNKS`, a rejected upload. It strips `errorMessage` from its own `useFetch`, so the server's render and its payload do not carry it either, and an e2e case holds that. **What remains, unchanged:** `GET /api/meetings/:id` still returns `errorMessage`, so the browser still receives it on this page's client-side reads, and it is in the server's payload of `/meetings/:id` and `/meetings/:id/summary`. `POST .../transcribe` and `POST .../summarize` still return raw stored errors and `lastError`. Nothing on a page displays them now.
+
+**Not done, or unverified:**
+- **Nothing here has run against real services or a deployed Worker.** The browser job runs on a built Node server with stubs. Its stub pipeline has no real wait in it, so the long block, the short wait, the 503 and the lost connection are real browser behaviour against answers the test wrote. Every number above is unmeasured against a real provider.
+- **A hidden tab's real throttling was not measured.** Playwright's Chromium does not throttle, so that is the unit spec's held-back timer. The back-forward cache is off there too: the browser job dispatches `pagehide` and `pageshow`, which tests this page's handlers and not whether a real browser restores it.
+- **A tab closed mid-step still kills that step on a Worker,** and its lease has to run out, because `event.waitUntil` around the step is still not done. `keepalive` on the request might keep it going; it has not been tried.
+- **A meeting with no tab open still stops.** That is step 11.
+- **A real `Retry-After` on these routes has not been seen.** Nothing on the routes sends one with a 429 or a 503 today; a rate-limit rule in front of them would.

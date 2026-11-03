@@ -127,8 +127,8 @@ health check also answers 503 when [ADR-0016](0016-real-services-or-nothing.md) 
 2. Set `NUXT_INVITE_CODE` (`openssl rand -hex 24`; on Workers, `wrangler secret put`). Leave
    `NUXT_PUBLIC_DEMO_MEETING_ID` empty: while it names a meeting, that meeting's pipeline refuses.
 3. Open the home page, enter the code and extract the audio. Use **Download audio** to keep a copy
-   before uploading (see below), then upload. On the progress page start transcription, then
-   extraction, then indexing, until it says it is ready for questions.
+   before uploading (see below), then upload. The progress page carries it through by itself: keep
+   it open until it says the meeting can be read and asked questions.
 4. Take the id from the meeting's link and set it with `wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID`,
    as for the code in step 2, and not as a dashboard variable. `wrangler deploy` deletes a plain
    variable that `wrangler.jsonc` does not list, and with it would go the home page's link and the
@@ -182,10 +182,10 @@ Honest limits, all accepted for a demo:
   (`observability.enabled` in `wrangler.jsonc`) record request headers is not settled by its
   documentation, so look at one invocation log on the first deployment. Any script running in the
   page can read the field, and there is no CSP yet (SEC-18).
-- **The pipeline page still offers its buttons on a demo that is not finished.** They answer with
-  the read-only message. A demo left in that state is the operator's to fix. `GET .../pipeline`
-  does not offer them too: there it answers `wait` with no time, not `continue` (ADR-0012's step 9
-  addendum).
+- **A demo that is not finished stays that way.** Its pipeline page says so and sends nothing:
+  no `POST .../advance`, no lock and no timer, and it has no button to press (ADR-0012's step 10
+  addendum). A demo left in that state is the operator's to fix. `GET .../pipeline` agrees: there
+  it answers `wait` with no time, not `continue` (ADR-0012's step 9 addendum).
 
 ## Alternatives considered
 
