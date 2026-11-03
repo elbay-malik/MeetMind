@@ -114,8 +114,13 @@ export default defineEventHandler(async (event) => {
   // pull the rest of the object into memory with nobody listening. `pipeline`
   // applies backpressure and destroys the source on disconnect. Imported lazily
   // so the Workers bundle never evaluates node:stream.
+  //
+  // A real socket is what says so, and the same test h3's sendStream makes. On a Worker,
+  // Nitro hands every request a mock response that has `writeHead` too and a null socket,
+  // and writing to that one copies the whole object into a buffer, chunk by chunk: seconds
+  // of CPU against a limit of 10 ms, with nothing reaching the browser until the end.
   const nodeRes = event.node?.res
-  if (nodeRes && typeof nodeRes.writeHead === 'function') {
+  if (nodeRes?.socket && typeof nodeRes.writeHead === 'function') {
     const { Readable } = await import('node:stream')
     const { pipeline } = await import('node:stream/promises')
     nodeRes.writeHead(status, Object.fromEntries(headers.entries()))
