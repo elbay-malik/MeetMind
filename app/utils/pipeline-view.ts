@@ -334,6 +334,9 @@ export interface QuestionsView {
 /** What the Questions card says, which comes down to what `index.state` says. */
 export function questionsOf(state: DriverState, now: number): QuestionsView {
   const readOnly = state.role === 'read-only'
+  // A tab that only watches has no lock to rebuild under, and the tab that has one can do it.
+  const elsewhere = state.role === 'watching' && !state.stop
+  const fromThere = elsewhere ? ' It can be rebuilt from the tab doing the work.' : ''
   if (state.rebuild) return { text: `Rebuilding the index for questions: ${indexFigures(state.rebuild)}`, link: null, rebuildLabel: null }
   const { answer } = state
   // With no status to read, every reason below would be a guess.
@@ -371,15 +374,15 @@ export function questionsOf(state: DriverState, now: number): QuestionsView {
     }
     case 'held':
       return {
-        text: 'This meeting\'s index holds the work of another embedding model or an older transcript. That is not replaced by itself, because rebuilding spends quota and overwrites what is stored. The meeting can be read now, and questions stay off until the index is rebuilt.',
+        text: `This meeting's index holds the work of another embedding model or an older transcript. That is not replaced by itself, because rebuilding spends quota and overwrites what is stored. The meeting can be read now, and questions stay off until the index is rebuilt.${fromThere}`,
         link: 'read',
-        rebuildLabel: readOnly ? null : 'Rebuild the index',
+        rebuildLabel: readOnly || elsewhere ? null : 'Rebuild the index',
       }
     case 'stopped':
       return {
-        text: 'Indexing was refused and will not be tried again by itself. What is indexed so far is kept. The meeting can be read now, and questions stay off until the index is finished.',
+        text: `Indexing was refused and will not be tried again by itself. What is indexed so far is kept. The meeting can be read now, and questions stay off until the index is finished.${fromThere}`,
         link: 'read',
-        rebuildLabel: readOnly ? null : 'Try indexing again',
+        rebuildLabel: readOnly || elsewhere ? null : 'Try indexing again',
       }
   }
 }

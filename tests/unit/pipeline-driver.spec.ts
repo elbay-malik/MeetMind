@@ -13,6 +13,7 @@ import {
   MAX_SPIN_PAUSES,
   MAX_TROUBLE_RETRIES,
   READ_TIMEOUT_MS,
+  REBUILD_ELSEWHERE,
   REBUILD_REFUSED,
   RELOOK_AFTER_MS,
   SHORTEST_WAIT_MS,
@@ -1429,6 +1430,53 @@ describe('a hidden tab', () => {
     driver.wake('visible')
     await settle()
     expect(server.count(READ)).toBe(1)
+  })
+})
+
+describe('asking for a rebuild while another tab holds the lock', () => {
+  const heldWhileExtracting = wait(HOUR, { status: 'summarizing', index: { state: 'held', done: 0, total: null, retryAt: null } })
+
+  async function twoTabs() {
+    const locks = fakeLocks()
+    const server = fakeServer({ [READ]: [ok(heldWhileExtracting)], [ADVANCE]: [ok(heldWhileExtracting)], [REBUILD]: [ok({})] })
+    const driving = tab(server, { locks })
+    const watching = tab(server, { locks })
+    driving.start()
+    await settle()
+    watching.start()
+    await settle()
+    expect(watching.state().role).toBe('watching')
+    return { server, driving, watching }
+  }
+
+  it('says so at once, and sends nothing', async () => {
+    const { server, watching } = await twoTabs()
+    watching.rebuildIndex()
+    await settle()
+    expect(watching.state()).toMatchObject({ role: 'watching', rebuild: null, rebuildError: REBUILD_ELSEWHERE })
+    expect(server.count(REBUILD)).toBe(0)
+  })
+
+  it('does not rebuild later, unasked, when that tab goes', async () => {
+    const { server, driving, watching } = await twoTabs()
+    watching.rebuildIndex()
+    await settle()
+    driving.stop()
+    await settle()
+    await pass(10 * 60_000)
+    expect(watching.state()).toMatchObject({ role: 'driving', rebuildError: null })
+    expect(server.count(REBUILD)).toBe(0)
+  })
+
+  it('rebuilds from a tab that has since taken the lock', async () => {
+    const { server, driving, watching } = await twoTabs()
+    watching.rebuildIndex()
+    await settle()
+    driving.stop()
+    await settle()
+    watching.rebuildIndex()
+    await settle()
+    expect(server.count(REBUILD)).toBe(1)
   })
 })
 

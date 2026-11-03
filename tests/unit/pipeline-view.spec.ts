@@ -437,6 +437,16 @@ describe('the Questions card', () => {
     expect(questionsOf(state({ stop: 'finished' }, STOPPED), NOW)).toMatchObject({ link: 'read', rebuildLabel: 'Try indexing again' })
   })
 
+  it.each<[string, PipelineResponse]>([['held', HELD], ['stopped', STOPPED]])('offers a watching tab no way to touch a %s index, and says where that is', (_name, a) => {
+    const said = questionsOf(state({ role: 'watching' }, a), NOW)
+    expect(said.rebuildLabel).toBeNull()
+    expect(said.text).toMatch(/from the tab doing the work/)
+  })
+
+  it('offers a tab that has stopped the rebuild, whatever it last was', () => {
+    expect(questionsOf(state({ role: 'watching', stop: 'finished' }, HELD), NOW).rebuildLabel).toBe('Rebuild the index')
+  })
+
   it('shows a rebuild for what it is', () => {
     expect(questionsOf(state({ rebuild: { done: 16, total: 40 } }, HELD), NOW)).toEqual({ text: 'Rebuilding the index for questions: 16 of 40 passages done.', link: null, rebuildLabel: null })
   })
