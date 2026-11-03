@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { REQUIRED_SETTINGS } from '../../server/utils/drivers'
 
 const workflowPath = fileURLToPath(new URL('../../.github/workflows/ci.yml', import.meta.url))
 const scriptPath = fileURLToPath(new URL('../../scripts/ci-local.sh', import.meta.url))
@@ -164,6 +165,20 @@ describe('ci:local parity with ci.yml', () => {
     const [yaml, script] = await Promise.all([readFile(workflowPath, 'utf8'), readFile(scriptPath, 'utf8')])
     expect(yaml).toMatch(/^ {10}NUXT_ALLOW_LOCAL_DRIVERS: 'true'$/m)
     expect(script).toMatch(/^ {2}NUXT_ALLOW_LOCAL_DRIVERS=true NUXT_DATA_DIR=/m)
+  })
+
+  // A shell that exported all nine would otherwise put this job past the gate, and its upload
+  // into the real database and bucket, as tests/e2e/helpers/local-drivers.ts says of the e2e servers.
+  it('blanks every real setting on the browser job\'s server, in both', async () => {
+    const [yaml, script] = await Promise.all([readFile(workflowPath, 'utf8'), readFile(scriptPath, 'utf8')])
+    const server = shellSteps(script).find(step => step.includes('node .output/server/index.mjs'))
+    expect(server, 'could not find the browser job\'s server in ci-local.sh').toBeTruthy()
+    const settings = Object.values(REQUIRED_SETTINGS).flatMap(group => Object.keys(group))
+    expect(settings).toHaveLength(9)
+    for (const setting of settings) {
+      expect(server, setting).toMatch(new RegExp(`(?:^|\\s)${setting}=\\s`))
+      expect(yaml, setting).toMatch(new RegExp(`^ {10}${setting}: ''$`, 'm'))
+    }
   })
 
   it('declares a command for every job it claims to run', async () => {
