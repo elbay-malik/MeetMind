@@ -109,6 +109,8 @@ const page = (path: string) => fetch(path, { headers: { accept: 'text/html' } })
 const logLines = () => getServerLogs().join('\n')
 const refusalLines = () => getServerLogs().filter(line => line.includes('refusing requests'))
 
+const NAMES_A_SERVICE = /NUXT_|fake-value|groq|workers|supabase|\br2\b|bucket/i
+
 /** A test, not a `beforeAll`: the context these helpers need exists only inside a test. */
 function restartWith(env: Record<string, string>) {
   it('restarts the server with these settings', async () => {
@@ -128,7 +130,8 @@ function itRefusesEverything(names: string[]) {
     const text = await res.text()
     expect(res.status).toBe(503)
     expect(JSON.parse(text)).toMatchObject({ statusCode: 503, statusMessage: 'Service Unavailable', message: REFUSED })
-    expect(text).not.toMatch(/NUXT_|fake-value|groq|workers|supabase|\br2\b|bucket/i)
+    expect(text).not.toMatch(NAMES_A_SERVICE)
+    expect(JSON.stringify([...res.headers])).not.toMatch(NAMES_A_SERVICE)
   })
 
   it('has touched nothing', async () => {
