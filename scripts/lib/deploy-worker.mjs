@@ -28,30 +28,42 @@ export async function workerBuildProblem(rootDir) {
 /**
  * Build for Workers, refuse what `problem` refuses, deploy, and then put the Node build back,
  * whatever happened: the e2e and browser jobs need it, and a Worker build left behind would
- * invite a `wrangler dev` here. `run` answers an exit code. Answers this process's own.
+ * invite a `wrangler dev` here. `run` answers an exit code, or a promise of one. `interrupted`
+ * answers the exit code a signal has asked for, or null once none has arrived, and `restoring`
+ * says that last build is starting. Answers this process's own.
  */
-export async function deployWorker({ run, problem, log }) {
+export async function deployWorker({ run, problem, log, interrupted = () => null, restoring = () => {} }) {
   let code = 1
   try {
-    const built = run('pnpm', ['build'], { NITRO_PRESET: 'cloudflare_module' })
+    const built = await run('pnpm', ['build'], { NITRO_PRESET: 'cloudflare_module' })
     if (built !== 0) {
       log(`FAIL: the Worker build exited with ${built}, so nothing was deployed.`)
       code = built
+    }
+    else if (interrupted() !== null) {
+      log('FAIL: interrupted during the Worker build, so nothing was deployed.')
+      code = interrupted()
     }
     else {
       const wrong = await problem()
       if (wrong) {
         log(`FAIL: ${wrong}. Nothing was deployed.`)
       }
+      else if (interrupted() !== null) {
+        log('FAIL: interrupted before the deploy, so nothing was deployed.')
+        code = interrupted()
+      }
       else {
-        code = run('pnpm', ['exec', 'wrangler', 'deploy'], {})
+        code = await run('pnpm', ['exec', 'wrangler', 'deploy'], {})
         if (code !== 0) log(`FAIL: wrangler deploy exited with ${code}.`)
+        if (interrupted() !== null) log('Interrupted during wrangler deploy, so it may or may not be live: see pnpm exec wrangler deployments list.')
       }
     }
   }
   finally {
     log('Putting the Node build back.')
-    const back = run('pnpm', ['build'], { NITRO_PRESET: undefined })
+    restoring()
+    const back = await run('pnpm', ['build'], { NITRO_PRESET: undefined })
     if (back !== 0) {
       log(`FAIL: the Node build exited with ${back}. Run pnpm build before the e2e or browser jobs.`)
       if (code === 0) code = back

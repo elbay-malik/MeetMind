@@ -307,7 +307,9 @@ spends real quota. `scripts/verify-worker-*.mjs` run it from a temporary copy, w
    the wrangler token and the database URL included. `NUXT_PUBLIC_DEMO_MEETING_ID` stays unset until step 10.
 6. **Deploy.** `pnpm deploy:worker`. It builds for Workers, refuses a build that is not one or that still
    has the wasm, runs `wrangler deploy`, and then runs `pnpm build`, so the Node build is back even on
-   failure. That makes the site live and registers the cron in `wrangler.jsonc`: one tick every 5
+   failure or a Ctrl-C. A second Ctrl-C during that last build stops it, and then it says to run
+   `pnpm build` by hand. A Ctrl-C during `wrangler deploy` may leave it live or not, and
+   `pnpm exec wrangler deployments list` says which. That makes the site live and registers the cron in `wrangler.jsonc`: one tick every 5
    minutes, of the 5 crons the free plan allows. It can take up to 15 minutes to reach Cloudflare's
    network, and a new Worker up to 30 to show in Past Cron Events. The database is empty at first, so
    a tick spends nothing.
