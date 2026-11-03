@@ -334,6 +334,15 @@ describe('the page that drives it, as the server renders it', () => {
       expect(html).toContain('deployment-facts')
     })
 
+    // The browser cannot work these out, and a page reached by a link never asks the server
+    // again, so whichever page a visit lands on has to bring them along for the next.
+    it.each(['/', '/meetings', 'summary'])('hands the page the facts from %s, whichever page a visit lands on', async (path) => {
+      const meeting = await uploadedMeeting()
+      const target = path === 'summary' ? `/meetings/${meeting.id}/summary` : path
+      const html = await (await fetch(target, { headers: { accept: 'text/html' } })).text()
+      expect(html).toContain('deployment-facts')
+    })
+
     it('never runs a tick: a meeting left alone stays where it is, and no rotation is stored', async () => {
       const meeting = await uploadedMeeting()
       await new Promise(resolve => setTimeout(resolve, 500))
