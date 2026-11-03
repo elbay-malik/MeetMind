@@ -8,7 +8,8 @@ export interface DeploymentFacts {
   sweeps: boolean
   /**
    * The days after which everything stored for a meeting is deleted (ADR-0017), or null when
-   * nothing is. Only what the purge really runs at: it needs a cron as well as the setting.
+   * nothing is. It needs a cron as well as the setting. It reads no database, so a demo id
+   * naming no meeting, or a migration not applied, still counts here though nothing is deleted.
    */
   purgeDays: number | null
 }
