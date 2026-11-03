@@ -31,8 +31,9 @@ export interface Answerer {
 }
 
 /**
- * Raised when the provider refuses or fails; carries what the UI should say,
- * and, when the refusal is "not now", when asking again can succeed.
+ * Raised when the provider refuses or fails; carries what happened, which the route
+ * checks before anyone reads it (`publicMessage`), and, when the refusal is "not now",
+ * when asking again can succeed.
  */
 export class AnswerError extends Error {
   constructor(

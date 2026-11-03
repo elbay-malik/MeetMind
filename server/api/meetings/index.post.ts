@@ -6,6 +6,7 @@ import { useMeetingRepository } from '../../utils/db'
 import { requireDrivers } from '../../utils/drivers'
 import { badRequest } from '../../utils/http'
 import { requireInviteCode } from '../../utils/invite'
+import { toPublicMeeting } from '../../utils/public-errors'
 import { assertStorageBudget, UPLOAD_URL_TTL_SEC } from '../../utils/storage-budget'
 
 /**
@@ -73,5 +74,5 @@ export default defineEventHandler(async (event): Promise<CreateMeetingResponse> 
   })
 
   setResponseStatus(event, 201)
-  return { meeting, upload }
+  return { meeting: toPublicMeeting(meeting), upload }
 })

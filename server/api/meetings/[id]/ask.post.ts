@@ -3,8 +3,9 @@ import { askBodySchema } from '#shared/schemas/qa'
 import { transcriptionFinished } from '#shared/utils/meeting'
 import { useMeetingRepository, useTranscriptIndexRepository, useTranscriptRepository } from '../../../utils/db'
 import { badRequest, conflict, notFound, requireMeetingId, retryLater } from '../../../utils/http'
+import { publicMessage } from '../../../utils/public-errors'
 import { useAnswerer, useEmbedder } from '../../../utils/qa'
-import { AnswerError } from '../../../utils/qa/answerer'
+import { AnswerError, AnswerSlotBusyError } from '../../../utils/qa/answerer'
 import { askMeeting, QuestionError } from '../../../utils/qa/ask'
 import { EmbeddingError } from '../../../utils/qa/embedder'
 
@@ -14,6 +15,10 @@ const MAX_BODY_BYTES = 4096
 /**
  * Answer a question about one meeting, with every citation checked against the
  * transcript before it is returned (ADR-0007).
+ *
+ * A provider's failure here is stored nowhere, so the log is the only copy of what it
+ * said. A turn refused by our own pacing has nothing to say, and asking is open to anyone,
+ * so that one is not logged.
  */
 export default defineEventHandler(async (event): Promise<{ answer: QuestionAnswer }> => {
   const id = requireMeetingId(event)
@@ -49,19 +54,15 @@ export default defineEventHandler(async (event): Promise<{ answer: QuestionAnswe
   }
   catch (err) {
     if (err instanceof QuestionError) {
-      throw createError({ statusCode: err.statusCode, statusMessage: 'Cannot answer', message: err.message })
+      throw createError({ statusCode: err.statusCode, statusMessage: 'Cannot answer', message: publicMessage('answering', err) })
     }
-    if ((err instanceof AnswerError || err instanceof EmbeddingError) && err.retryAt) {
-      throw createError({
-        statusCode: err.statusCode,
-        statusMessage: 'Answering failed',
-        message: err.message,
-        data: retryLater(event, err.retryAt),
-      })
-    }
-    if (err instanceof EmbeddingError || err instanceof AnswerError) {
-      throw createError({ statusCode: err.statusCode, statusMessage: 'Answering failed', message: err.message })
-    }
-    throw err
+    if (!(err instanceof EmbeddingError || err instanceof AnswerError)) throw err
+    if (!(err instanceof AnswerSlotBusyError)) console.warn(`[meetmind] a question on meeting ${id} failed:`, err)
+    throw createError({
+      statusCode: err.statusCode,
+      statusMessage: 'Answering failed',
+      message: publicMessage('answering', err),
+      data: err.retryAt ? retryLater(event, err.retryAt) : undefined,
+    })
   }
 })

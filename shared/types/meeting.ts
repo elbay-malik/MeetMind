@@ -54,6 +54,14 @@ export interface Meeting {
 }
 
 /**
+ * A meeting as a browser may see it: the row without its stored error, which can hold a
+ * provider's reply, a database's codes or an object's key, and is only ever read from
+ * storage (ADR-0012's SEC-15 addendum). The only shape a route answers with, built by
+ * `toPublicMeeting`.
+ */
+export type PublicMeeting = Omit<Meeting, 'errorMessage'>
+
+/**
  * One timestamped chunk of speech. Times are integer milliseconds from the
  * start of the audio, so they compare exactly and seek exactly.
  */
@@ -107,14 +115,12 @@ export interface MeetingSummary {
  * `{ meeting, summary }` with a 200.
  */
 export interface ExtractionStepResponse {
-  meeting: Meeting
+  meeting: PublicMeeting
   progress: {
     /** Chunks with an attested result. */
     done: number
     /** Chunks in the plan; null until the plan is written. */
     total: number | null
-    /** Why the last step of this run ended without a result, if it did. */
-    lastError: string | null
   }
   /** `continue`: ask again now. `wait`: ask again at `retryAt`. */
   next: 'continue' | 'wait'
@@ -133,7 +139,7 @@ export interface ExtractionStepResponse {
  * it back here would grow this step with the meeting.
  */
 export interface TranscriptionStepResponse {
-  meeting: Meeting
+  meeting: PublicMeeting
   progress: {
     /** Bytes of the provider's reply read so far. */
     done: number
@@ -141,8 +147,6 @@ export interface TranscriptionStepResponse {
     total: number | null
     /** Segments stored so far. */
     segments: number
-    /** Why the last step of this run ended without a result, if it did. */
-    lastError: string | null
   }
   /** `continue`: ask again now. `wait`: ask again at `retryAt`. */
   next: 'continue' | 'wait'
@@ -162,8 +166,6 @@ export interface IndexingStepResponse {
     done: number
     /** Passages in the plan, once the run has reached its end; null until then. */
     total: number | null
-    /** Why the last step of this run ended without a result, if it did. */
-    lastError: string | null
   }
   /** `continue`: ask again now. `wait`: ask again at `retryAt`. */
   next: 'continue' | 'wait'
@@ -217,9 +219,9 @@ export interface PipelineResponse {
    *   demo that is not finished, whose `POST .../advance` answers 403 (`GET .../pipeline`).
    * - `done`: nothing more to do. With a `retryAt` the index is parked until then: the
    *   meeting can be read, not asked, and opening it after that picks the index up again.
-   * - `failed`: transcription or extraction failed. Stop, and read why from
-   *   `GET /api/meetings/:id`. With a `retryAt`, asking again from then retries; without
-   *   one, nothing will.
+   * - `failed`: transcription or extraction failed. Stop. With a `retryAt`, asking again
+   *   from then retries; without one, nothing will. Why is not said to a browser: the
+   *   stored reason is an operator's to read.
    */
   next: 'continue' | 'wait' | 'done' | 'failed'
   retryAt: string | null
@@ -246,7 +248,7 @@ export interface UploadInstructions {
 }
 
 export interface CreateMeetingResponse {
-  meeting: Meeting
+  meeting: PublicMeeting
   upload: UploadInstructions
 }
 
