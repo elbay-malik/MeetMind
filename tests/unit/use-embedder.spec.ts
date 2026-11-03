@@ -7,9 +7,10 @@ const useRuntimeConfig = vi.hoisted(() => vi.fn())
 // Auto-imported from Nuxt's app runtime in this tier, so not a global to stub.
 vi.mock('#app/nuxt', async importOriginal => ({ ...await importOriginal<object>(), useRuntimeConfig }))
 
-const event = {} as H3Event
+const event = { context: {} } as H3Event
+// With the opt-in, as a stub needs on a built server, which this tier runs as (ADR-0016).
 const configure = (workersAiAccountId: string, workersAiApiToken: string) =>
-  useRuntimeConfig.mockReturnValue({ workersAiAccountId, workersAiApiToken, embedStubQuotaCanary: '' })
+  useRuntimeConfig.mockReturnValue({ workersAiAccountId, workersAiApiToken, embedStubQuotaCanary: '', allowLocalDrivers: true })
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -38,9 +39,21 @@ describe('useEmbedder', () => {
     expect(useEmbedder(event).kind).toBe('stub')
   })
 
+  // The names go to the log, not to whoever asked: see tests/unit/driver-gate.spec.ts.
   it.each([['the-account', ''], ['', 'the-token']])('refuses half a configuration (%j, %j)', (accountId, token) => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     configure(accountId, token)
-    expect(() => useEmbedder(event)).toThrow(/Workers AI is partially configured/)
+    expect(() => useEmbedder(event)).toThrow(/not available at the moment/)
+    expect(() => useStepEmbedder(event)).toThrow(/not available at the moment/)
+    expect(logged.mock.calls.flat().join(' ')).toMatch(accountId ? /half a group.*NUXT_WORKERS_AI_API_TOKEN/ : /half a group.*NUXT_WORKERS_AI_ACCOUNT_ID/)
+    logged.mockRestore()
+  })
+
+  it('refuses to fall back to the stub without the opt-in', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    useRuntimeConfig.mockReturnValue({ workersAiAccountId: '', workersAiApiToken: '', embedStubQuotaCanary: '' })
+    expect(() => useEmbedder(event)).toThrow(/not available at the moment/)
+    vi.restoreAllMocks()
   })
 })
 
@@ -62,5 +75,13 @@ describe('useStepEmbedder', () => {
   it('falls back to the stub as useEmbedder does, and so reads as another model\'s index', () => {
     configure('', '')
     expect(useStepEmbedder(event).kind).toBe('stub')
+  })
+
+  // That reading is the hazard: one indexing request overwrites up to 16 real windows.
+  it('refuses to do so beside a real database, opt-in or not', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    useRuntimeConfig.mockReturnValue({ allowLocalDrivers: true, embedStubQuotaCanary: '', supabaseUrl: 'https://example.invalid', supabaseServiceKey: 'k' })
+    expect(() => useStepEmbedder(event)).toThrow(/not available at the moment/)
+    vi.restoreAllMocks()
   })
 })

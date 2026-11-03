@@ -1,18 +1,9 @@
 import type { H3Event } from 'h3'
 import { useSlotRepository } from '../db'
+import { selectDriver } from '../drivers'
 import { createGroqSummarizer, createSlotPacer, type RequestPacer } from './groq'
 import { createStubSummarizer } from './stub'
 import type { Summarizer } from './summarizer'
-import { requireAllOrNone } from '../storage'
-
-let announced = false
-function announce(kind: Summarizer['kind']) {
-  if (announced) return
-  announced = true
-  if (kind === 'stub') {
-    console.info('[meetmind] summaries: stub (set NUXT_GROQ_API_KEY to use Groq)')
-  }
-}
 
 /**
  * The pacer for every Groq chat request -- extraction chunks and questions
@@ -32,8 +23,8 @@ export function useGroqChatPacer(event: H3Event, options: { maxWaitMs?: number }
 }
 
 /**
- * Pick the summarizer from runtime config: Groq when its key is present,
- * otherwise a deterministic stub so the pipeline runs without credentials.
+ * Pick the summarizer: Groq when its key is present, or a deterministic stub
+ * where ADR-0016 allows that.
  */
 export function useSummarizer(event: H3Event): Summarizer {
   return pickSummarizer(event, {})
@@ -50,19 +41,16 @@ export function useStepSummarizer(event: H3Event): Summarizer {
 }
 
 function pickSummarizer(event: H3Event, options: { maxAttempts?: number, maxSlotWaitMs?: number }): Summarizer {
-  const config = useRuntimeConfig(event)
-  const groqReady = requireAllOrNone('Groq', { NUXT_GROQ_API_KEY: config.groqApiKey })
-  const summarizer = groqReady
-    ? createGroqSummarizer({
-        apiKey: config.groqApiKey,
-        maxAttempts: options.maxAttempts,
-        pacer: useGroqChatPacer(event, { maxWaitMs: options.maxSlotWaitMs }),
-      })
+  return selectDriver<Summarizer>(event, 'groq', {
+    real: config => createGroqSummarizer({
+      apiKey: config.groqApiKey,
+      maxAttempts: options.maxAttempts,
+      pacer: useGroqChatPacer(event, { maxWaitMs: options.maxSlotWaitMs }),
+    }),
     // Truthy, not === true: destr parses '1' to the number 1, not a boolean.
-    : createStubSummarizer({
-        injectCanary: !!config.summaryStubCanary,
-        failOnceRetryable: !!config.summaryStubFailOnceRetryable,
-      })
-  announce(summarizer.kind)
-  return summarizer
+    local: config => createStubSummarizer({
+      injectCanary: !!config.summaryStubCanary,
+      failOnceRetryable: !!config.summaryStubFailOnceRetryable,
+    }),
+  })
 }
