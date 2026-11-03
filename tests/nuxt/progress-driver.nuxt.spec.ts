@@ -274,6 +274,55 @@ describe('opening the page', () => {
     await new Promise(resolve => setTimeout(resolve, 3_100))
     expect(sent.advance + sent.pipeline).toBe(after)
   }, 8_000)
+
+  it('stops asking at pagehide, and takes part again at a pageshow from the back-forward cache', async () => {
+    const waiting = answer({ next: 'wait', retryAfterMs: 50, retryAt: new Date(Date.now() + 50).toISOString() })
+    const { id, sent } = aMeeting({ pipeline: [ok(answer())], advance: [ok(waiting)] })
+    await open(id)
+    await vi.waitFor(() => expect(sent.advance).toBe(1))
+    window.dispatchEvent(new Event('pagehide'))
+    const after = sent.advance + sent.pipeline
+    await new Promise(resolve => setTimeout(resolve, 3_100))
+    expect(sent.advance + sent.pipeline).toBe(after)
+
+    window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }))
+    await vi.waitFor(() => expect(sent.advance + sent.pipeline).toBeGreaterThan(after))
+  }, 8_000)
+
+  it('leaves no tick running when it goes', async () => {
+    const started = vi.spyOn(globalThis, 'setInterval')
+    const cleared = vi.spyOn(globalThis, 'clearInterval')
+    const waiting = answer({ next: 'wait', retryAfterMs: 60_000, retryAt: new Date(Date.now() + 60_000).toISOString() })
+    const { id } = aMeeting({ pipeline: [ok(answer())], advance: [ok(waiting)] })
+    const page = await open(id)
+    await vi.waitFor(() => expect(page.text()).toContain('Next request in'))
+    const ticks = started.mock.results.filter((_, i) => started.mock.calls[i]![1] === 1_000).map(result => result.value)
+    expect(ticks.length).toBeGreaterThan(0)
+
+    page.unmount()
+    mounted.splice(0)
+    const gone = cleared.mock.calls.map(([timer]) => timer)
+    expect(ticks.filter(tick => !gone.includes(tick))).toEqual([])
+    vi.restoreAllMocks()
+  })
+
+  it('leaves no listener behind when it goes', async () => {
+    const added = [vi.spyOn(window, 'addEventListener'), vi.spyOn(document, 'addEventListener')]
+    const removed = [vi.spyOn(window, 'removeEventListener'), vi.spyOn(document, 'removeEventListener')]
+    const heard = (spies: typeof added) => spies
+      .flatMap(spy => spy.mock.calls)
+      .filter(([name]) => ['pagehide', 'pageshow', 'online', 'visibilitychange'].includes(name))
+    const { id } = aMeeting({ pipeline: [ok(READY)] })
+    const page = await open(id)
+    const listening = heard(added)
+    expect(listening.map(([name]) => name).sort()).toEqual(['online', 'pagehide', 'pageshow', 'visibilitychange'])
+
+    page.unmount()
+    mounted.splice(0)
+    const left = listening.filter(([name, handler]) => !heard(removed).some(call => call[0] === name && call[1] === handler))
+    expect(left.map(([name]) => name)).toEqual([])
+    vi.restoreAllMocks()
+  })
 })
 
 describe('a wait', () => {
@@ -341,6 +390,15 @@ describe('a failure', () => {
     await vi.waitFor(() => expect(sent.advance).toBe(1))
     await vi.waitFor(() => expect(announced(page)).toContain('Finished'))
     expect(buttons(page)).not.toContain('Try transcription again')
+  })
+
+  it('keeps the stored error out of what the server\'s render sends to the browser', async () => {
+    const { id } = aMeeting({
+      row: { status: 'failed', failedStage: 'transcription', errorMessage: RAW },
+      pipeline: [ok(answer({ status: 'failed', next: 'failed' }))],
+    })
+    await open(id)
+    expect(JSON.stringify(useNuxtApp().payload.data)).not.toContain('PGRST116')
   })
 
   it('names extraction when that is what a retry would do', async () => {
