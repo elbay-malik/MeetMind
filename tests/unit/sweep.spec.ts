@@ -476,6 +476,18 @@ describe('questions, which share the Groq slot', () => {
     expect(chunks).toBe(8)
   })
 
+  it('are refused on every meeting once a tick has used up the day, as ADR-0012 says, and the tick stops asking', async () => {
+    const providers = scriptedProviders(lines(3))
+    const id = await uploadedMeeting()
+    const deps = depsWith(providers)
+    await repos().slots.noteRateLimit('groq-chat', 6 * 60 * 60_000)
+    expect((await repos().slots.reserve('groq-chat', { intervalMs: 60_000, maxWaitMs: 20_000 })).granted).toBe(false)
+    const before = providers.count('chunk')
+    await sweepUntilIdle(deps, 12)
+    expect(providers.count('chunk')).toBe(before)
+    expect((await meetingOf(id)).status).not.toBe('failed')
+  })
+
   it('go first when one has just taken the slot: the tick asks nothing, and costs the chunk nothing', async () => {
     const providers = scriptedProviders(lines(3))
     const id = await uploadedMeeting()

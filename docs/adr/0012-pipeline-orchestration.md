@@ -235,7 +235,7 @@ These replace the 15 min and 4 h run leases as the recovery mechanism. A lease i
 - Supabase becomes a hard dependency of every provider call: an outage stops asks and extraction.
 - Each Groq or Gemini call costs one extra subrequest, and each slot miss costs one more.
 
-**Request volume rises.** A 1-hour meeting costs about 40–60 Worker requests (1 Whisper, ~9 pages, 9 chunks, ~9 slot misses, 1 finalize, ~7 index batches), plus the polls from passive tabs. That is far below 100,000/day. Groq's 200K TPD (about 40–45 one-hour meetings) still binds first.
+**Request volume rises.** A 1-hour meeting costs about 40–60 Worker requests (1 Whisper, ~9 pages, 9 chunks, ~9 slot misses, 1 finalize, ~7 index batches), plus the polls from passive tabs. That is far below 100,000/day. Groq's 200K TPD (about 5 one-hour meetings, at 9 chunks of about 4,500 tokens) still binds first.
 
 **New SQL functions must stay in parity with the local driver.** They are guarded the way ADR-0010's `stored_audio_bytes` is: case-by-case parity tests, plus `test:services` cases against real Supabase.
 
@@ -674,7 +674,9 @@ Every 5 minutes a Cron Trigger takes one step of one meeting, with no tab open, 
 
 `busy` comes back from the same request as the meeting, so knowing costs nothing, and the slot itself still decides for whoever got there first. A tick never waits for a slot.
 
-**Questions share the Groq slot, and are not starved by this.** A tick takes one slot at most, every 5 minutes, at no wait. So a question can find a chunk step's slot in its way for 60 s of every 300, as with any other caller, and from there has it to itself, with its 20 s wait and `Retry-After` as before. One that got there first sends the tick elsewhere. `sweep.spec.ts` holds this over 8 chunks.
+**Questions share the Groq slot and its daily allowance: the slot does not starve them, and the daily allowance can.** A tick takes one slot at most, every 5 minutes, at no wait. So a question can find a chunk step's slot in its way for 60 s of every 300, as with any other caller, and from there has it to itself, with its 20 s wait and `Retry-After` as before. One that got there first sends the tick elsewhere. `sweep.spec.ts` holds this over 8 chunks.
+
+That counts the slot, and no tokens: nothing in a tick counts them. Groq's 200K TPD is per organisation, and a chunk costs about 4,500 tokens (2,500 of transcript, about 1,780 of reply as ADR-0006 measured a dense one, and the instructions). So a backlog of **about 44 chunks, about 5 one-hour meetings, uses a whole day's allowance in about 3 h 40 min of ticks, with nobody watching.** Groq then answers 429, the step notes a block on `groq-chat` of up to 24 h, and `reserve_slot` refuses every question on every meeting until it ends, as a 20 s wait cannot reach past it. Three 429s in a row on one chunk also leave that meeting `failed`, which takes a click. This figure is arithmetic, not a measured day. An open tab spends the same tokens faster, but closing it used to stop the spending, and now does not. What bounds it: chunks exist only for uploaded work, an upload takes an invite code (ADR-0015), and no failed stage is retried. Workers AI's allowance is the same kind of exposure, further off: 288 batches a day at `MAX_BATCH_TOKENS` is about 3,700 of its 10,000 neurons, or about 14,600 at ADR-0014's worst ratio, on emoji.
 
 **Beside an open tab,** nothing is special. The claim decides, and a tick that loses it answers `progress` or `refused` and stops, quietly. A live step of a tick blocks a delete like any other, and a meeting deleted during one gets nothing written back. Under workerd: a tab asking during a tick's Whisper call is told `wait`, a second tick finds nothing, and Whisper is asked once.
 
@@ -700,6 +702,7 @@ Every 5 minutes a Cron Trigger takes one step of one meeting, with no tab open, 
 **Decisions to reverse if they turn out wrong:**
 - **An index stops at its first failure,** which a transient 5xx can be. The cost is a meeting with no questions until someone opens its page, where it carries on. Allowing its second attempt needs telling that from a stop, and the run holds nothing that does; a flag on the cursor would.
 - **A tick does one thing,** so no retry of anything in the same tick, and the one chance per 5 minutes is the meeting's, whichever it is. With a backlog of 20 meetings each waits 100 minutes for its next step. Raising the rate is a change to `wrangler.jsonc` and the page's words, at more of Groq's minute and more of the free 100,000 requests.
+- **No daily budget for a tick.** A tick spends what a tab would, on work already uploaded, and a backlog can use up what questions need, as above. Stopping chunk steps at a stored count, with a reserve left for questions, would need a count of tokens that nothing here keeps. That is the ledger the security audit's SEC-05 asks for, and it belongs with that, not with this step.
 - **The 100 meetings looked at** are a constant in the SQL and on the local driver. Past them a meeting needs a tab.
 
 **The retention purge** ([ADR-0017](0017-retention-purge.md)) takes a tick that has no step, if someone has turned it on, which nobody has.
