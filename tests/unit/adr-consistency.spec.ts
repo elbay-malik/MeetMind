@@ -294,6 +294,8 @@ describe('what ADR-0019 tells a reader about a stopped extraction', () => {
     const readme = await readFile(fileURLToPath(new URL('../../README.md', import.meta.url)), 'utf8')
     expect(flat(readme)).toContain('including one that failed and has not been retried or deleted')
   })
+
+  })
 })
 
 describe('the first deploy\'s steps', () => {
@@ -332,6 +334,14 @@ describe('the first deploy\'s steps', () => {
     const text = await steps()
     expect(text).toContain('wrangler rollback')
     expect(text).toContain('"crons": []')
+  })
+
+  it('claim the rate rule\'s bound only with what makes it true, and say what the fallback gives up', async () => {
+    const text = await steps()
+    expect(text).toContain('so `run_worker_first` in `wrangler.jsonc` keeps everything under `/_nuxt/` away from the Worker, found or not')
+    expect(text).toContain('use `/api/`, `/meetings` and `/ffmpeg/`, which gives up that bound')
+    expect(text).toContain('`/%5Fnuxt/no-such-file`')
+    expect(await adr('0019')).toContain('hold one address to about 86,000 requests a day at the edge')
   })
 
   it('leave no database backups to configure, and the playbook says why', async () => {

@@ -317,7 +317,9 @@ spends real quota. `scripts/verify-worker-*.mjs` run it from a temporary copy, w
    flood from one address, at about 1.2 requests a second, takes down every Worker on it until 00:00 UTC.
    In the dashboard: `elbaymalik.com`, Security, WAF, Rate limiting rules. The one free rule: by IP,
    10 requests in 10 seconds, block for 10 seconds, on any path not starting with `/_nuxt/`, so a
-   page's static assets do not count towards it. A blocked request never reaches the Worker, so one
+   page's static assets do not count towards it. That leaves out a path with no asset too, which would
+   run the Worker uncounted, so `run_worker_first` in `wrangler.jsonc` keeps everything under `/_nuxt/`
+   away from the Worker, found or not. A blocked request never reaches the Worker, so one
    address gets at most 10 every 10 seconds, about 86,000 a day, which stays under the allowance.
    It is untested. If the dashboard refuses that path match, use `/api/`, `/meetings` and `/ffmpeg/`.
    If real audio seeks trip it, raising it gives up that bound. It stops one address and not many,
@@ -326,7 +328,11 @@ spends real quota. `scripts/verify-worker-*.mjs` run it from a temporary copy, w
 8. **Look at it before telling anyone.** Load `/` from cold and read its CPU in the Worker's logs, and any
    1102. Check `curl -sS -o /dev/null -D - https://meetmind.elbaymalik.com/ffmpeg/ffmpeg-core.wasm` says 200 and
    `application/wasm`, and not with `curl -I`, as the route answers only a GET. Read one invocation's log for the invite header. Ask for `/__scheduled` and
-   `/cdn-cgi/local/scheduled`, which should run no tick. `workers.dev` should not answer.
+   `/cdn-cgi/local/scheduled`, which should run no tick. `workers.dev` should not answer. Ask for
+   `/_nuxt/no-such-file` and `/%5Fnuxt/no-such-file`, which should both answer 404 with no invocation in
+   `wrangler tail`. The second does run the Worker under `wrangler dev`, which normalises nothing, and
+   Cloudflare's docs say a URL is normalised before the rule and a Worker see it. If it runs the Worker
+   here, that path gets past the rule uncounted, and the bound in step 7 is false until it is dealt with.
 9. **Run the acceptance.** Upload a short real meeting, close the tab, and watch it reach `ready`. A
    line in `wrangler tail` says a step ran, and a tick with nothing to do logs nothing.
    Delete it afterwards with the admin token. Read Whisper's CPU while you are there.
@@ -376,7 +382,7 @@ addendum for what a tick retries, which is no failed stage, and what stays unpro
 | `NITRO_PRESET=cloudflare_module pnpm build && node scripts/verify-worker-gate.mjs` | Runs the Worker build under local workerd with fake services, and checks what it refuses and what it selects ([ADR-0016](docs/adr/0016-real-services-or-nothing.md)). Run `pnpm build` afterwards, since the other jobs need the Node build |
 | `pnpm test:postgrest` | The real Supabase drivers against a throwaway Postgres behind PostgREST (Docker). No credentials, and no real project. A job in `pnpm ci:local` |
 | `NITRO_PRESET=cloudflare_module pnpm build && node scripts/verify-worker-sweep.mjs` | Not in `pnpm ci:local`, as it needs its own build: run it by hand before merging a change to the sweeper or the purge. Runs the Worker build under local workerd and asks it for cron ticks, against real SQL on a throwaway Postgres and fake providers: a meeting with no tab open reaches `ready`, a tick with nothing to do still writes to Postgres, and what it refuses and leaves alone. Then `pnpm build` to put the Node build back |
-| `NITRO_PRESET=cloudflare_module pnpm build && node scripts/verify-worker-streams.mjs` | Not in `pnpm ci:local`, as it needs its own build. Serves real audio bytes, with and without Range, and the wasm, through the built Worker under local workerd with a fake R2 stopped part way, and shows bytes arriving before R2 has finished. Also the headers a static asset gets. Then `pnpm build` |
+| `NITRO_PRESET=cloudflare_module pnpm build && node scripts/verify-worker-streams.mjs` | Not in `pnpm ci:local`, as it needs its own build. Serves real audio bytes, with and without Range, and the wasm, through the built Worker under local workerd with a fake R2 stopped part way, and shows bytes arriving before R2 has finished. Also the headers a static asset gets, and which paths run the Worker under `wrangler.jsonc`'s routing. Then `pnpm build` |
 | `pnpm upload:ffmpeg-wasm` | Puts the installed wasm in the real bucket, at the key the route reads ([ADR-0018](docs/adr/0018-ffmpeg-wasm-from-private-r2.md)). Before the first deploy, and before deploying an upgrade |
 | `pnpm secrets:worker` | Sends the named secrets from `.env` to the real Worker, printing names only, and refuses if one is missing |
 | `pnpm deploy:worker` | Builds for Workers, refuses anything else, deploys to the real Worker, and puts the Node build back |

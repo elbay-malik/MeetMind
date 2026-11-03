@@ -30,7 +30,12 @@
 
   "assets": {
     "directory": ".output/public",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    // The rate rule leaves /_nuxt/ out, or one page's assets would trip it, so nothing under
+    // /_nuxt/ may run the Worker: by default a path with no asset does, and one address could
+    // then spend the 100,000 requests a day with the rule counting none (SEC-07). Everything
+    // else goes to the Worker first, which hands its assets on, and the rule counts all of that.
+    "run_worker_first": ["/*", "!/_nuxt/*"]
   },
 
   // ADR-0012's sweeper: one step of one meeting, or the keep-alive when there is none. On a
