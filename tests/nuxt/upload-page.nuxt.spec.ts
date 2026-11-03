@@ -24,6 +24,32 @@ mockNuxtImport('useAudioExtract', () => () => ({
 
 const ID = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
 
+describe('what the upload copy promises about deletion', () => {
+  const copy = async () => (await mountSuspended(UploadPage)).text().replace(/\s+/g, ' ')
+
+  afterEach(() => {
+    useDeploymentFacts().value = { sweeps: false, purgeDays: null }
+  })
+
+  it('promises none by default, since nothing deletes anything', async () => {
+    const text = await copy()
+    expect(text).toContain('you cannot delete it yourself')
+    expect(text).not.toMatch(/deleted about|are deleted|days after/)
+  })
+
+  it('promises none on a Worker with the purge off, though its cron is running', async () => {
+    useDeploymentFacts().value = { sweeps: true, purgeDays: null }
+    expect(await copy()).not.toMatch(/deleted about|are deleted|days after/)
+  })
+
+  it.each<[number, string]>([[30, '30 days'], [7, '7 days'], [1, '1 day']])('says the true number of days with it on: %s', async (days, said) => {
+    useDeploymentFacts().value = { sweeps: true, purgeDays: days }
+    const text = await copy()
+    expect(text).toContain(`The meeting and everything stored for it are deleted about ${said} after upload.`)
+    expect(text).toContain('you cannot delete it yourself')
+  })
+})
+
 describe('what the upload copy says leaves the browser', () => {
   it('names the file details next to every claim about what is uploaded', async () => {
     const text = (await mountSuspended(UploadPage)).text().replace(/\s+/g, ' ')

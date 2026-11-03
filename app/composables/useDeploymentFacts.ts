@@ -6,6 +6,11 @@ export interface DeploymentFacts {
    * have no cron, and must not say so.
    */
   sweeps: boolean
+  /**
+   * The days after which everything stored for a meeting is deleted (ADR-0017), or null when
+   * nothing is. Only what the purge really runs at: it needs a cron as well as the setting.
+   */
+  purgeDays: number | null
 }
 
 /**
@@ -15,7 +20,11 @@ export interface DeploymentFacts {
  * less, which is that nothing carries on.
  */
 export function useDeploymentFacts() {
-  return useState<DeploymentFacts>('deployment-facts', () => ({
-    sweeps: import.meta.server && useRequestEvent()?.context.cloudflare !== undefined,
-  }))
+  return useState<DeploymentFacts>('deployment-facts', () => {
+    if (!import.meta.server) return { sweeps: false, purgeDays: null }
+    const event = useRequestEvent()
+    const sweeps = event?.context.cloudflare !== undefined
+    const config = useRuntimeConfig(event)
+    return { sweeps, purgeDays: sweeps ? purgeDaysInEffect(config.retentionPurgeDays, config.public.demoMeetingId) : null }
+  })
 }

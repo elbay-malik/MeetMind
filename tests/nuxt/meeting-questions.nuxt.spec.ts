@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import MeetingQuestions from '~/components/MeetingQuestions.vue'
@@ -121,14 +121,14 @@ describe('the question card when the index is not finished', () => {
 
   describe('on a Worker, where a closed page does not stop it', () => {
     afterEach(() => {
-      useDeploymentFacts().value = { sweeps: false }
+      useDeploymentFacts().value = { sweeps: false, purgeDays: null }
     })
 
     it.each<[string, 'none' | 'incomplete', string]>([
       ['b1000000-0000-4000-8000-000000000011', 'none', 'not been indexed for questions yet'],
       ['b1000000-0000-4000-8000-000000000012', 'incomplete', 'index is not finished'],
     ])('%s: says the server moves it slowly as well, for an index that is %s', async (id, state, words) => {
-      useDeploymentFacts().value = { sweeps: true }
+      useDeploymentFacts().value = { sweeps: true, purgeDays: null }
       const wrapper = await notFinished(id, state, 'building')
       await flushPromises()
       expect(wrapper.text()).toContain(words)
@@ -140,7 +140,7 @@ describe('the question card when the index is not finished', () => {
       ['b1000000-0000-4000-8000-000000000013', 'held'],
       ['b1000000-0000-4000-8000-000000000014', 'stopped'],
     ])('%s: promises nothing of it for an index that is %s, which a tick leaves alone', async (id, state) => {
-      useDeploymentFacts().value = { sweeps: true }
+      useDeploymentFacts().value = { sweeps: true, purgeDays: null }
       const wrapper = await notFinished(id, 'incomplete', state)
       await flushPromises()
       expect(wrapper.text()).not.toContain('every 5 minutes')
