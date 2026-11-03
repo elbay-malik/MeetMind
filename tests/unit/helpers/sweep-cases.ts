@@ -214,6 +214,20 @@ export function describeSweepSelection(name: string, driver: () => SweepDriver) 
       expect(picked).toEqual([first, last, first, last])
     })
 
+    // A known limit (ADR-0012), held here so that it stays the one the documents describe: the
+    // reads are fixed, so what cannot move still takes a place, and a complete meeting never gives it up.
+    it('looks at the 50 finished transcripts touched last, whether or not they can move', async () => {
+      const { pipeline, seed } = driver()
+      const behind = randomUUID()
+      await seed(behind, { status: 'ready', updatedAgoMs: 2 * HOUR })
+      const complete = { status: 'ready', marker: { model: MODEL, complete: true } } as const
+      for (let i = 0; i < 49; i++) await seed(randomUUID(), { ...complete, updatedAgoMs: HOUR - i * 1_000 })
+      expect((await pipeline.nextForSweep(options())).meetingId).toBe(behind)
+      await seed(randomUUID(), { ...complete, updatedAgoMs: 0 })
+      expect((await pipeline.nextForSweep(options())).meetingId).toBeNull()
+      expect((await pipeline.nextForSweep(options())).meetingId).toBeNull()
+    })
+
     it('moves on from the last meeting it chose, even if nothing was ever done with it', async () => {
       // Nothing here takes a step, as a tick killed straight after choosing would not: the
       // meeting's own row has not changed, and that must not make it the next choice too.

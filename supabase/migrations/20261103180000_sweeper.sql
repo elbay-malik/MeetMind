@@ -169,7 +169,9 @@ begin
               else greatest(s.next_available_at, s.blocked_until) end > v_now;
 
   -- At most 100 meetings, each read by key, whatever the table holds. Past those, a
-  -- meeting waits for those ahead of it to move, or for a tab.
+  -- meeting in progress waits for those ahead of it to move, or for a tab. A finished
+  -- transcript waits for a tab alone: a complete meeting's row never moves again, so
+  -- those ahead of it stay ahead. One step from a tab brings it back to the front.
   select c.id, c.created_at into v_id, v_created
     from (
       (select m.id, m.created_at, m.status, m.failed_stage
