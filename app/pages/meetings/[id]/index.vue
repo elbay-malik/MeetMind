@@ -247,12 +247,12 @@ const emptyTranscript = computed(() => {
     return { title: 'No audio to transcribe', description: 'The uploaded audio was rejected and removed. Upload the recording again.' }
   }
   if (status === 'transcribing') {
-    return { title: 'Transcription is not finished', description: 'It moves only while its progress page is open. Open Pipeline to resume it.' }
+    return { title: 'Transcription is not finished', description: 'It moves only while its pipeline page is open. Open Pipeline and it carries on by itself.' }
   }
   if (status === 'pending_upload') {
     return { title: 'Waiting for audio', description: 'The upload has not been confirmed yet.' }
   }
-  return { title: 'No transcript yet', description: 'Run transcription from the progress screen to see the meeting\'s words here.' }
+  return { title: 'No transcript yet', description: 'Open Pipeline and transcription starts by itself. The meeting\'s words appear here when it has finished.' }
 })
 
 /**
@@ -263,10 +263,10 @@ const emptyTranscript = computed(() => {
 const incompleteTranscript = computed(() => {
   const { status, failedStage } = meeting.value
   if (status === 'transcribing') {
-    return { title: 'This transcript is not finished', description: 'These are the lines so far. Transcription moves only while its progress page is open. Open Pipeline to resume it.' }
+    return { title: 'This transcript is not finished', description: 'These are the lines so far. Transcription moves only while its pipeline page is open. Open Pipeline and it carries on by itself.' }
   }
   if (status === 'failed' && failedStage === 'transcription') {
-    return { title: 'This transcript is not finished', description: 'Transcription failed part-way, so these lines may stop early. Retry it from Pipeline.' }
+    return { title: 'This transcript is not finished', description: 'Transcription failed part-way, so these lines may stop early. Open Pipeline to see whether it can be tried again.' }
   }
   return null
 })

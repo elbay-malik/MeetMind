@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { QuestionAnswer, SearchIndexStatus } from '#shared/types/meeting'
+import type { PipelineResponse, QuestionAnswer, SearchIndexStatus } from '#shared/types/meeting'
 import { MAX_QUESTION_CHARS } from '#shared/schemas/qa'
 
 const props = defineProps<{ meetingId: string }>()
@@ -12,6 +12,44 @@ const { data: indexData, error: indexUnread, refresh: refreshIndex } = await use
   () => `/api/meetings/${props.meetingId}/search-index`,
 )
 const index = computed(() => indexData.value?.index ?? null)
+const indexNotFinished = computed(() => index.value?.state === 'none' || index.value?.state === 'incomplete')
+
+/**
+ * Why it is not finished, which the status above cannot say, and what to do about it. Only
+ * read when it is not, so a finished meeting's page costs nothing more. Not being able to read
+ * it costs only the detail.
+ */
+const { data: pipeline, refresh: refreshPipeline } = await useFetch<PipelineResponse>(
+  () => `/api/meetings/${props.meetingId}/pipeline`,
+  { immediate: indexNotFinished.value },
+)
+
+/** Nothing on the pipeline page can move the public demo (ADR-0015), so nothing here sends anyone there. */
+const isDemo = computed(() => isDemoMeetingId(useRuntimeConfig().public.demoMeetingId, props.meetingId))
+
+const notFinished = computed(() => {
+  if (isDemo.value) return { text: 'This demo meeting\'s index is not finished, so it cannot be asked questions.', action: null }
+  switch (pipeline.value?.index.state) {
+    case 'parked':
+      return {
+        text: 'Indexing has stopped for now: the daily limit was reached, or a run kept stopping. What is indexed so far is kept, and questions stay off until it is finished.',
+        action: 'See when it can carry on',
+      }
+    case 'held':
+      return {
+        text: 'This meeting\'s index holds the work of another embedding model or an older transcript, which is not replaced by itself. Questions stay off until it is rebuilt.',
+        action: 'Rebuild it on the pipeline page',
+      }
+    case 'stopped':
+      return {
+        text: 'Indexing was refused and will not be tried again by itself. Questions stay off until it is finished.',
+        action: 'Try again on the pipeline page',
+      }
+  }
+  return index.value?.state === 'none'
+    ? { text: 'This meeting has not been indexed for questions yet. That happens by itself while its pipeline page is open.', action: 'Index it on the pipeline page' }
+    : { text: 'This meeting\'s index is not finished. It moves only while its pipeline page is open.', action: 'Finish the index on the pipeline page' }
+})
 
 const question = ref('')
 const asking = ref(false)
@@ -85,6 +123,7 @@ async function ask() {
     // re-read it so the card offers the right next step instead of a form that
     // will keep failing.
     await refreshIndex()
+    if (indexNotFinished.value) await refreshPipeline()
   }
   finally {
     asking.value = false
@@ -137,17 +176,16 @@ const status = computed(() => {
       class="space-y-3"
     >
       <p class="text-sm text-muted">
-        {{ index.state === 'none'
-          ? 'This meeting has not been indexed for questions yet.'
-          : 'This meeting\'s index is incomplete or out of date with its transcript.' }}
+        {{ notFinished.text }}
       </p>
       <UButton
+        v-if="notFinished.action"
         :to="`/meetings/${meetingId}/progress`"
         variant="soft"
         icon="i-lucide-arrow-right"
         trailing
       >
-        {{ index.state === 'none' ? 'Index it on the pipeline page' : 'Update the index on the pipeline page' }}
+        {{ notFinished.action }}
       </UButton>
     </div>
 
