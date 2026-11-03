@@ -215,7 +215,7 @@ These replace the 15 min and 4 h run leases as the recovery mechanism. A lease i
 | ask on a slot miss: always 202, or a bounded wait | 20 s bounded wait, then 429 with `Retry-After` | Most questions answer in one request, and the queue stays bounded. |
 | Release `indexing → summarizing` between chunks, or keep `indexing` for the whole extraction | Keep `indexing` | The concern behind releasing was that a parked run looks in-lease and cannot be deleted. Making `deletionBlocker` and stale-detection read **step** leases fixes that directly. It also avoids re-running the cooldown, failed and claim logic on every chunk. |
 | Attestation slice: chunk ±2 segments, or the chunk exactly | The chunk exactly | The model never sees text outside its chunk (verified in `groq.ts`), so an overlap can only admit quotes it could not have read. |
-| Cron sweeper in v1 | Deferred, as an optional PR. See the open questions. | |
+| Cron sweeper in v1 | Deferred, as an optional PR. See the open questions. Built as step 11; see its addendum. | |
 
 ## Consequences
 
@@ -224,9 +224,10 @@ These replace the 15 min and 4 h run leases as the recovery mechanism. A lease i
 - If a step measures over 10 ms, a setting shrinks it (`SEGMENTS_PER_PAGE`, `INDEX_BATCH`, `CHUNK_BUDGET_TOKENS`); the design does not change.
 - **The one exception** is the Whisper request body when the fixed-length stream is refused. The `FormData` fallback grows with audio size, up to 25 MB, and its CPU is unmeasured. It is the first thing PR 1 measures.
 
-**Processing pauses when no tab is open.**
-- A meeting whose tab is closed stays paused ("Paused at extraction 3/9 — open to resume") and resumes from the last persisted step when any tab opens it.
-- This is said plainly in the UI. It is the price of using no scheduler.
+**A meeting with no tab open goes very slowly on a Worker, and does not move anywhere else.** (Amended by step 11; as written this said processing pauses.)
+- On a deployed Worker, the sweeper takes at most one step every 5 minutes, shared with every other meeting. Elsewhere there is no cron, and a meeting stays where it is until a tab opens it.
+- Either way it carries on from the last persisted step, and opening a tab goes back to full speed.
+- This is said plainly in the UI, in steps and not in a time nobody has measured.
 
 **Per-chunk results survive failures.** A failure at chunk 8 no longer throws away chunks 1–7.
 
@@ -276,10 +277,11 @@ These replace the 15 min and 4 h run leases as the recovery mechanism. A lease i
   size is a setting; the real per-step CPU is read from Workers Logs at the
   Phase 13 deploy, and a step that measures over 10 ms is shrunk, not
   redesigned.
-- **Processing pauses while no tab has the meeting open**, and resumes from the
-  last persisted step when one does. A Cron sweeper that advances one step of
-  one meeting every 5 minutes is the last PR of this phase; it also serves as
-  Phase 13's Supabase keep-alive.
+- **A meeting with no tab open moves only by the sweeper**, and resumes at full
+  speed from the last persisted step when a tab opens it. A Cron sweeper that
+  advances one step of one meeting every 5 minutes is the last PR of this phase; it
+  also serves as Phase 13's Supabase keep-alive. Until then, processing paused
+  outright, and it still does on anything but a deployed Worker: see step 11's addendum.
 - **Questions and extraction share the Groq slot first come, first served.** A
   question waits at most 20 s for a slot, then answers 429 with `Retry-After`.
 - **Progress is polled, not streamed.** Phase 9's acceptance becomes "live
@@ -635,5 +637,78 @@ A watching tab backs off the same way and never stops for trouble, since it spen
 - **Nothing here has run against real services or a deployed Worker.** The browser job runs on a built Node server with stubs. Its stub pipeline has no real wait in it, so the long block, the short wait, the 503 and the lost connection are real browser behaviour against answers the test wrote. Every number above is unmeasured against a real provider.
 - **A hidden tab's real throttling was not measured.** Playwright's Chromium does not throttle, so that is the unit spec's held-back timer. The back-forward cache is off there too: the browser job dispatches `pagehide` and `pageshow`, which tests this page's handlers and not whether a real browser restores it.
 - **A tab closed mid-step still kills that step on a Worker,** and its lease has to run out, because `event.waitUntil` around the step is still not done. `keepalive` on the request might keep it going; it has not been tried.
-- **A meeting with no tab open still stops.** That is step 11.
+- **A meeting with no tab open stopped until step 11**, whose addendum follows. It still stops on anything but a deployed Worker.
 - **A real `Retry-After` on these routes has not been seen.** Nothing on the routes sends one with a 429 or a 503 today; a rate-limit rule in front of them would.
+
+## Addendum: the cron sweeper as built (step 11, 2026-11-03)
+
+Every 5 minutes a Cron Trigger takes one step of one meeting, with no tab open, on the same step code `/advance` runs. **The acceptance is not met, and cannot be here: a meeting with no open tab reaching `ready` on the deployed Worker waits for Phase 13.** Nothing has been deployed. What is proven is everything short of it, under local workerd and on real SQL, listed below with what it did not prove.
+
+**How a cron reaches the app.** Read from the installed Nitro 2.13.5, not recalled. `cloudflare_module`'s `scheduled` handler sets `globalThis.__env__` and runs the `cloudflare:scheduled` hook inside `context.waitUntil`. `server/plugins/sweeper.ts` is the one thing on that hook.
+- **Not `scheduledTasks`.** `node-server`'s entry calls `startScheduleRunner()`, so the same setting would run sweeps in-process on a Node server, which must have no cron, and the dev server adds `/_nitro/tasks/:name`, an HTTP route that runs a task.
+- **No route reaches a sweep,** in production or otherwise. `tests/unit/sweep-source.spec.ts` reads every file that answers a request for any mention of it; the e2e job and `scripts/verify-worker-sweep.mjs` ask `/__scheduled`, `/_nitro/tasks` and the names a route would have. Tests call functions. `wrangler dev` answers `/cdn-cgi/local/scheduled` itself, and Cloudflare documents that as local.
+
+**A scheduled invocation has no request.** Everything that builds a driver takes an H3 event, for two things: `useRuntimeConfig(event)`, which applies the environment per event and keeps it at `event.context.nitro`, and the gate's `event.context.cloudflare`. `useRuntimeConfig()` with no event will not do: it is what was read when the isolate loaded, before a Worker has its settings. So `scheduledEvent` gives them exactly that, and `cloudflare: { env, context }`, what Nitro's own `runCronTasks` hands a task. It is a `Proxy` that throws on any read but `context`, so code that wanted a request fails where it reads, rather than finding `undefined` and carrying on. `driver-gate.spec.ts` walks every selector with it. Under workerd it reads `.dev.vars`, and it refuses as a Worker when one is missing, before anything is sent.
+
+**One tick,** first match wins: choose a meeting, take its one step, stop. At most one claim and one provider call, through `advanceUnattended`, which reads what `/advance` reads and calls the same library. No second read, since nobody is waiting to hear.
+
+**Subrequests, against 50.** A tick with nothing to do: 1. A chosen meeting with no step after all: 6. **Worst case 23,** a named test in `tests/unit/sweep.spec.ts`: `/advance`'s worst path (27, step 9), less the 5 reads after it, plus the one that chooses. Under workerd, a whole drive never passed 18. Planning from a whole transcript is 19 at most, `MAX_AUDIO_BYTES` bounding it as step 9 says. `aws4fetch` retries R2 twice on a 5xx, which the table does not count: a Whisper step is 11 and so 15 at most, under the worst case.
+
+**Which meeting.** `sweep_next_meeting` answers in one request, and always in one row. **Migration: `20261103180000_sweeper.sql`,** which also has to be applied before this works at all.
+- **What it reads:** at most 50 meetings in progress that have waited longest, and 50 finished transcripts touched most recently, each by a partial index, and the rows of those by key. Counted by Postgres in the tick's own transaction, on the six tables a tick reads: **100 rows with 5,000 finished meetings, 100 with 20,000, no scan of a whole table in either; 250 with 2,000 in progress as well, none able to move.** A table of a few hundred rows gets a scan, since that is the cheaper plan there (about 4,700 rows at 200 meetings, a fixed cost of a small table). `verify-migrations.sh` holds these. So a meeting past those 50 waits for the ones ahead of it to move, or for a tab. A `ready` meeting whose index never started, with 50 others touched since, is the likeliest, and needs a tab.
+- **What it picks,** `sweep_can_move`: the mirror of `unattendedStep` in `assess.ts`, as `stored_audio_bytes` mirrors `audioIsStored`. 50 cases of stored state in `tests/unit/helpers/sweep-cases.ts` hold both to one answer, on the local driver in `pnpm test` and on the real Supabase driver over real SQL in `pnpm test:postgrest`. They differ once, on purpose: a complete marker counts as settled, because telling that it no longer adds up takes hashing the transcript for each meeting looked at. A tab still finishes that one.
+- **Rotation is stored,** in `sweep_state`, one row: the last meeting chosen, by when it was created and its id. Choosing moves it on, in the same transaction and before anything is done with the meeting, so a meeting that kills every invocation before its claim gets its turn and no more: the spec's stuck meeting, that fails every time, does not stop two others reaching `ready`. It holds no foreign key, so a deleted meeting does not lose the place. Two ticks at once queue on the row lock and come away with different meetings.
+- **The demo** is left out by id in the SQL, and checked again before anything reads it. A setting that is not an id excludes nothing, since it names no meeting.
+
+**Spending with nobody watching.** A free key, 288 ticks a day, and a person who has gone. Where the table in step 9 asks for a step, `unattendedStep` asks for less:
+
+| Stored state | `/advance` | A tick |
+| --- | --- | --- |
+| A `failed` stage, cooled down | Retries it | **Never.** That takes a click, as step 10 made it |
+| A step's own second attempt, parked | Takes it | Takes it: bounded and stored. Whisper asks twice at most, a chunk twice, three 429s, then `failed` |
+| An index with an error on its run | Tries again once its park is over, for ever | **Not again, at the first.** Transcription and extraction end in `failed`; an index has nowhere to end, and 15 minutes between tries is 96 a day. A page carries it on |
+| The daily limit, its time passed | Tries | Tries: it ends by itself, at most once a day, as the spec holds over three days |
+| A provider blocked, or its slot taken | Claims, finds out, parks | **Claims nothing.** A step needing it is passed over for one that does not, and with none the meeting is not chosen |
+| Another model's index (`held`) | Leaves it | Leaves it |
+| The public demo | 403 | Never chosen |
+
+`busy` comes back from the same request as the meeting, so knowing costs nothing, and the slot itself still decides for whoever got there first. A tick never waits for a slot.
+
+**Questions share the Groq slot, and are not starved by this.** A tick takes one slot at most, every 5 minutes, at no wait. So a question can find a chunk step's slot in its way for 60 s of every 300, as with any other caller, and from there has it to itself, with its 20 s wait and `Retry-After` as before. One that got there first sends the tick elsewhere. `sweep.spec.ts` holds this over 8 chunks.
+
+**Beside an open tab,** nothing is special. The claim decides, and a tick that loses it answers `progress` or `refused` and stops, quietly. A live step of a tick blocks a delete like any other, and a meeting deleted during one gets nothing written back. Under workerd: a tab asking during a tick's Whisper call is told `wait`, a second tick finds nothing, and Whisper is asked once.
+
+**Errors and logs.** The hook calls `controller.noRetry()` first, and nothing a tick does can throw. Cloudflare documents no retry of a failed cron, but it has this flag, and wrangler's `{"outcome":"ok","noRetry":true}` shows it set on every tick, including one that cannot reach the database. So the next try is always the next tick.
+- **At most one line a tick.** Nothing for a tick with nothing to do. `[meetmind] sweep: extraction step, progress` for a step: its kind, and the step's own one word. `[meetmind] sweep failed: Error` for a failure: only the error's name, as its message can hold a provider's reply, a stored error or a transcript's words.
+- **What the steps log themselves is dropped** (`server/utils/quiet-logs.ts`): they log a route's errors as they stand, a database's own words or an object's key with a meeting's id in it. An `AsyncLocalStorage` scopes this to the tick, so a request in the same isolate is not affected. What went wrong is on the run's row, and that is where to look.
+- **The gate's refusal is the exception:** it comes before that scope, so it is still said, once per isolate, with no line of the tick's own after it.
+
+**Keep-alive.** `sweep_next_meeting` writes `sweep_state.last_tick_at` on every tick, before it looks for anything, so a tick with nothing to do is a real write in Postgres. That is asserted in `driver-gate.spec.ts`, `sweep.spec.ts`, `verify-migrations.sh` and under workerd. **Whether Supabase counts it as activity is unproven.** Its docs say a free project "is considered inactive if it does not receive sufficient user database activity over the past week", and that a few requests a day is typically enough; they do not say an API call by the service role is one, and nobody has watched a week of it.
+
+**What a page says.** "Find every sentence": the banner and the footer of the progress page, the meeting's page and the Questions card said a meeting moves only while its page is open. That is now true only of a server with no cron. On a Worker they say the server carries on, `at most one step every 5 minutes, shared with every other meeting`, and the footer adds `A one-hour recording takes about 30 steps`: this ADR's measured hour, as the Whisper call, about 9 pages and the last, 9 chunks, the summary, about 7 index batches and the step that finishes. No time is given, as it depends on what else is waiting and what a provider allows. A failed meeting, a held or stopped index and the demo promise nothing of it, and an index that may have kept stopping says so.
+
+**How the page knows.** `useDeploymentFacts`, read during the server's render from `event.context.cloudflare`, one of ADR-0016's signals, and handed over in the payload. A public setting would need remembering, and could be left on a Node server. A build constant would have to be threaded through Vite for a value Nitro already hands every request. This cannot be set from outside, and a page never rendered by a server says the less. **What it cannot know is whether the cron is really firing:** `wrangler.jsonc` has it and a test holds the page's words to it, but a dashboard change or a broken deploy would leave the sentence false. `sweep_state.last_tick_at` is where to look, and a page could read it, at one more request per read of `/pipeline`. It also says so under local `wrangler dev`, where nothing fires by itself, which is only ever a check.
+
+**Node and `pnpm dev`** register the hook and nothing calls it. Both presets build. The e2e job holds that a Node server renders no pace, stores no rotation, and leaves a meeting alone; the browser job reads the same sentence off a driving page.
+
+**How this was proven,** none of it on a real service:
+- `scripts/verify-worker-sweep.mjs`, on the Worker build under `wrangler dev`, asking for each tick at `/cdn-cgi/local/scheduled`, with real SQL behind PostgREST on a throwaway Postgres, and fakes for R2, Groq and Workers AI that see every request. No settings, and one missing: nothing sent, the refusal said once. Nothing to do: one request, one write, no log. Two meetings from `uploaded` to `ready` with their indexes complete, in 14 ticks, one claim and one provider call each at most, 18 subrequests at most, and the demo untouched. Whisper failing for ever: asked twice, then `failed`, and not retried past its cooldown. The daily limit: one request, then none. No provider body or value in any log.
+- `pnpm test:postgrest`, the 50 cases and the rotation through the real Supabase driver.
+- `verify-migrations.sh`, in `pnpm ci:local`, the same on the SQL: the cases that matter most, what it reads, two sessions at once, who may run it, running it twice.
+- `tests/unit/sweep.spec.ts`, whole drives over the local drivers, in fake time, including every bound above.
+
+**Decisions to reverse if they turn out wrong:**
+- **An index stops at its first failure,** which a transient 5xx can be. The cost is a meeting with no questions until someone opens its page, where it carries on. Allowing its second attempt needs telling that from a stop, and the run holds nothing that does; a flag on the cursor would.
+- **A tick does one thing,** so no retry of anything in the same tick, and the one chance per 5 minutes is the meeting's, whichever it is. With a backlog of 20 meetings each waits 100 minutes for its next step. Raising the rate is a change to `wrangler.jsonc` and the page's words, at more of Groq's minute and more of the free 100,000 requests.
+- **The 100 meetings looked at** are a constant in the SQL and on the local driver. Past them a meeting needs a tab.
+
+**Not done, or unproven until Phase 13:**
+- **The acceptance itself.**
+- **That a real Cron Trigger fires this,** with values from `wrangler secret put` reaching `useRuntimeConfig(event)`. Cloudflare says a change can take up to 15 minutes to reach its network, and a new Worker up to 30 to show in Past Cron Events.
+- **How long a tick may run.** Nitro's handler returns at once and runs the hook in `waitUntil`. Cloudflare gives a scheduled Worker 15 minutes of wall time, and `waitUntil` 30 s "after the response is sent or the client disconnects", and does not say which binds a scheduled handler that has returned. A Whisper call was measured at about 11 s for an hour of audio. If 30 s binds, a longer one is killed, its lease runs out, and it counts as an attempt: at most two calls, then `failed`, then nothing.
+- **CPU.** Nobody can measure it yet, and no figure is claimed. Free is 10 ms a tick, as for any request. Each tick now holds a read of the choice, a read of the state and a step.
+- **What the free plan's cron does with `exceededCpu`,** and how it reads in Past Cron Events.
+- **Real providers.** Every provider here is a fake.
+- **That Supabase counts a tick as activity,** as above.
+- **That a deployed Worker has no route to a tick:** `/cdn-cgi/local/scheduled` is local by Cloudflare's account, and Phase 13 should ask it.
+- **`event.waitUntil` around a step** is still not done for a route, and has no meaning here.

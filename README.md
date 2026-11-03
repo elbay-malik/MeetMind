@@ -85,7 +85,7 @@ that can write, and what this does not do.
 | [0009](docs/adr/0009-workers-measurement-spike.md) | Workers measurement spike before Phase 9: what the runtime actually does, measured rather than inferred |
 | [0010](docs/adr/0010-r2-cost-controls.md) | R2 cost controls: a lifecycle rule bounds growth, an application storage budget is the hard stop, per-request op metering rejected |
 | [0011](docs/adr/0011-admin-meeting-delete.md) | Deleting a meeting is admin-only, behind `NUXT_ADMIN_TOKEN`; refused while anything could still write its data |
-| [0012](docs/adr/0012-pipeline-orchestration.md) | Pipeline orchestration on the Workers free plan: one bounded step per request, driven by the open page with no click and one driving tab per browser, Postgres rate-limit slots, polling not SSE |
+| [0012](docs/adr/0012-pipeline-orchestration.md) | Pipeline orchestration on the Workers free plan: one bounded step per request, driven by the open page with no click and one driving tab per browser, Postgres rate-limit slots, polling not SSE, and a cron that moves a closed tab's meeting very slowly |
 | [0013](docs/adr/0013-private-meeting-links.md) | A meeting is reached only through its unguessable link: no global list or cross-meeting search, \"Your meetings\" lives in this browser |
 | [0014](docs/adr/0014-workers-ai-embeddings.md) | Embeddings from Cloudflare Workers AI's bge-m3 at 1024 dimensions, replacing a provider whose terms require a paid plan in the EEA: measured batch limits, and a plain message at the daily limit |
 | [0015](docs/adr/0015-invite-only-uploads.md) | Visitors get the demo meeting, which can only be read and asked; uploading takes an invite code, and a missing code closes it. A guard for every route that can write |
@@ -250,6 +250,26 @@ indexing resumes from where it stopped. See
 2. Set `NUXT_SUPABASE_URL` and `NUXT_SUPABASE_SERVICE_KEY` (the **service-role** key —
    it stays on the server; the table has RLS enabled with no policies).
 
+### Deploying the Worker (Phase 13)
+
+Nothing has been deployed yet. When it is:
+
+1. `pnpm db:migrate`, for the migrations this needs, including `20261103180000_sweeper.sql`,
+   without which every tick fails.
+2. `NITRO_PRESET=cloudflare_module pnpm build`, then `wrangler deploy`. That is what registers the
+   cron in `wrangler.jsonc`: one tick every 5 minutes, of the 5 crons the free plan allows. It
+   can take up to 15 minutes to reach Cloudflare's network, and a new Worker up to 30 to show in
+   Past Cron Events.
+3. Upload a meeting, close the tab, and watch it move: `select last_tick_at from sweep_state`
+   says a tick ran, and a line in `wrangler tail` says a step did. A tick with nothing to do logs nothing.
+4. Ask for `/__scheduled` and `/cdn-cgi/local/scheduled` on the deployed host, which should run no
+   tick, and check that `last_tick_at` does not move for it.
+
+The sweeper is also what keeps a free Supabase project from pausing: every tick writes one row,
+including one with nothing to do. Whether Supabase counts that as activity is not known yet, so
+watch the project's first idle week. See [ADR-0012](docs/adr/0012-pipeline-orchestration.md)'s step 11
+addendum for what a tick retries, which is no failed stage, and what stays unproven.
+
 ## Scripts
 
 | Script | Purpose |
@@ -263,6 +283,8 @@ indexing resumes from where it stopped. See
 | `NUXT_INVITE_CODE=<code> node scripts/drive-upload.mjs <url> [fixture] [dataDir]` | Headless Chromium: wrong code, right code, drop → extract → upload → progress page, inspects storage, then checks the page reaches `ready` with no click, a second tab that only watches and takes over, leaving and coming back, and the read-only demo, all by the requests each tab was seen to send. Takes the code the server was started with, and a server on local drivers, so started with `NUXT_ALLOW_LOCAL_DRIVERS=true` if built |
 | `node scripts/drive-player.mjs <url> <meetingId>` | Headless Chromium: click-to-seek, active-line highlight, transcript keyboard navigation |
 | `NITRO_PRESET=cloudflare_module pnpm build && node scripts/verify-worker-gate.mjs` | Runs the Worker build under local workerd with fake services, and checks what it refuses and what it selects ([ADR-0016](docs/adr/0016-real-services-or-nothing.md)). Run `pnpm build` afterwards, since the other jobs need the Node build |
+| `pnpm test:postgrest` | The real Supabase drivers against a throwaway Postgres behind PostgREST (Docker). No credentials, and no real project |
+| `NITRO_PRESET=cloudflare_module pnpm build && node scripts/verify-worker-sweep.mjs` | Runs the Worker build under local workerd and asks it for cron ticks, against real SQL on a throwaway Postgres and fake providers: a meeting with no tab open reaches `ready`, a tick with nothing to do still writes to Postgres, and what it refuses and leaves alone. Then `pnpm build` to put the Node build back |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
 | `pnpm db:migrate` | Applies `supabase/migrations/` to the real project at `SUPABASE_DB_URL`, in order, skipping what a ledger says is already there. Run `verify-migrations.sh` first; pass `--dry-run` to see what is pending |
 | `pnpm ci:local` | Runs every job in `.github/workflows/ci.yml` on this machine — a PR can be judged green without waiting on GitHub. A job it cannot run counts as a failure, not a skip |
@@ -282,9 +304,11 @@ Several playbook instructions were changed after re-checking their premises — 
 [ADR-0006](docs/adr/0006-structured-summaries.md),
 [ADR-0007](docs/adr/0007-semantic-qa.md) and
 [ADR-0008](docs/adr/0008-cross-meeting-search.md). Pipeline orchestration is built up to its
-browser driver: the progress page takes a meeting through every stage by itself, for as long as a
-tab has it open ([ADR-0012](docs/adr/0012-pipeline-orchestration.md)). Next: the cron sweeper that
-moves a meeting with no tab open, rate limiting, Cloudflare Workers.
+browser driver and its cron sweeper: the progress page takes a meeting through every stage by
+itself for as long as a tab has it open, and on a deployed Worker the server carries on with it closed, at
+most one step every 5 minutes ([ADR-0012](docs/adr/0012-pipeline-orchestration.md)). A Node server
+has no cron, and there a meeting waits for its page. That has run only under local workerd, since nothing
+has been deployed. Next: rate limiting, Cloudflare Workers.
 
 ## Acknowledgements
 
