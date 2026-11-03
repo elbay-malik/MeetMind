@@ -38,6 +38,11 @@ export default defineNuxtConfig({
     // Empty or shorter closes uploads for everyone, and it never belongs under `public`.
     // Generate with `openssl rand -hex 24`.
     inviteCode: '', // NUXT_INVITE_CODE
+    // Days after which the cron deletes a meeting and everything stored for it (ADR-0017), at
+    // most one per tick. Irreversible, so off: empty or 0 is off, and so is anything but a
+    // positive whole number, which is logged, or no NUXT_PUBLIC_DEMO_MEETING_ID. On a Worker only,
+    // since nothing else has a cron. Stays empty here and out of wrangler.jsonc.
+    retentionPurgeDays: '', // NUXT_RETENTION_PURGE_DAYS
     // Minimum gap between Groq chat requests (extraction chunks and questions)
     // across EVERY server instance, enforced through the slot ledger
     // (ADR-0012). One request a minute fits the free tier's 8,000 tokens per
