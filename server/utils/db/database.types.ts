@@ -30,6 +30,12 @@ export interface Database {
         Update: Partial<SummaryChunkRow>
         Relationships: []
       }
+      demo_question_days: {
+        Row: { day: string, taken: number }
+        Insert: { day: string, taken?: number }
+        Update: Partial<{ day: string, taken: number }>
+        Relationships: []
+      }
       sweep_state: {
         Row: { id: boolean, last_tick_at: string, last_created_at: string | null, last_meeting_id: string | null }
         Insert: { id?: boolean, last_tick_at?: string, last_created_at?: string | null, last_meeting_id?: string | null }
@@ -101,6 +107,15 @@ export interface Database {
         }
         /** A bigint, which PostgREST sends as a number or a string. */
         Returns: number | string
+      }
+      demo_question_gate: {
+        Args: { p_limit: number, p_demo: string }
+        /** One row. */
+        Returns: { over_count: boolean, extraction_pending: boolean }[]
+      }
+      take_demo_question: {
+        Args: { p_limit: number }
+        Returns: boolean
       }
       reserve_slot: {
         Args: {

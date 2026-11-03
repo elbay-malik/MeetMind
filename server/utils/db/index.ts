@@ -18,6 +18,9 @@ import type { SlotRepository } from './slots'
 import { createLocalPipelineRepository } from './pipeline-local'
 import { createSupabasePipelineRepository } from './pipeline-supabase'
 import type { PipelineRepository } from './pipeline'
+import { createLocalDemoQuestionRepository } from './demo-questions-local'
+import { createSupabaseDemoQuestionRepository } from './demo-questions-supabase'
+import type { DemoQuestionRepository } from './demo-questions'
 
 /**
  * Pick the meeting repository: Supabase Postgres when the URL and service-role key
@@ -67,5 +70,13 @@ export function usePipelineRepository(event: H3Event): PipelineRepository {
   return selectDriver<PipelineRepository>(event, 'supabase', {
     real: config => createSupabasePipelineRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey }),
     local: config => createLocalPipelineRepository({ dataDir: config.dataDir }),
+  })
+}
+
+/** The public demo's daily count (ADR-0019), chosen the same way as the other repositories. */
+export function useDemoQuestionRepository(event: H3Event): DemoQuestionRepository {
+  return selectDriver<DemoQuestionRepository>(event, 'supabase', {
+    real: config => createSupabaseDemoQuestionRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey }),
+    local: config => createLocalDemoQuestionRepository({ dataDir: config.dataDir }),
   })
 }

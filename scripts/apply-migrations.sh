@@ -172,7 +172,8 @@ missing=$(psql_url -At -c "
     ('function','transcript_hash'), ('function','read_index_state'),
     ('function','upsert_windows'), ('function','finish_index'),
     ('table','sweep_state'), ('function','sweep_can_move'), ('function','sweep_next_meeting'),
-    ('function','next_expired_meeting')
+    ('function','next_expired_meeting'),
+    ('table','demo_question_days'), ('function','demo_question_gate'), ('function','take_demo_question')
   )
   select kind || ' ' || name from expected e
   where not exists (
