@@ -5,16 +5,22 @@ import type { Meeting, MeetingSummary, TranscriptSegment } from '#shared/types/m
 import { serialize } from './local'
 import { hashTranscript } from './windows-local'
 import type { EmbeddedWindow, IndexMarker } from './windows'
+import type { SlotProvider, SlotState } from './slots'
 import {
+  afterInRotation,
   assertReleasable,
   assertStorableResult,
   assertValidIndexBatch,
   assertValidPage,
   assertValidLease,
   assertValidPlan,
+  busyProviders,
   parseStoredResult,
+  sweepCanMove,
+  SWEEP_POOL,
   type PipelineRepository,
   type PipelineStage,
+  type SweepFacts,
 } from './pipeline'
 
 const storages = new Map<string, Promise<Storage>>()
@@ -66,6 +72,14 @@ const meetingKey = (meetingId: string) => `meetings/${meetingId}`
 const summaryKey = (meetingId: string) => `summaries/${meetingId}`
 const transcriptKey = (meetingId: string) => `transcripts/${meetingId}`
 const windowsKey = (meetingId: string) => `windows/${meetingId}`
+const SWEEP_STATE_KEY = 'sweep/state'
+
+/** `public.sweep_state`: when a tick last ran, and the meeting the rotation last chose. */
+interface LocalSweepState {
+  lastTickAt: number
+  createdAt?: string
+  id?: string
+}
 
 /**
  * A timestamp strictly after `previous`. A delete is fenced on `updatedAt`
@@ -388,6 +402,70 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
     async deleteForMeeting(meetingId) {
       await serialize(meetingId, async () => {
         await (await storageFor(base)).removeItem(ledgerKey(meetingId))
+      })
+    },
+
+    async nextForSweep({ model, excludeId, limitError }) {
+      // One queue, as `sweep_next_meeting` takes one row lock.
+      return serialize(SWEEP_STATE_KEY, async () => {
+        const s = await storageFor(base)
+        const now = Date.now()
+        const last = await s.getItem<LocalSweepState>(SWEEP_STATE_KEY)
+        await s.setItem<LocalSweepState>(SWEEP_STATE_KEY, { ...last, lastTickAt: now })
+
+        const slots: Partial<Record<SlotProvider, SlotState>> = {}
+        for (const provider of ['groq-chat', 'groq-whisper', 'workers-ai-embed'] as const) {
+          const slot = await s.getItem<SlotState>(`slots/${provider}`)
+          if (slot) slots[provider] = slot
+        }
+        const busy = busyProviders(slots, now)
+
+        const items = await s.getItems<Meeting>(await s.getKeys('meetings'))
+        const meetings = items.map(item => item.value).filter((m): m is Meeting => !!m)
+        const byUpdate = (a: Meeting, b: Meeting) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || (a.id < b.id ? -1 : 1)
+        const inProgress = meetings.filter(m => ['uploaded', 'transcribing', 'summarizing', 'indexing'].includes(m.status))
+          .sort(byUpdate).slice(0, SWEEP_POOL)
+        const transcriptFinished = meetings.filter(m => m.status === 'ready' || (m.status === 'failed' && m.failedStage === 'summarization'))
+          .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || (a.id < b.id ? -1 : 1)).slice(0, SWEEP_POOL)
+
+        const lastChosen = last?.createdAt && last.id ? { createdAt: last.createdAt, id: last.id } : null
+        const inOrder = [...inProgress, ...transcriptFinished]
+          .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || (a.id < b.id ? -1 : 1))
+        const rotated = [...inOrder.filter(m => afterInRotation(m, lastChosen)), ...inOrder.filter(m => !afterInRotation(m, lastChosen))]
+
+        for (const meeting of rotated) {
+          if (excludeId !== null && meeting.id.toLowerCase() === excludeId.toLowerCase()) continue
+          if (!sweepCanMove(await factsOf(s, meeting), { model, limitError, busy, now })) continue
+          await s.setItem<LocalSweepState>(SWEEP_STATE_KEY, { lastTickAt: now, createdAt: meeting.createdAt, id: meeting.id })
+          return { meetingId: meeting.id, busy }
+        }
+        return { meetingId: null, busy }
+
+        async function factsOf(storage: Storage, meeting: Meeting): Promise<SweepFacts> {
+          const ledger = await storage.getItem<LedgerState>(ledgerKey(meeting.id))
+          const windows = (await storage.getItem<EmbeddedWindow[]>(windowsKey(meeting.id))) ?? []
+          const lines = (await storage.getItem<TranscriptSegment[]>(transcriptKey(meeting.id))) ?? []
+          const run = (stage: PipelineStage) => {
+            const stored = ledger?.runs[stage]
+            return stored && {
+              cursor: stored.cursor,
+              lastError: stored.lastError,
+              retryAt: stored.retryAt === null ? null : new Date(stored.retryAt),
+              stepLeaseUntil: stored.stepLeaseUntil === null ? null : new Date(stored.stepLeaseUntil),
+            }
+          }
+          const extraction = ledger?.runs.summarization
+          return {
+            status: meeting.status,
+            failedStage: meeting.failedStage ?? null,
+            runs: { transcription: run('transcription'), summarization: run('summarization'), search_index: run('search_index') },
+            unfinishedChunk: !!extraction && (ledger?.chunks ?? []).some(c => c.runId === extraction.runId && c.result == null),
+            marker: ledger?.indexMarker ?? null,
+            hasLines: lines.length > 0,
+            hasWindows: windows.length > 0,
+            hasOtherModelWindows: windows.some(w => w.model !== model),
+          }
+        }
       })
     },
   }

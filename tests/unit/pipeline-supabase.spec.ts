@@ -10,6 +10,7 @@ import { createSupabasePipelineRepository } from '../../server/utils/db/pipeline
 
 const MIGRATION = readFileSync('supabase/migrations/20261101120000_transcription_steps.sql', 'utf8')
   + readFileSync('supabase/migrations/20261103120000_search_index_steps.sql', 'utf8')
+  + readFileSync('supabase/migrations/20261103180000_sweeper.sql', 'utf8')
 
 function sqlParameters(fn: string): string[] {
   const signature = new RegExp(`create (?:or replace )?function public\\.${fn}\\(([\\s\\S]*?)\\n\\)`).exec(MIGRATION)
@@ -253,5 +254,42 @@ describe('deleteForMeeting', () => {
     await repo.deleteForMeeting(MEETING)
     expect(calls.map(url => url.pathname.split('/').pop()).sort()).toEqual(['meeting_index_state', 'pipeline_runs', 'summary_chunks'])
     for (const url of calls) expect(url.searchParams.get('meeting_id')).toBe(`eq.${MEETING}`)
+  })
+})
+
+describe('nextForSweep', () => {
+  const OPTIONS = { model: 'model-a', excludeId: MEETING, limitError: 'the limit' }
+
+  it('sends exactly the function\'s parameters, and reads its one row', async () => {
+    const calls = stubRpc([{ meeting_id: MEETING, busy: ['groq-chat'] }])
+    await expect(repo.nextForSweep(OPTIONS)).resolves.toEqual({ meetingId: MEETING, busy: ['groq-chat'] })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.fn).toBe('sweep_next_meeting')
+    expect(Object.keys(calls[0]!.body).sort()).toEqual(sqlParameters('sweep_next_meeting'))
+    expect(calls[0]!.body).toEqual({ p_model: 'model-a', p_exclude: MEETING, p_limit_error: 'the limit' })
+  })
+
+  it('sends no demo as null, which SQL compares as nothing to leave out', async () => {
+    const calls = stubRpc([{ meeting_id: null, busy: [] }])
+    await expect(repo.nextForSweep({ ...OPTIONS, excludeId: null })).resolves.toEqual({ meetingId: null, busy: [] })
+    expect(calls[0]!.body.p_exclude).toBeNull()
+  })
+
+  // Read as "nothing to do", any of these would hide a broken sweeper for as long as it lasted,
+  // and a list of providers that went missing would ask one while it is blocked.
+  it.each<[string, unknown]>([
+    ['no row', []],
+    ['no list of providers', [{ meeting_id: null }]],
+    ['a list that is not one', [{ meeting_id: null, busy: 'groq-chat' }]],
+    ['an id that is not one', [{ meeting_id: 7, busy: [] }]],
+    ['an answer of the wrong shape', { meeting_id: null, busy: [] }],
+  ])('throws on %s, rather than reading it as nothing to do', async (_name, answer) => {
+    stubRpc(answer)
+    await expect(repo.nextForSweep(OPTIONS)).rejects.toThrow(/unusable answer/)
+  })
+
+  it('throws when the function refuses', async () => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ code: '22023', message: 'a model is required' }), { status: 400, headers: { 'content-type': 'application/json' } }))
+    await expect(repo.nextForSweep(OPTIONS)).rejects.toThrow(/sweep selection failed/)
   })
 })
