@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { whisperReplyKey } from '../../shared/utils/meeting'
 import type { PipelineDeps } from '../../server/utils/pipeline/advance'
+import { deleteMeeting } from '../../server/utils/meeting-deletion'
 import { reportTick, sweepOnce } from '../../server/utils/pipeline/sweep'
 import { planWindows } from '../../server/utils/qa/windows'
 import { hashedTokenVector } from '../../server/utils/qa/stub'
@@ -222,7 +223,7 @@ describe('with it on', () => {
     expect(await purge(nothingToDo())).toEqual({ kind: 'purged' })
   })
 
-  it('leaves a meeting that moved between the blocker\'s read and the delete, by the fence', async () => {
+  it('leaves the row of a meeting that moved between the blocker\'s read and the delete, by the fence, and finishes later', async () => {
     const id = await fullMeeting(31)
     const deps = nothingToDo()
     const claimedMeanwhile = {
@@ -238,8 +239,15 @@ describe('with it on', () => {
       },
     }
     expect(await purge(claimedMeanwhile)).toEqual({ kind: 'purge-left' })
-    expect((await everythingOf(id)).meeting).not.toBeNull()
-    expect((await everythingOf(id)).objects.every(Boolean)).toBe(true)
+    // Past its days and about to go, so its objects going a tick early is the price of a retry.
+    const left = await everythingOf(id)
+    expect(left.meeting).not.toBeNull()
+    expect(left.objects).toEqual([null, null])
+
+    expect(await purge(nothingToDo())).toEqual({ kind: 'idle' })
+    vi.setSystemTime(NOW + 60_001)
+    expect(await purge(nothingToDo())).toEqual({ kind: 'purged' })
+    expect(await everythingOf(id)).toEqual(WIPED)
   })
 
   it('answers nothing of a meeting gone by the time it is read, and removes nothing else', async () => {
@@ -287,16 +295,84 @@ describe('with it on', () => {
     expect(counted.take().subrequests).toBe(22)
   })
 
-  it('leaves no row behind for a cleanup that fails, and says so in one line with no id', async () => {
-    const id = await fullMeeting(31)
-    const failing = { ...nothingToDo(), store: { ...store(), delete: async () => {
-      throw new Error(`R2 DELETE meetings/${id}/audio.ogg failed`)
-    } } } as unknown as PipelineDeps
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    await reportTick(() => purge(failing))
-    expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn).toHaveBeenCalledWith('[meetmind] sweep failed: DeletionIncompleteError')
-    expect(await repos().meetings.get(id)).toBeNull()
+  describe('when a part of it fails, as nothing else could choose the meeting again with its row gone', () => {
+    const withFailingDelete = (failsOn: (key: string) => boolean): PipelineDeps => {
+      const deps = nothingToDo()
+      return {
+        ...deps,
+        store: {
+          ...deps.store,
+          delete: async (key: string) => {
+            if (failsOn(key)) throw new Error(`R2 DELETE ${key} failed`)
+            await deps.store.delete(key)
+          },
+        },
+      }
+    }
+
+    it('keeps the row when the audio cannot be removed, says so in one line with no id, and finishes on the next tick', async () => {
+      const id = await fullMeeting(31)
+      const before = await everythingOf(id)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      await reportTick(() => purge(withFailingDelete(() => true)))
+      expect(warn.mock.calls).toEqual([['[meetmind] sweep failed: Error']])
+      expect(await everythingOf(id)).toEqual(before)
+
+      expect(await purge(nothingToDo())).toEqual({ kind: 'purged' })
+      expect(await everythingOf(id)).toEqual(WIPED)
+    })
+
+    it('keeps the row when only the Whisper reply cannot be removed, and finishes on the next tick', async () => {
+      const id = await fullMeeting(31)
+      await expect(purge(withFailingDelete(key => key === whisperReplyKey(id)))).rejects.toThrow('failed')
+      expect((await everythingOf(id)).meeting).not.toBeNull()
+      expect((await everythingOf(id)).objects).toEqual([null, expect.anything()])
+
+      expect(await purge(nothingToDo())).toEqual({ kind: 'purged' })
+      expect(await everythingOf(id)).toEqual(WIPED)
+    })
+
+    it('finishes after an invocation killed between the objects and the row', async () => {
+      const id = await fullMeeting(31)
+      const deps = nothingToDo()
+      const killed = { ...deps, meetings: { ...deps.meetings, delete: async () => {
+        throw new Error('killed')
+      } } }
+      await expect(purge(killed)).rejects.toThrow('killed')
+      expect((await everythingOf(id)).meeting).not.toBeNull()
+      expect((await everythingOf(id)).objects).toEqual([null, null])
+
+      expect(await purge(nothingToDo())).toEqual({ kind: 'purged' })
+      expect(await everythingOf(id)).toEqual(WIPED)
+    })
+
+    it('touches no object while a step is live, so a blocked delete costs the meeting nothing', async () => {
+      const id = await fullMeeting(31)
+      const row = (await repos().meetings.get(id))!
+      await repos().pipeline.claimStep(id, 'summarization', { status: row.status, leaseMs: 60_000 })
+      const before = await everythingOf(id)
+      const deps = nothingToDo()
+      const named = { ...deps, pipeline: { ...deps.pipeline, nextExpired: async () => id } }
+      expect(await purge(named)).toEqual({ kind: 'purge-left' })
+      expect(await everythingOf(id)).toEqual(before)
+    })
+
+    it('keeps the admin route\'s order: the row first, fenced, with nothing removed for a meeting in use', async () => {
+      const id = await fullMeeting(31)
+      const order: string[] = []
+      const deps = nothingToDo()
+      await deleteMeeting(id, {
+        meetings: { ...deps.meetings, delete: async (...args) => {
+          order.push('row')
+          return deps.meetings.delete(...args)
+        } },
+        pipeline: deps.pipeline,
+        removeData: async () => {
+          order.push('data')
+        },
+      })
+      expect(order).toEqual(['row', 'data'])
+    })
   })
 
   it('says one line for a meeting deleted, with no id in it, and nothing for one left', async () => {

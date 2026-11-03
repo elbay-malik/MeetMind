@@ -80,29 +80,37 @@ export function deletionBlocker(
  * and once the row is gone the storage budget no longer counts it.
  */
 export async function removeMeetingData(event: H3Event, meetingId: string, audioKey: string): Promise<void> {
-  await removeDataWith({
-    store: useAudioStore(event),
+  const store = useAudioStore(event)
+  const rows = {
     pipeline: usePipelineRepository(event),
     index: useTranscriptIndexRepository(event),
     summaries: useSummaryRepository(event),
     transcripts: useTranscriptRepository(event),
-  }, meetingId, audioKey)
+  }
+  await removeObjectsWith(store, meetingId, audioKey)
+  await removeRowsWith(rows, meetingId)
 }
 
-/** {@link removeMeetingData}, with what it needs already chosen: what the retention purge has to hand. */
-export async function removeDataWith(
+/** The bucket's half of {@link removeMeetingData}. A key already gone is not a failure, so it can be repeated. */
+export async function removeObjectsWith(
+  store: { delete: (key: string) => Promise<void> },
+  meetingId: string,
+  audioKey: string,
+): Promise<void> {
+  await store.delete(audioKey)
+  await store.delete(whisperReplyKey(meetingId))
+}
+
+/** The database's half of {@link removeMeetingData}, with what it needs already chosen. */
+export async function removeRowsWith(
   deps: {
-    store: { delete: (key: string) => Promise<void> }
     pipeline: Pick<PipelineRepository, 'deleteForMeeting'>
     index: { deleteForMeeting: (meetingId: string) => Promise<void> }
     summaries: { deleteForMeeting: (meetingId: string) => Promise<void> }
     transcripts: { deleteForMeeting: (meetingId: string) => Promise<void> }
   },
   meetingId: string,
-  audioKey: string,
 ): Promise<void> {
-  await deps.store.delete(audioKey)
-  await deps.store.delete(whisperReplyKey(meetingId))
   await deps.pipeline.deleteForMeeting(meetingId)
   await deps.index.deleteForMeeting(meetingId)
   await deps.summaries.deleteForMeeting(meetingId)
@@ -120,6 +128,13 @@ export interface DeletionDeps {
   pipeline: Pick<PipelineRepository, 'listRuns'>
   /** {@link removeMeetingData}, bound to the request. */
   removeData: (meetingId: string, audioKey: string) => Promise<void>
+  /**
+   * For a caller that nobody can repeat: the objects, once nothing blocks the delete and before
+   * the row goes, so that a failure leaves the row to choose the meeting by next time. This gives
+   * up the fence's promise for the objects, so it is only for a meeting past keeping (ADR-0017).
+   * A failure here is the failure itself, with nothing yet deleted that cannot be found again.
+   */
+  removeObjectsFirst?: (meetingId: string, audioKey: string) => Promise<void>
   now?: () => number
 }
 
@@ -158,6 +173,8 @@ export async function deleteMeeting(id: string, deps: DeletionDeps): Promise<Del
   // so the fenced delete below refuses it even though this read missed it.
   const blocker = deletionBlocker(meeting, now(), await deps.pipeline.listRuns(id))
   if (blocker) return { kind: 'blocked', ...blocker }
+
+  await deps.removeObjectsFirst?.(id, meeting.audioKey)
 
   // The row before the data. Fenced on the row as read above, so a claim that
   // landed since then leaves nothing to delete -- and nothing of a meeting that
