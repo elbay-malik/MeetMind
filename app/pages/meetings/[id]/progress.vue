@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import type { ExtractionStepResponse, IndexingStepResponse, Meeting, MeetingStatus, SearchIndexStatus, TranscriptionStepResponse, TranscriptSegment } from '#shared/types/meeting'
+import type { Meeting, MeetingStatus, PipelineResponse, TranscriptSegment } from '#shared/types/meeting'
+import type { StageState } from '~/utils/pipeline-view'
 
 const route = useRoute()
 const meetingId = computed(() => String(route.params.id))
 
-const { data, error, refresh } = await useFetch<{ meeting: Meeting }>(`/api/meetings/${meetingId.value}`)
+// Without the stored error, which this page has its own words for, so that it is not in the
+// server's render either: it can hold a provider's or a database's own words.
+const { data, error, refresh } = await useFetch<{ meeting: Meeting }>(`/api/meetings/${meetingId.value}`, {
+  transform: ({ meeting }) => ({ meeting: { ...meeting, errorMessage: null } }),
+})
 if (error.value) {
   throw createError({
     statusCode: error.value.statusCode ?? 500,
@@ -20,289 +25,72 @@ const { data: transcriptData, refresh: refreshTranscript }
   = await useFetch<{ segments: TranscriptSegment[] }>(`/api/meetings/${meetingId.value}/transcript`)
 const segments = computed(() => transcriptData.value?.segments ?? [])
 
-const transcribing = ref(false)
-const stepError = ref<{ step: string, message: string } | null>(null)
-const justFinished = ref(false)
-const justSummarized = ref(false)
-
-/** The footer, so focus can be put back on the action after a step finishes
- * (see restoreActionFocus). Queried rather than a component ref: what needs
- * focusing is the real <button>, whatever the UI library wraps it in. */
-const footer = ref<HTMLElement | null>(null)
-
-const { data: indexData, error: indexUnread, refresh: refreshIndex }
-  = await useFetch<{ index: SearchIndexStatus }>(`/api/meetings/${meetingId.value}/search-index`)
-const searchIndex = computed(() => indexData.value?.index ?? null)
-
-async function reloadAll() {
-  // The index status is derived from the transcript, so it changes whenever a
-  // step changes the transcript — transcription finishing makes it `none`.
-  await Promise.all([refresh(), refreshTranscript(), refreshIndex()])
-}
+/** Failing to read this costs only what it says: the driver asks again as soon as it starts. */
+const { data: firstAnswer } = await useFetch<PipelineResponse>(`/api/meetings/${meetingId.value}/pipeline`)
 
 /**
- * Indexing for questions (ADR-0007 decision 6). A separate step, not part of
- * the pipeline status: it needs a finished transcript and nothing else, so it
- * neither waits for extraction nor blocks it.
+ * The page drives the meeting, with no click (ADR-0012 §1), and opening it is enough
+ * (ADR-0013), except on the public demo, whose `/advance` can only answer 403 (ADR-0015):
+ * a visitor there reads what is stored, and nothing on this page asks for a step.
  */
-const indexing = ref(false)
-/** How far the indexing this page is driving has got, from the last step's answer. */
-const indexProgress = ref<IndexingStepResponse['progress'] | null>(null)
-const indexError = ref<string | null>(null)
-const justIndexed = ref(false)
-const questionsCard = ref<HTMLElement | null>(null)
-
-const canIndex = computed(() =>
-  searchIndex.value?.state === 'none' || searchIndex.value?.state === 'incomplete')
-
-async function startIndexing() {
-  if (indexing.value) return
-  indexing.value = true
-  indexError.value = null
-  justIndexed.value = false
-  indexProgress.value = null
-  try {
-    // One step per request (ADR-0012), driven the same way as the two stages below.
-    let finished = false
-    while (!finished && !unmounted) {
-      const res = await $fetch.raw<IndexingStepResponse>(`/api/meetings/${meetingId.value}/search-index`, { method: 'POST' })
-      finished = res.status !== 202
-      const step = res._data
-      if (finished || !step) continue
-      indexProgress.value = step.progress
-      if (step.next === 'wait' && step.retryAfterMs !== null) {
-        await sleep(step.retryAfterMs + Math.random() * 2000)
-      }
-    }
-    if (finished) justIndexed.value = true
-  }
-  catch (err) {
-    indexError.value = describeError(err)
-  }
-  finally {
-    indexing.value = false
-    indexProgress.value = null
-    await refreshIndex()
-    // The button disappears once the index is ready; keep focus in the card
-    // (on the link to ask) rather than letting it fall to <body>.
-    await nextTick()
-    if (!document.activeElement || document.activeElement === document.body) {
-      questionsCard.value?.querySelector<HTMLElement>('a, button')?.focus()
-    }
-  }
-}
-
-const indexLabel = computed(() => {
-  const index = searchIndex.value
-  if (indexing.value) {
-    const step = indexProgress.value
-    if (!step?.done) return 'Indexing the transcript for questions.'
-    // The plan's length comes from the status read before this run started, when the
-    // run itself has not reached its end yet.
-    const total = step.total ?? index?.windowCount
-    return total
-      ? `Indexing the transcript for questions: ${Math.min(step.done, total)} of ${total} passages done.`
-      : `Indexing the transcript for questions: ${step.done} passages done.`
-  }
-  // With no status to read, every reason below would be a guess.
-  if (indexUnread.value) return 'Could not check whether this meeting can be asked questions. Reload the page to try again.'
-  if (!index || index.state === 'unavailable') return 'Available once transcription has finished.'
-  if (justIndexed.value && index.state === 'ready') return 'Indexing finished. This meeting can be asked questions.'
-  if (index.state === 'ready') {
-    return index.windowCount === 0
-      ? 'Nothing to index: the transcript is empty.'
-      : `Ready for questions: all ${index.windowCount} passages indexed.`
-  }
-  if (index.state === 'none') return 'Not indexed yet.'
-  return `${index.indexedCount} of ${index.windowCount} passages indexed for the current transcript.`
+const readOnly = isDemoMeetingId(useRuntimeConfig().public.demoMeetingId, meetingId.value)
+const { state, now, retry, rebuildIndex } = usePipelineDriver(meetingId.value, {
+  initial: firstAnswer.value ?? null,
+  readOnly,
 })
+
+const status = computed<MeetingStatus>(() => state.value.answer?.status ?? meeting.value.status)
 
 /**
- * Put focus back on the action after a step finishes.
- *
- * Each step swaps which action is offered, and the button the user just
- * activated stops being the right one. Keeping ONE button element across those
- * transitions (see primaryAction) means the browser does not drop focus to
- * <body> merely because a v-if branch changed — but a step that ends with no
- * action at all, or with the button briefly disabled while loading, still can.
- * Measured before this: focus landed on <body> twice in a normal run, once
- * after transcription and once after extraction.
+ * The row and the transcript are read when the status moves, not on every step: a page of a
+ * reply does not change either, and reading a whole transcript per step would grow with the
+ * meeting. Until that read is back the transcript's size is not known, and is not guessed at.
  */
-async function restoreActionFocus() {
-  await nextTick()
-  if (document.activeElement && document.activeElement !== document.body) return
-  footer.value?.querySelector('button')?.focus()
-}
-
-const summarizing = ref(false)
-/** How far the extraction this page is driving has got, from the last step's answer. */
-const extraction = ref<ExtractionStepResponse['progress'] | null>(null)
-/** How far the transcription this page is driving has got, from the last step's answer. */
-const transcription = ref<TranscriptionStepResponse['progress'] | null>(null)
-/** How long this page is waiting before it asks for the next step of transcription, if it is. */
-const transcriptionWaitMs = ref<number | null>(null)
-/** Stops the driving loops when the page goes away; the run parks and resumes when reopened. */
-let unmounted = false
-
-async function startSummary() {
-  // Guarded rather than disabled: a disabled button loses focus, which is the
-  // behaviour restoreActionFocus exists to undo. Re-entry is what actually
-  // needed preventing.
-  if (summarizing.value) return
-  summarizing.value = true
-  stepError.value = null
-  // Otherwise the completion announcement from transcription survives into
-  // extraction: once summarizing flips back to false, activityLabel falls
-  // through past its own "extracting"/"running" checks to this stale flag,
-  // announcing "Transcription finished" again for an already-summarized,
-  // ready meeting.
-  justFinished.value = false
-  extraction.value = null
-  try {
-    // One step per request (ADR-0012): ask again until the summary is stored,
-    // waiting when the server says when to come back. The jitter keeps two
-    // tabs that were told the same moment from arriving together.
-    let finished = false
-    while (!finished && !unmounted) {
-      const res = await $fetch.raw<ExtractionStepResponse>(`/api/meetings/${meetingId.value}/summarize`, { method: 'POST' })
-      finished = res.status !== 202
-      const step = res._data
-      if (finished || !step) continue
-      extraction.value = step.progress
-      // The server's duration, not `retryAt` against this browser's clock,
-      // which may be minutes off.
-      if (step.next === 'wait' && step.retryAfterMs !== null) {
-        await sleep(step.retryAfterMs + Math.random() * 2000)
-      }
-    }
-    if (finished) justSummarized.value = true
-  }
-  catch (err) {
-    stepError.value = { step: 'Extraction failed', message: describeError(err) }
-  }
-  finally {
-    summarizing.value = false
-    extraction.value = null
-    await reloadAll()
-    await restoreActionFocus()
-  }
-}
-
-async function startTranscription() {
-  if (transcribing.value) return
-  transcribing.value = true
-  stepError.value = null
-  justFinished.value = false
-  justSummarized.value = false
-  transcription.value = null
-  try {
-    // One step per request (ADR-0012), driven the same way as extraction above.
-    let finished = false
-    while (!finished && !unmounted) {
-      const res = await $fetch.raw<TranscriptionStepResponse>(`/api/meetings/${meetingId.value}/transcribe`, { method: 'POST' })
-      finished = res.status !== 202
-      const step = res._data
-      if (finished || !step) continue
-      transcription.value = step.progress
-      transcriptionWaitMs.value = step.next === 'wait' ? step.retryAfterMs : null
-      if (step.next === 'wait' && step.retryAfterMs !== null) {
-        await sleep(step.retryAfterMs + Math.random() * 2000)
-      }
-    }
-    if (finished) justFinished.value = true
-  }
-  catch (err) {
-    stepError.value = { step: 'Transcription failed', message: describeError(err) }
-  }
-  finally {
-    transcribing.value = false
-    transcription.value = null
-    transcriptionWaitMs.value = null
-    await reloadAll()
-    await restoreActionFocus()
-  }
-}
-
-/**
- * Ask the route that owns this meeting to carry on. Both stages move only while
- * a page asks them to (ADR-0012), so one left in progress by a closed tab or a
- * killed step is paused until someone does. The server still decides: if a step
- * is live, it answers when to look again, and the loop waits.
- */
-async function resumeStalled() {
-  if (meeting.value.status === 'transcribing') return startTranscription()
-  return startSummary()
-}
-
-// A meeting can be left mid-transcription by another tab, or by a request that
-// outlived its page. Poll so this screen converges instead of showing a state
-// that never changes.
-const POLL_MS = 5000
-let poller: ReturnType<typeof setInterval> | null = null
-onMounted(() => {
-  poller = setInterval(() => {
-    if (meeting.value.status === 'transcribing' && !transcribing.value) void reloadAll()
-    if (meeting.value.status === 'indexing' && !summarizing.value) void reloadAll()
-  }, POLL_MS)
-})
-onUnmounted(() => {
-  unmounted = true
-  if (poller) clearInterval(poller)
+const transcriptReadAt = ref<MeetingStatus>(meeting.value.status)
+let latestRead = 0
+watch(status, async (moved) => {
+  // A read cancels the one before it, and that one can still be the last to come back.
+  const thisRead = ++latestRead
+  await Promise.all([refresh(), refreshTranscript()])
+  if (thisRead === latestRead) transcriptReadAt.value = moved
 })
 
-const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+const facts = computed(() => ({
+  status: status.value,
+  failedStage: meeting.value.failedStage,
+  segmentCount: transcriptReadAt.value === status.value ? segments.value.length : null,
+  audioLabel: formatMegabytes(meeting.value.audioBytes),
+}))
 
-/** The server's message when it gave one, rather than a generic failure. */
-function describeError(err: unknown): string {
-  const data = (err as { data?: { message?: string } }).data
-  return data?.message ?? (err instanceof Error ? err.message : String(err))
+const stages = computed(() => stagesOf(state.value, facts.value))
+const banner = computed(() => bannerOf(state.value, now.value))
+const failure = computed(() => failureOf(state.value, facts.value))
+const retryAction = computed(() => retryOf(state.value, facts.value, now.value))
+const questions = computed(() => questionsOf(state.value, now.value))
+const countdown = computed(() => countdownOf(state.value, now.value))
+const announcement = computed(() => announcementOf(state.value, facts.value, retryAction.value?.open ?? false))
+
+const STAGE_ICON: Record<StageState, string> = {
+  done: 'i-lucide-circle-check',
+  active: 'i-lucide-loader-circle',
+  waiting: 'i-lucide-clock',
+  paused: 'i-lucide-circle-pause',
+  failed: 'i-lucide-circle-x',
+  attention: 'i-lucide-circle-alert',
+  pending: 'i-lucide-circle-dashed',
+  unfinished: 'i-lucide-circle-dashed',
 }
 
-interface Stage {
-  key: string
-  label: string
-  detail: string
-  reached: (status: MeetingStatus) => boolean
+const STAGE_TONE: Record<StageState, string> = {
+  done: 'text-success',
+  active: 'text-info animate-spin',
+  waiting: 'text-info',
+  paused: 'text-warning',
+  failed: 'text-error',
+  attention: 'text-warning',
+  pending: 'text-dimmed',
+  unfinished: 'text-dimmed',
 }
-
-// Order of the pipeline. Later phases stream real per-stage progress here.
-const STAGES: Stage[] = [
-  {
-    key: 'upload',
-    label: 'Audio uploaded',
-    detail: 'Compressed audio stored; the video stayed on your machine.',
-    // Only `pending_upload` means the audio never arrived. A later failure does
-    // not undo an upload that did happen.
-    reached: s => s !== 'pending_upload',
-  },
-  {
-    key: 'transcribe',
-    label: 'Transcribed',
-    detail: 'Speech turned into timestamped segments.',
-    // Requires actual segments: a status alone would show a green tick for a
-    // transcription that produced nothing. A `failed` meeting still counts
-    // when the failure is summarize.post.ts's: that route only ever runs
-    // against a transcript that already exists, so the transcript stage is
-    // done regardless of how extraction went.
-    reached: s => (['summarizing', 'indexing', 'ready'].includes(s)
-      || (s === 'failed' && meeting.value.failedStage === 'summarization')) && segments.value.length > 0,
-  },
-  {
-    key: 'summarize',
-    label: 'Summarized',
-    detail: 'Decisions and action items extracted.',
-    // `ready` only: `indexing` is the in-flight claim summarize.post.ts sets
-    // the instant it starts, exactly as `transcribing` means "not done yet"
-    // for the stage above. Including it here showed a green tick for an
-    // extraction that had not actually produced anything.
-    reached: s => s === 'ready',
-  },
-  // No "Indexing" stage: nothing in this codebase indexes anything yet — that
-  // is Phase 9 (see docs/adr/0006-structured-summaries.md). `indexing` is only
-  // ever an in-flight marker set by summarize.post.ts's own claim(), not a
-  // real pipeline step, and showing a stage for it would claim semantic search
-  // ran the moment extraction finished.
-]
 
 const statusColor = computed(() => ({
   pending_upload: 'warning',
@@ -312,101 +100,45 @@ const statusColor = computed(() => ({
   indexing: 'info',
   ready: 'success',
   failed: 'error',
-} as const)[meeting.value.status])
+} as const)[status.value])
 
-const statusText = computed(() => meeting.value.status.replace('_', ' '))
+const statusText = computed(() => status.value.replace('_', ' '))
 
 // See shared/utils/meeting.ts for what this actually checks and why.
-const showTranscribedButEmpty = computed(() => transcribedButEmpty(meeting.value, segments.value.length))
-const createdAt = computed(() => new Date(meeting.value.createdAt).toLocaleString())
-const canTranscribe = computed(() =>
-  meeting.value.status === 'uploaded'
-  || (meeting.value.status === 'failed' && meeting.value.failedStage === 'transcription'))
-// Not gated on segments.length: a silent recording (transcribedButEmpty
-// above) genuinely finished transcription with zero segments, and
-// summarize.post.ts finishes that too — with a valid empty summary, not an
-// error — so hiding this button for that case left it stuck in
-// `summarizing` with no reachable transition at all.
-const canSummarize = computed(() =>
-  meeting.value.status === 'summarizing'
-  || (meeting.value.status === 'failed' && meeting.value.failedStage === 'summarization'))
+const showTranscribedButEmpty = computed(() =>
+  facts.value.segmentCount !== null
+  && transcribedButEmpty({ status: status.value, failedStage: meeting.value.failedStage }, facts.value.segmentCount))
 
 /**
- * A stage this page is not driving. Both move only while a page asks them to
- * (ADR-0012), so one left in progress is paused until someone resumes it; if
- * another tab is driving it, resuming here just takes turns. Offered while this
- * page drives it too, shown busy: the button the user activated stays put
- * rather than vanish and drop focus to <body>.
+ * In the visitor's own time and language once mounted. The server knows neither, and a first
+ * client render that differed from its copy was this page's hydration mismatch, so until then
+ * both say the same fixed thing.
  */
-const canResume = computed(() =>
-  meeting.value.status === 'transcribing' || meeting.value.status === 'indexing')
+const createdAt = computed(() => now.value
+  ? new Date(meeting.value.createdAt).toLocaleString()
+  : `${meeting.value.createdAt.slice(0, 16).replace('T', ' ')} UTC`)
 
-/** The failure with no retry at all: the audio was rejected and removed. */
-
-/**
- * The one action this meeting can take, as data rather than a chain of v-if
- * branches in the template. One button element then survives every transition,
- * so activating it does not drop keyboard focus to <body> when the next step
- * replaces which action is offered.
- */
-const primaryAction = computed(() => {
-  if (canTranscribe.value) {
-    return {
-      icon: 'i-lucide-captions',
-      label: meeting.value.errorMessage ? 'Try transcription again' : 'Start transcription',
-      busy: transcribing.value,
-      run: startTranscription,
-    }
-  }
-  if (canSummarize.value) {
-    return {
-      icon: 'i-lucide-list-checks',
-      label: meeting.value.errorMessage ? 'Try extraction again' : 'Extract decisions & action items',
-      busy: summarizing.value,
-      run: startSummary,
-    }
-  }
-  if (canResume.value) {
-    return {
-      icon: 'i-lucide-rotate-ccw',
-      label: meeting.value.status === 'transcribing' ? 'Resume transcription' : 'Resume extraction',
-      busy: meeting.value.status === 'transcribing' ? transcribing.value : summarizing.value,
-      run: resumeStalled,
-    }
-  }
-  return null
-})
+const heading = ref<HTMLElement | null>(null)
 
 /**
- * What the card is doing, as one string in one live region. Screen readers only
- * announce a region that stays mounted, so the completion message has to appear
- * in the same element the in-progress message did.
+ * The button the visitor just pressed goes away once it has done its work. Put focus somewhere
+ * that says what happened, rather than letting it fall to <body>.
  */
-const activityLabel = computed(() => {
-  if (summarizing.value) {
-    const step = extraction.value
-    if (!step?.total) return 'Extracting decisions and action items.'
-    const retrying = step.lastError ? ' The last attempt did not finish; it will be retried.' : ''
-    return `Extracting decisions and action items: ${step.done} of ${step.total} parts done.${retrying}`
-  }
-  if (transcribing.value) return transcriptionActivity(transcription.value, transcriptionWaitMs.value)
-  if (canResume.value) {
-    return meeting.value.status === 'transcribing'
-      ? 'Transcription is paused, or running in another tab. Resume it here to carry on.'
-      : 'Extraction is paused, or running in another tab. Resume it here to carry on.'
-  }
-  // Both completions are announced, not just transcription's: this region is
-  // the only thing a screen reader hears, and it used to go from "Extracting
-  // decisions and action items." straight to empty, which announces nothing
-  // at all — the one moment the user is waiting to be told about.
-  if (justSummarized.value) return 'Extraction finished. Decisions and action items are ready.'
-  if (justFinished.value) return `Transcription finished with ${segments.value.length} segments.`
-  if (uploadWasRejected(meeting.value)) {
-    return 'The uploaded audio was rejected and removed. Upload the recording again.'
-  }
-  if (canTranscribe.value) return 'Transcription runs on demand until the pipeline is automated.'
-  return ''
-})
+async function keepFocus() {
+  await nextTick()
+  if (document.activeElement && document.activeElement !== document.body) return
+  heading.value?.focus()
+}
+
+function tryAgain() {
+  retry()
+  void keepFocus()
+}
+
+function rebuild() {
+  rebuildIndex()
+  void keepFocus()
+}
 </script>
 
 <template>
@@ -435,70 +167,100 @@ const activityLabel = computed(() => {
 
     <MeetingLinkNotice :meeting-id="meetingId" />
 
+    <!-- Not a live region: it can hold a countdown. The announcement below says the same
+         thing once, without the time. -->
+    <UAlert
+      v-if="banner"
+      :color="banner.color"
+      variant="subtle"
+      :icon="banner.icon"
+      :title="banner.title"
+      :description="banner.description"
+    />
+
     <UCard>
       <template #header>
-        <h2 class="font-semibold">
+        <h2
+          ref="heading"
+          tabindex="-1"
+          class="font-semibold focus:outline-none"
+        >
           Pipeline
         </h2>
       </template>
-      <ol class="space-y-4">
+      <ol
+        aria-label="Pipeline stages"
+        class="space-y-4"
+      >
         <li
-          v-for="stage in STAGES"
+          v-for="stage in stages"
           :key="stage.key"
           class="flex items-start gap-3"
+          :aria-current="stage.current ? 'step' : undefined"
         >
           <UIcon
-            :name="stage.reached(meeting.status) ? 'i-lucide-check-circle' : 'i-lucide-circle-dashed'"
+            :name="STAGE_ICON[stage.state]"
             class="mt-0.5 size-5 shrink-0"
-            :class="stage.reached(meeting.status) ? 'text-success' : 'text-dimmed'"
+            :class="STAGE_TONE[stage.state]"
           />
-          <div>
-            <p
-              class="font-medium"
-              :class="stage.reached(meeting.status) ? '' : 'text-muted'"
-            >
-              {{ stage.label }}
+          <div class="min-w-0 flex-1">
+            <p class="flex flex-wrap items-baseline justify-between gap-x-3">
+              <span
+                class="font-medium"
+                :class="stage.state === 'pending' ? 'text-muted' : ''"
+              >{{ stage.label }}</span>
+              <!-- In words, for every state: the icon and its colour are never the only way to tell. -->
+              <span class="text-sm text-muted">{{ stage.stateText }}</span>
             </p>
             <p class="text-sm text-muted">
               {{ stage.detail }}
-              <template v-if="stage.key === 'upload' && stage.reached(meeting.status)">
-                {{ formatMegabytes(meeting.audioBytes) }} of 16&nbsp;kHz mono Opus.
-              </template>
-              <!-- Only once the stage is actually reached: rendering "7
-                   segments." under a grey, not-reached stage contradicts the
-                   tick beside it, which is the shape a failed-at-transcription
-                   meeting that still has an older transcript produces. -->
-              <template v-if="stage.key === 'transcribe' && stage.reached(meeting.status) && segments.length">
-                {{ segments.length }} segments.
-              </template>
             </p>
           </div>
         </li>
       </ol>
 
       <template #footer>
-        <div
-          ref="footer"
-          class="flex flex-wrap items-center gap-3"
-        >
-          <!-- ONE button across every state, driven by primaryAction: a v-if
-               chain unmounts the focused control the moment a step finishes,
-               dropping keyboard focus to <body>. -->
-          <UButton
-            v-if="primaryAction"
-            :loading="primaryAction.busy"
-            :icon="primaryAction.icon"
-            @click="primaryAction.run()"
+        <div class="space-y-2">
+          <div class="flex flex-wrap items-center gap-3">
+            <UButton
+              v-if="retryAction?.open"
+              icon="i-lucide-rotate-ccw"
+              @click="tryAgain"
+            >
+              {{ retryAction.label }}
+            </UButton>
+            <!-- One region for the whole page, always mounted, so it is never created at the
+                 moment it has something to say, which would not be announced. -->
+            <span
+              class="text-sm text-muted"
+              role="status"
+              aria-live="polite"
+            >{{ announcement }}</span>
+          </div>
+          <p
+            v-if="countdown"
+            class="text-sm text-muted tabular-nums"
           >
-            {{ primaryAction.label }}
-          </UButton>
-          <!-- One region for the whole card, so it is never unmounted at the
-               moment it has something to announce. -->
-          <span
+            {{ countdown }}
+          </p>
+          <p
+            v-if="retryAction && !retryAction.open"
+            class="text-sm text-muted tabular-nums"
+          >
+            {{ state.stop === 'finished' ? 'Indexing can carry on' : 'You can try again' }} in {{ formatWait(retryAction.opensInMs) }}.
+          </p>
+          <p
+            v-if="state.role === 'watching' && !state.stop"
             class="text-sm text-muted"
-            role="status"
-            aria-live="polite"
-          >{{ activityLabel }}</span>
+          >
+            Another tab of this browser is doing the work. This one only watches, and takes over if that tab closes.
+          </p>
+          <p
+            v-else-if="state.role === 'driving' && !state.stop"
+            class="text-sm text-muted"
+          >
+            This page is doing the work, so keep it open. If you close it, nothing is lost: it carries on from the same place when you open it again.
+          </p>
         </div>
       </template>
     </UCard>
@@ -509,78 +271,65 @@ const activityLabel = computed(() => {
           Questions
         </h2>
       </template>
-      <div
-        ref="questionsCard"
-        class="flex flex-wrap items-center gap-3"
-      >
-        <UButton
-          v-if="canIndex"
-          :loading="indexing"
-          icon="i-lucide-search"
-          variant="soft"
-          @click="startIndexing"
+      <div class="space-y-3">
+        <p class="text-sm text-muted">
+          {{ questions.text }}
+        </p>
+        <div
+          v-if="questions.link || questions.rebuildLabel"
+          class="flex flex-wrap items-center gap-3"
         >
-          {{ searchIndex?.state === 'incomplete' ? 'Update the index' : 'Index for questions' }}
-        </UButton>
-        <UButton
-          v-else-if="searchIndex?.state === 'ready' && searchIndex.windowCount > 0"
-          :to="`/meetings/${meetingId}`"
-          variant="ghost"
-          icon="i-lucide-message-circle-question"
-        >
-          Ask on the meeting page
-        </UButton>
-        <!-- Always mounted, like the pipeline card's region. -->
-        <span
-          class="text-sm text-muted"
-          role="status"
-          aria-live="polite"
-        >{{ indexLabel }}</span>
+          <UButton
+            v-if="questions.link === 'ask'"
+            :to="`/meetings/${meetingId}`"
+            variant="ghost"
+            icon="i-lucide-message-circle-question"
+          >
+            Ask on the meeting page
+          </UButton>
+          <UButton
+            v-else-if="questions.link === 'read'"
+            :to="`/meetings/${meetingId}`"
+            variant="ghost"
+            icon="i-lucide-book-open"
+          >
+            Read the meeting
+          </UButton>
+          <UButton
+            v-if="questions.rebuildLabel"
+            icon="i-lucide-search"
+            variant="soft"
+            @click="rebuild"
+          >
+            {{ questions.rebuildLabel }}
+          </UButton>
+        </div>
       </div>
       <UAlert
-        v-if="indexError"
+        v-if="state.rebuildError"
         role="alert"
         color="error"
         variant="subtle"
         icon="i-lucide-triangle-alert"
         class="mt-3"
         title="Indexing failed"
-        :description="indexError"
+        :description="state.rebuildError"
       />
     </UCard>
 
+    <!-- This page's own words. What is stored on the row can be a provider's or a database's,
+         and the routes the driver reads carry none of it (ADR-0012's step 9 addendum). -->
     <UAlert
-      v-if="stepError"
+      v-if="failure"
       role="alert"
       color="error"
       variant="subtle"
       icon="i-lucide-triangle-alert"
-      :title="stepError.step"
-      :description="stepError.message"
-    />
-    <!-- Before the generic failure alert: this one has no retry, so saying
-         only "Something went wrong" left the page with no next step at all
-         while the pipeline card offered an action that could never work. -->
-    <UAlert
-      v-else-if="uploadWasRejected(meeting)"
-      role="alert"
-      color="error"
-      variant="subtle"
-      icon="i-lucide-file-x"
-      title="The audio was rejected and removed"
-      :description="`${meeting.errorMessage} This meeting cannot be transcribed — upload the recording again.`"
+      :title="failure.title"
+      :description="failure.description"
     />
     <UAlert
-      v-else-if="meeting.errorMessage"
-      role="alert"
-      :color="meeting.status === 'failed' ? 'error' : 'warning'"
-      variant="subtle"
-      icon="i-lucide-triangle-alert"
-      :title="meeting.status === 'failed' ? 'Something went wrong' : 'The last attempt did not finish'"
-      :description="meeting.errorMessage"
-    />
-    <UAlert
-      v-else-if="meeting.status === 'pending_upload'"
+      v-else-if="status === 'pending_upload'"
       color="warning"
       variant="subtle"
       icon="i-lucide-clock"
