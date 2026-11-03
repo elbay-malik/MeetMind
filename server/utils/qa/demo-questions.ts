@@ -36,6 +36,16 @@ export function demoQuestionLimit(setting: unknown): number {
   return 0
 }
 
+/**
+ * The setting as written, for what Nitro's runtime config cannot show. Its env layer reads
+ * `null` and `undefined`, in any case and with spaces around, as nothing at all, and then keeps
+ * the default, so a limit nobody set would run with nothing logged. Those two read here as the
+ * bad value they are. Anything else, set or not, is the runtime config's to say.
+ */
+export function demoQuestionSetting(configured: unknown, written: string | undefined): unknown {
+  return written !== undefined && /^(?:null|undefined)$/i.test(written.trim()) ? null : configured
+}
+
 /** The gate or the take did not work, so nothing says the demo may spend: refuse, and leave the words for the log. */
 function closed(step: string, cause: unknown): AnswerError {
   const detail = cause instanceof Error ? cause.message : String(cause)
@@ -80,6 +90,6 @@ export function useDemoQuestionAllowance(event: H3Event, demoMeetingId: string):
   return demoQuestionAllowance({
     repo: useDemoQuestionRepository(event),
     demoMeetingId,
-    limit: demoQuestionLimit(useRuntimeConfig(event).demoQuestionsPerDay),
+    limit: demoQuestionLimit(demoQuestionSetting(useRuntimeConfig(event).demoQuestionsPerDay, process.env.NUXT_DEMO_QUESTIONS_PER_DAY)),
   })
 }
