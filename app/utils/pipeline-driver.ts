@@ -286,6 +286,8 @@ function isIndexingStep(body: unknown): body is IndexingStep {
 
 /** What the page says of a rebuild the server refused, when it has no words of its own to pass on. */
 export const REBUILD_REFUSED = 'The index could not be rebuilt. What is stored has been kept. Try again later.'
+/** A rebuild spends quota and overwrites what is stored, so it is not put off until nobody is looking. */
+export const REBUILD_ELSEWHERE = 'Another tab of this browser is working on this meeting, so nothing was rebuilt. Rebuild it from that tab, or try again when it has finished.'
 
 /**
  * That route's own sentences, which are written for visitors, and nothing else. A 500 from
@@ -663,6 +665,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
     const released = new Promise<void>((resolve) => {
       releaseLock = resolve
     })
+    if (state.rebuildError === REBUILD_ELSEWHERE) update({ rebuildError: null })
     void drive(nextLoop())
     return released
   }
@@ -674,6 +677,10 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
   /** Queue for the lock, watching in the meantime. It comes when the driver's tab closes. */
   function queue(mine: number) {
     if (!locks) return
+    if (rebuilding) {
+      rebuilding = false
+      update({ rebuildError: REBUILD_ELSEWHERE })
+    }
     queued = new AbortController()
     void watch(nextLoop())
     locks.request(lockName, { signal: queued.signal }, () => {

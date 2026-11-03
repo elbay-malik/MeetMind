@@ -320,7 +320,7 @@ function rebuild() {
         variant="subtle"
         icon="i-lucide-triangle-alert"
         class="mt-3"
-        title="Indexing failed"
+        title="The index was not rebuilt"
         :description="state.rebuildError"
       />
     </UCard>
