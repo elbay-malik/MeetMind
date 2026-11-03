@@ -215,6 +215,15 @@ describe('questions on the public demo', () => {
     })
   })
 
+  // The limit ADR-0019 writes down: no retry gets this row anywhere, and it pauses the demo all the same.
+  it('refuses for a meeting refused as too long as well, and goes on refusing however old it is', async () => {
+    const stopped = { status: 'failed', failedStage: 'summarization', errorMessage: tooManyChunksMessage(41), updatedAt: new Date(Date.now() - 30 * 86_400_000).toISOString() } as Parameters<typeof withMeetingIn>[1]
+    await withMeetingIn(otherId, stopped, async () => {
+      await expectPaused(await ask(demoId))
+    })
+    expect((await ask(demoId)).status).toBe(200)
+  })
+
   it('still asks another meeting while an extraction is pending on a third', async () => {
     const third = await indexedMeeting('Extracting')
     await withMeetingIn(third, { status: 'summarizing', failedStage: null }, async () => {

@@ -69,7 +69,8 @@ Set `NUXT_PUBLIC_DEMO_MEETING_ID` to link one finished meeting from the home pag
 read that meeting and ask it questions, which spends the shared quotas, and nobody can change
 it through its link. Its questions are capped by `NUXT_DEMO_QUESTIONS_PER_DAY` (default 25, by UTC
 day) and refused while another meeting's extraction is in progress, including one that failed and
-has not been retried or deleted ([ADR-0019](docs/adr/0019-demo-question-cap.md)). Its audio expires with the bucket's lifecycle rule (below) like any other,
+has not been retried or deleted ([ADR-0019](docs/adr/0019-demo-question-cap.md)). No tick retries
+that one, nothing logs the pause, and a meeting refused as too long can only be deleted. Its audio expires with the bucket's lifecycle rule (below) like any other,
 so it has to be put back every 30 days or the player stops working. To create it, see "Creating
 the demo meeting" in [ADR-0015](docs/adr/0015-invite-only-uploads.md), which also records what guards every route
 that can write, and what this does not do.
@@ -321,8 +322,10 @@ spends real quota. `scripts/verify-worker-*.mjs` run it from a temporary copy, w
    run the Worker uncounted, so `run_worker_first` in `wrangler.jsonc` keeps everything under `/_nuxt/`
    away from the Worker, found or not. A blocked request never reaches the Worker, so one
    address gets at most 10 every 10 seconds, about 86,000 a day, which stays under the allowance.
-   It is untested. If the dashboard refuses that path match, use `/api/`, `/meetings` and `/ffmpeg/`.
-   If real audio seeks trip it, raising it gives up that bound. It stops one address and not many,
+   The routing is measured under local `wrangler dev` only, and the rule is untested. If the dashboard
+   refuses that path match, use `/api/`, `/meetings` and `/ffmpeg/`, which gives up that bound: `/` and
+   every other path then run the Worker with nothing counting them.
+   If real audio seeks trip it, raising it gives up that bound too. It stops one address and not many,
    and a stranger's questions are capped separately
    ([ADR-0019](docs/adr/0019-demo-question-cap.md)).
 8. **Look at it before telling anyone.** Load `/` from cold and read its CPU in the Worker's logs, and any
