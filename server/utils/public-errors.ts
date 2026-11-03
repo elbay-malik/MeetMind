@@ -47,7 +47,9 @@ const FIXED_SENTENCES: Record<PublicStage, { rateLimited: string, otherwise: str
     otherwise: 'Indexing did not finish. Try again later.',
   },
   answering: {
-    rateLimited: 'Answering is being rate limited for now. Try again shortly.',
+    // Goes out with a time, and the question form says when to try again itself. It can also
+    // be an outage whose retry got no slot, so this names neither a wait nor a rate limit.
+    rateLimited: 'Answering is not available for now.',
     otherwise: 'The question could not be answered. Try again later.',
   },
 }
