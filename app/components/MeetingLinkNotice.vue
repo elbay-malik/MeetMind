@@ -14,8 +14,7 @@ onMounted(() => {
 const link = computed(() => `${origin.value}${path.value}`)
 
 /** The home page links to this one for every visitor, so its link is not a secret to keep. */
-const demoMeetingId = String(useRuntimeConfig().public.demoMeetingId ?? '').trim()
-const isDemo = computed(() => !!demoMeetingId && demoMeetingId.toLowerCase() === props.meetingId.toLowerCase())
+const isDemo = computed(() => isDemoMeetingId(useRuntimeConfig().public.demoMeetingId, props.meetingId))
 
 const notRemembered = useNotRememberedMeetings()
 const remembered = computed(() => !notRemembered.value.includes(props.meetingId))
