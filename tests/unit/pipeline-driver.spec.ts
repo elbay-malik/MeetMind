@@ -19,6 +19,7 @@ import {
   SHORTEST_WAIT_MS,
   SLOW_LOOK_MS,
   SPIN_PAUSE_MS,
+  STEP_UNDER_WAY_MS,
   WATCH_POLL_MS,
   WATCH_STALL_MS,
   classifyReply,
@@ -493,7 +494,7 @@ describe('driving', () => {
       const server = fakeServer({ [READ]: [ok(answer())], [ADVANCE]: [ok(wait(24 * HOUR))] })
       tab(server, {
         setTimer: (fire, ms) => {
-          if (ms !== ADVANCE_TIMEOUT_MS && ms !== READ_TIMEOUT_MS) longest.push(ms)
+          if (ms !== ADVANCE_TIMEOUT_MS && ms !== READ_TIMEOUT_MS && ms !== STEP_UNDER_WAY_MS) longest.push(ms)
           return setTimeout(fire, ms)
         },
       }).start()
@@ -1457,6 +1458,53 @@ describe('a hidden tab', () => {
     driver.wake('visible')
     await settle()
     expect(server.count(READ)).toBe(1)
+  })
+})
+
+describe('a step out for a while after a pause', () => {
+  it('is not still paused once the server has plainly taken the step', async () => {
+    const server = fakeServer({ [READ]: [ok(answer())], [ADVANCE]: [ok(wait(3 * 60_000)), NOT_ANSWERED] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    await pass(3 * 60_000)
+    expect(server.count(ADVANCE)).toBe(2)
+    expect(driver.state()).toMatchObject({ asking: true, pause: 'wait' })
+
+    await pass(STEP_UNDER_WAY_MS)
+    expect(driver.state()).toMatchObject({ asking: true, pause: null, waitMs: null, nextRequestAt: null })
+    expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('does not say it cannot reach a server that is working', async () => {
+    const server = fakeServer({ [READ]: [ok(answer())], [ADVANCE]: [LOST, NOT_ANSWERED] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    expect(driver.state().pause).toBe('network')
+    await pass(5_000)
+    expect(driver.state()).toMatchObject({ asking: true, pause: 'network' })
+    await pass(STEP_UNDER_WAY_MS)
+    expect(driver.state()).toMatchObject({ asking: true, pause: null, nextRequestAt: null })
+  })
+
+  it('stays paused through the quick look a long wait is made of, so nothing flickers', async () => {
+    const server = fakeServer({ [READ]: [ok(answer())], [ADVANCE]: [ok(wait(HOUR))] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    await pass(LONGEST_SLEEP_MS + STEP_UNDER_WAY_MS)
+    expect(server.count(ADVANCE)).toBe(2)
+    expect(driver.state().pause).toBe('wait')
+  })
+
+  it('leaves a read alone, which takes no step', async () => {
+    const server = fakeServer({ [READ]: [reply(500), NOT_ANSWERED] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    await pass(5_000 + STEP_UNDER_WAY_MS)
+    expect(driver.state()).toMatchObject({ asking: true, pause: 'server' })
   })
 })
 
