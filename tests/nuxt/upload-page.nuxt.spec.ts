@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reactive } from 'vue'
 import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
+import { FFMPEG_CORE_LICENSE, FFMPEG_CORE_PACKAGE, FFMPEG_CORE_SOURCE_URL, FFMPEG_CORE_VERSION } from '../../shared/utils/ffmpeg-core'
 import UploadPage from '~/pages/index.vue'
 import MeetingLinkNotice from '~/components/MeetingLinkNotice.vue'
 
@@ -23,6 +24,18 @@ mockNuxtImport('useAudioExtract', () => () => ({
 }))
 
 const ID = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
+
+describe('the licence notice for the ffmpeg core', () => {
+  it('is visible, naming the package, its version, that it is GPL and where its source is', async () => {
+    const wrapper = await mountSuspended(UploadPage)
+    const text = wrapper.text().replace(/\s+/g, ' ')
+    expect(text).toContain(`${FFMPEG_CORE_PACKAGE} ${FFMPEG_CORE_VERSION}`)
+    expect(text).toContain(`under the GPL (${FFMPEG_CORE_LICENSE})`)
+    const source = wrapper.find(`a[href="${FFMPEG_CORE_SOURCE_URL}"]`)
+    expect(source.exists()).toBe(true)
+    expect(source.text()).toBe('github.com/ffmpegwasm/ffmpeg.wasm')
+  })
+})
 
 describe('what the upload copy promises about deletion', () => {
   const copy = async () => (await mountSuspended(UploadPage)).text().replace(/\s+/g, ' ')

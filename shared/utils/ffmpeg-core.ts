@@ -18,6 +18,11 @@ export const FFMPEG_CORE_WASM_PATH = '/ffmpeg/ffmpeg-core.wasm'
 /** What the browser asks for. The query is what a new version's URL differs by. */
 export const FFMPEG_CORE_WASM_URL = `${FFMPEG_CORE_WASM_PATH}?v=${FFMPEG_CORE_VERSION}`
 
-/** The licence `@ffmpeg/core` declares, and the commit of its release. tests/unit/ffmpeg-core.spec.ts holds the first to the package. */
+/**
+ * What the upload page and the README say of it. The licence is the one the package declares, which
+ * tests/unit/ffmpeg-core.spec.ts holds to it. The source is the commit that released this version
+ * of the core: the repo's tag of the same number is a release of its wrapper, with an older core.
+ */
+export const FFMPEG_CORE_PACKAGE = '@ffmpeg/core'
 export const FFMPEG_CORE_LICENSE = 'GPL-2.0-or-later'
 export const FFMPEG_CORE_SOURCE_URL = 'https://github.com/ffmpegwasm/ffmpeg.wasm/tree/71aa99d37c02a7b4c435275ca9ef50e612f6efa1'

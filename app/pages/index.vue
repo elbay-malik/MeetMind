@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { meetingIdSchema } from '#shared/schemas/meeting'
+import { FFMPEG_CORE_LICENSE, FFMPEG_CORE_PACKAGE, FFMPEG_CORE_SOURCE_URL, FFMPEG_CORE_VERSION } from '#shared/utils/ffmpeg-core'
 import type { ExtractOptions } from '../workers/ffmpeg.protocol'
 
 useSeoMeta({ title: 'MeetMind — Upload' })
@@ -472,5 +473,15 @@ async function uploadAndContinue() {
         />
       </div>
     </UCard>
+
+    <p class="text-xs text-muted">
+      Your recording is compressed in this browser by {{ FFMPEG_CORE_PACKAGE }} {{ FFMPEG_CORE_VERSION }}, a build
+      of FFmpeg under the GPL ({{ FFMPEG_CORE_LICENSE }}). Its source is at
+      <a
+        :href="FFMPEG_CORE_SOURCE_URL"
+        class="underline"
+        rel="noopener noreferrer"
+      >github.com/ffmpegwasm/ffmpeg.wasm</a>.
+    </p>
   </UContainer>
 </template>
