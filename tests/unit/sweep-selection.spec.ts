@@ -33,7 +33,7 @@ async function seed(id: string, meeting: MeetingSeed) {
   const row = await db.getItem<Record<string, unknown>>(`meetings/${id}`)
   await db.setItem(`meetings/${id}`, {
     ...row,
-    createdAt: new Date(now - (meeting.createdAgoMs ?? 0)).toISOString(),
+    createdAt: meeting.createdAt ?? new Date(now - (meeting.createdAgoMs ?? 0)).toISOString(),
     updatedAt: new Date(now - (meeting.updatedAgoMs ?? 0)).toISOString(),
   })
   const runs = Object.fromEntries(Object.entries(meeting.runs ?? {}).map(([stage, run]) => [stage, {

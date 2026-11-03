@@ -68,7 +68,7 @@ export async function startSupabaseStandIn() {
       uploaded_at: iso(0),
       error_message: meeting.errorMessage ?? null,
       failed_stage: meeting.failedStage ?? null,
-      created_at: iso(-(meeting.createdAgoMs ?? 0)),
+      created_at: meeting.createdAt ?? iso(-(meeting.createdAgoMs ?? 0)),
     }))
     if (lines > 0) {
       must(await client.from('transcript_segments').insert(Array.from({ length: lines }, (_, idx) => ({ meeting_id: id, idx, start_ms: idx * 1000, end_ms: idx * 1000 + 500, text: `line ${idx}` }))))
