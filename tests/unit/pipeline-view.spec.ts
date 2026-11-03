@@ -530,6 +530,12 @@ describe('the Questions card', () => {
       expect(questionsOf(state({ role: 'read-only' }, a), NOW).rebuildLabel).toBeNull()
     })
 
+    it('does not say a parked index can carry on, whatever its time', () => {
+      const parked = parkedUntil('2026-11-03T11:00:00.000Z')
+      expect(questionsOf(state({ role: 'read-only' }, parked), NOW).text).not.toMatch(/can carry on/)
+      expect(questionsOf(state({ stop: 'finished' }, parked), NOW).text).toMatch(/can carry on now/)
+    })
+
     it('does not say anything is under way', () => {
       const building = answer({ status: 'ready', next: 'wait', index: { state: 'building', done: 0, total: null, retryAt: null } })
       expect(questionsOf(state({ role: 'read-only' }, building), NOW).text).toBe('Not available: this meeting\'s index is not finished.')

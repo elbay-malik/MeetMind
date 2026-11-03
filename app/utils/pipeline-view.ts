@@ -388,7 +388,7 @@ export function questionsOf(state: DriverState, now: number): QuestionsView {
       const why = isDailyReset(index.retryAt)
         ? `The free daily limit for indexing has been reached. It resets at 00:00 UTC${clock ? ` (${clock} here)` : ''}.`
         : `Indexing kept stopping, so it is resting${clock ? ` until ${clock}` : ' for now'}.`
-      const next = passed ? ' It can carry on now.' : ''
+      const next = passed && !readOnly ? ' It can carry on now.' : ''
       return {
         text: `${why}${next} What is indexed so far is kept. The meeting can be read now, and questions stay off until the index is finished.`,
         link: 'read',
