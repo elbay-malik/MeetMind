@@ -94,6 +94,15 @@ function laterThan(previous: string): string {
   return new Date(Math.max(Date.now(), Date.parse(previous) + 1)).toISOString()
 }
 
+/** Every meeting's row, each read in that meeting's own queue, and in the order they are found. */
+async function readAllMeetings(s: Storage): Promise<Meeting[]> {
+  const rows = await Promise.all((await s.getKeys('meetings')).map((key) => {
+    const id = key.split(':').pop()!
+    return serialize(id, () => s.getItem<Meeting>(meetingKey(id)))
+  }))
+  return rows.filter((row): row is Meeting => !!row)
+}
+
 /**
  * The run ledger as one JSON file per meeting under `<dataDir>/db/`, for
  * development and tests. A deliberate mirror of the SQL functions in
@@ -414,13 +423,12 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
       const { days, excludeId } = options
       const s = await storageFor(base)
       const now = Date.now()
-      const items = await s.getItems<Meeting>(await s.getKeys('meetings'))
-      const expired = items.map(item => item.value).filter((m): m is Meeting => !!m)
+      const expired = (await readAllMeetings(s))
         .filter(m => isPastRetention(m.createdAt, days, now) && m.id.toLowerCase() !== excludeId.toLowerCase())
         .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
         .slice(0, EXPIRED_LOOKED_AT)
       for (const meeting of expired) {
-        const ledger = await s.getItem<LedgerState>(ledgerKey(meeting.id))
+        const ledger = await serialize(meeting.id, () => s.getItem<LedgerState>(ledgerKey(meeting.id)))
         const live = Object.values(ledger?.runs ?? {}).some(run => run.stepLeaseUntil != null && run.stepLeaseUntil > now)
         if (!live) return meeting.id
       }
@@ -437,13 +445,12 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
 
         const slots: Partial<Record<SlotProvider, SlotState>> = {}
         for (const provider of ['groq-chat', 'groq-whisper', 'workers-ai-embed'] as const) {
-          const slot = await s.getItem<SlotState>(`slots/${provider}`)
+          const slot = await serialize(`slots/${provider}`, () => s.getItem<SlotState>(`slots/${provider}`))
           if (slot) slots[provider] = slot
         }
         const busy = busyProviders(slots, now)
 
-        const items = await s.getItems<Meeting>(await s.getKeys('meetings'))
-        const meetings = items.map(item => item.value).filter((m): m is Meeting => !!m)
+        const meetings = await readAllMeetings(s)
         const byUpdate = (a: Meeting, b: Meeting) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || (a.id < b.id ? -1 : 1)
         const inProgress = meetings.filter(m => ['uploaded', 'transcribing', 'summarizing', 'indexing'].includes(m.status))
           .sort(byUpdate).slice(0, SWEEP_POOL)
@@ -457,7 +464,9 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
 
         for (const meeting of rotated) {
           if (excludeId !== null && meeting.id.toLowerCase() === excludeId.toLowerCase()) continue
-          if (!sweepCanMove(await factsOf(s, meeting), { model, limitError, busy, now })) continue
+          // In the meeting's own queue, as a read can otherwise land inside a write of its ledger.
+          const facts = await serialize(meeting.id, () => factsOf(s, meeting))
+          if (!sweepCanMove(facts, { model, limitError, busy, now })) continue
           await s.setItem<LocalSweepState>(SWEEP_STATE_KEY, { lastTickAt: now, createdAt: meeting.createdAt, id: meeting.id })
           return { meetingId: meeting.id, busy }
         }
