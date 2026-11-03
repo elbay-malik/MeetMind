@@ -252,7 +252,8 @@ export function bannerOf(state: DriverState, now: number): BannerView | null {
     }
   }
   if (isLongWait(state)) {
-    const stage = state.answer?.progress.stage ?? 'transcription'
+    // On a failed meeting, only the index has anything left to wait for.
+    const stage = state.answer?.status === 'failed' ? 'search_index' : state.answer?.progress.stage ?? 'transcription'
     const clock = left !== null && left > 0 ? ` (${formatClock(now + left, now)})` : ''
     const who = state.role === 'watching' ? 'a tab of this browser stays' : 'this page stays'
     return {
