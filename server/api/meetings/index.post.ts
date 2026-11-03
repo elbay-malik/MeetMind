@@ -3,6 +3,7 @@ import type { CreateMeetingResponse } from '#shared/types/meeting'
 import { AUDIO_MIME, audioObjectKey } from '#shared/utils/meeting'
 import { useAudioStore } from '../../utils/storage'
 import { useMeetingRepository } from '../../utils/db'
+import { requireDrivers } from '../../utils/drivers'
 import { badRequest } from '../../utils/http'
 import { requireInviteCode } from '../../utils/invite'
 import { assertStorageBudget, UPLOAD_URL_TTL_SEC } from '../../utils/storage-budget'
@@ -24,6 +25,7 @@ const MAX_BODY_BYTES = 4096
  */
 export default defineEventHandler(async (event): Promise<CreateMeetingResponse> => {
   await requireInviteCode(event)
+  requireDrivers(event)
 
   // Checked before reading, so an oversized body is refused rather than buffered.
   const declaredLength = Number(getRequestHeader(event, 'content-length'))

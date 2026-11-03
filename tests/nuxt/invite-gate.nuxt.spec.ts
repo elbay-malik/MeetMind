@@ -8,6 +8,7 @@ const ID = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
 const CODE = 'a-right-code-a-right-code-a-right-code'
 const REFUSED = 'Uploading needs a valid invite code.'
 const CLOSED = 'Uploading is closed at the moment, whatever code is entered.'
+const UNAVAILABLE = 'MeetMind is not available at the moment. Try again later.'
 
 const IDLE = {
   status: 'idle',
@@ -229,6 +230,7 @@ describe('the code field', () => {
   // Neither says anything about the code, so neither may mark it wrong.
   it.each([
     ['uploads are closed', { statusCode: 503, message: CLOSED }, CLOSED],
+    ['the server cannot take an upload', { statusCode: 503, message: UNAVAILABLE }, UNAVAILABLE],
     ['the check failed', { statusCode: 502 }, 'Could not check the code'],
   ])('does not read as invalid when %s', async (_name, reply, message) => {
     checkReply = reply

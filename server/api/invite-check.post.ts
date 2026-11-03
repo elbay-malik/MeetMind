@@ -1,3 +1,4 @@
+import { requireDrivers } from '../utils/drivers'
 import { requireInviteCode } from '../utils/invite'
 
 /**
@@ -5,9 +6,13 @@ import { requireInviteCode } from '../utils/invite'
  * the browser spends minutes extracting audio (ADR-0015). The same guard
  * `POST /api/meetings` runs first, and nothing else: no cheaper to guess against than
  * that route, and it reads and writes nothing.
+ *
+ * After the code, a server that could not take the upload says so now (ADR-0016), rather
+ * than after those minutes. A wrong code still hears only that it is wrong.
  */
 export default defineEventHandler(async (event) => {
   await requireInviteCode(event)
+  requireDrivers(event)
   setResponseStatus(event, 204)
   return null
 })
