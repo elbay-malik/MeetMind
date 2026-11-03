@@ -38,6 +38,8 @@ export interface MeetingSeed {
   /** How long ago the row was touched, or created, when that is what a case is about. */
   updatedAgoMs?: number
   createdAgoMs?: number
+  /** When it was created, to the millisecond, for a case about two created at the same instant. */
+  createdAt?: string
 }
 
 export interface SlotSeed {
@@ -126,6 +128,7 @@ export const SWEEP_CASES: SweepCase[] = [
   { name: 'ready, finished under another model', meeting: { status: 'ready', marker: { model: OTHER_MODEL, complete: true, windowCount: 2 }, windows: { count: 2, model: OTHER_MODEL } }, picks: false, step: null },
   { name: 'ready, part way under another model', meeting: { status: 'ready', marker: { model: OTHER_MODEL, complete: false }, windows: { count: 1, model: OTHER_MODEL } }, picks: false, step: null },
   { name: 'ready, no marker and another model\'s windows', meeting: { status: 'ready', windows: { count: 1, model: OTHER_MODEL } }, picks: false, step: null },
+  { name: 'ready, a marker of another model with nothing stored', meeting: { status: 'ready', marker: { model: OTHER_MODEL, complete: false } }, picks: false, step: null },
   { name: 'ready, a pass under another model with nothing stored', meeting: { status: 'ready', runs: { search_index: { cursor: { pass: { model: OTHER_MODEL, textHash: 'x', nextWindow: 0, nextSegment: 0, pageSegments: 256, planned: false } } } } }, picks: false, step: null },
 
   // The one difference, on purpose: telling takes hashing the transcript, which is not a cost to
@@ -226,6 +229,36 @@ export function describeSweepSelection(name: string, driver: () => SweepDriver) 
       await seed(randomUUID(), { ...complete, updatedAgoMs: 0 })
       expect((await pipeline.nextForSweep(options())).meetingId).toBeNull()
       expect((await pipeline.nextForSweep(options())).meetingId).toBeNull()
+    })
+
+    it('looks at the 50 in progress that have waited longest, whether or not they can move', async () => {
+      const { pipeline, seed } = driver()
+      const stuck = { status: 'transcribing', runs: { transcription: LIVE } } as const
+      const newest = randomUUID()
+      await seed(newest, { status: 'uploaded', updatedAgoMs: 1_000 })
+      for (let i = 0; i < 49; i++) await seed(randomUUID(), { ...stuck, updatedAgoMs: HOUR + i * 1_000 })
+      expect((await pipeline.nextForSweep(options())).meetingId).toBe(newest)
+      await seed(randomUUID(), { ...stuck, updatedAgoMs: 2 * HOUR })
+      expect((await pipeline.nextForSweep(options())).meetingId).toBeNull()
+    })
+
+    it('gives no place among the 50 finished to a meeting that failed at transcription', async () => {
+      const { pipeline, seed } = driver()
+      const behind = randomUUID()
+      await seed(behind, { status: 'ready', updatedAgoMs: 2 * HOUR })
+      for (let i = 0; i < 50; i++) await seed(randomUUID(), { status: 'failed', failedStage: 'transcription', errorMessage: 'it broke', updatedAgoMs: HOUR - i * 1_000 })
+      expect((await pipeline.nextForSweep(options())).meetingId).toBe(behind)
+    })
+
+    it('gives two meetings created at the same instant a turn each', async () => {
+      const { pipeline, seed } = driver()
+      const createdAt = new Date(Date.now() - HOUR).toISOString()
+      const [first, second] = [randomUUID(), randomUUID()].sort()
+      await seed(first!, { status: 'uploaded', createdAt })
+      await seed(second!, { status: 'uploaded', createdAt })
+      const picked: Array<string | null> = []
+      for (let i = 0; i < 4; i++) picked.push((await pipeline.nextForSweep(options())).meetingId)
+      expect(picked).toEqual([first, second, first, second])
     })
 
     it('moves on from the last meeting it chose, even if nothing was ever done with it', async () => {
