@@ -101,3 +101,26 @@ describe('what the documents say the purge and its promise depend on', () => {
     expect(readme).toContain('`sweep failed: Error`')
   })
 })
+
+describe('what the documents say a tick costs questions', () => {
+  // A tick spends the shared daily allowance whoever is watching, and counts none of it. The slot's
+  // arithmetic is right, and it is not the whole of what a question can be refused by.
+  it('does not call questions safe by the slot alone, and names the daily allowance', async () => {
+    const adr = await readFile(join(rootDir, 'docs/adr/0012-pipeline-orchestration.md'), 'utf8')
+    expect(adr).not.toContain('Questions share the Groq slot, and are not starved by this.')
+    expect(adr).toContain('the slot does not starve them, and the daily allowance can')
+    expect(adr).toContain('about 44 chunks')
+    expect(adr).toContain('**No daily budget for a tick.**')
+  })
+
+  it('agrees on how many one-hour meetings that allowance is, in every ADR that says', async () => {
+    const [orchestration, embeddings] = await Promise.all([
+      readFile(join(rootDir, 'docs/adr/0012-pipeline-orchestration.md'), 'utf8'),
+      readFile(join(rootDir, 'docs/adr/0014-workers-ai-embeddings.md'), 'utf8'),
+    ])
+    for (const adr of [orchestration, embeddings]) {
+      expect(adr).not.toMatch(/40(–| to )45/)
+    }
+    expect(orchestration).toContain('Groq\'s 200K TPD (about 5 one-hour meetings,')
+  })
+})

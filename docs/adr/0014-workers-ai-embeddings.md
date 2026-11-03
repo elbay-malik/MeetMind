@@ -153,7 +153,7 @@ could not hold it (ADR-0006).
 The Free plan has 10,000 neurons a day, resetting at 00:00 UTC, after which operations fail.
 That is documented, as is 1,075 neurons per million tokens, which the replies match (29.12
 neurons for 27,100 tokens). That makes about 9.3 million tokens a day: some 370 one-hour
-meetings by the estimate above, far past Groq's 40 to 45 (ADR-0012), or hundreds of thousands
+meetings by the estimate above, far past Groq's about 5 (ADR-0012), or hundreds of thousands
 of short questions. Groq should bind first, but anyone with a link can spend this.
 
 - **What counts.** A 429, codes 3036 and 4006, or the words "daily free allocation", on any
