@@ -88,16 +88,34 @@ const ROUTES: Route[] = [
   { name: 'DELETE /', url: id => `/api/meetings/${id}`, init: { method: 'DELETE', headers: { authorization: `Bearer ${ADMIN_TOKEN}` } } },
 ]
 
-const PAGES = (id: string) => [`/meetings/${id}`, `/meetings/${id}/progress`, `/meetings/${id}/summary`]
+/** `readsRow`: the page has the meeting in it, which the summary's placeholder does not yet. */
+const PAGES = (id: string) => [
+  { path: `/meetings/${id}`, readsRow: true },
+  { path: `/meetings/${id}/progress`, readsRow: true },
+  { path: `/meetings/${id}/summary`, readsRow: false },
+]
+
+const TITLE = 'Raw errors'
+
+/**
+ * That a page came out and had the row to leak, or being clean of the text says nothing. Not by
+ * `__NUXT_DATA__`, which an error page has too, nor by the status alone: a row that cannot be
+ * read can still render a 200 with nothing of the meeting in it.
+ */
+function expectRendered(where: string, page: { readsRow: boolean }, status: number, html: string): void {
+  expect(status, where).toBe(200)
+  // The server's payload travels in the page, so what is read here is both.
+  expect(html, where).toContain('__NUXT_DATA__')
+  if (page.readsRow) expect(html, where).toContain(TITLE)
+}
 
 /** Every page and every route, each with its headers and body held to {@link FORBIDDEN}. What each answered, by route. */
 async function sweep(id: string, where: string): Promise<Record<string, number>> {
-  for (const path of PAGES(id)) {
-    const res = await fetch(path, { headers: { accept: 'text/html' } })
+  for (const page of PAGES(id)) {
+    const res = await fetch(page.path, { headers: { accept: 'text/html' } })
     const html = await res.text()
-    // The server's payload travels in the page, so this reads both, and it has to be there to be read.
-    expect(html, `${where}: ${path}`).toContain('__NUXT_DATA__')
-    expectClean(`${where}: ${path}`, html)
+    expectRendered(`${where}: ${page.path}`, page, res.status, html)
+    expectClean(`${where}: ${page.path}`, html)
   }
   const answered: Record<string, number> = {}
   for (const route of ROUTES) {
@@ -114,7 +132,7 @@ async function register(bytes: Uint8Array): Promise<CreateMeetingResponse> {
   const created = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
     headers: inviteHeaders,
-    body: { title: 'Raw errors', sourceFileName: 'meeting.mp4', sourceBytes: 1_000_000, sourceMime: 'video/mp4', durationSec: 10, audioBytes: bytes.byteLength },
+    body: { title: TITLE, sourceFileName: 'meeting.mp4', sourceBytes: 1_000_000, sourceMime: 'video/mp4', durationSec: 10, audioBytes: bytes.byteLength },
   })
   expect(created.meeting).not.toHaveProperty('errorMessage')
   return created
@@ -174,6 +192,37 @@ describe('the test itself', () => {
   it('looks for what really goes wrong: the text a stub fails with holds every one of the words', () => {
     for (const word of FORBIDDEN.slice(0, 6)) expect(INJECTED_FAILURE_TEXT).toContain(word)
     expect(() => expectClean('this', INJECTED_FAILURE_TEXT)).toThrow()
+  })
+
+  describe('takes only a page that rendered, with its row, for one it can hold clean', () => {
+    const read = async (path: string) => {
+      const res = await fetch(path, { headers: { accept: 'text/html' } })
+      return { status: res.status, html: await res.text() }
+    }
+
+    it.each(PAGES('00000000-0000-4000-8000-000000000000').filter(page => page.readsRow))('not the error page of $path, which has the payload too', async (page) => {
+      const { status, html } = await read(page.path)
+      expect(status).toBe(404)
+      expect(html).toContain('__NUXT_DATA__')
+      expect(() => expectRendered(page.path, page, status, html)).toThrow()
+    })
+
+    it('not a page whose row could not be read', async () => {
+      const { meeting } = await register(audio)
+      await db.setItem(`meetings/${meeting.id}`, 'not a row')
+      for (const page of PAGES(meeting.id).filter(page => page.readsRow)) {
+        const { status, html } = await read(page.path)
+        expect(() => expectRendered(page.path, page, status, html)).toThrow()
+      }
+    })
+
+    it('and one that did', async () => {
+      const { meeting } = await register(audio)
+      for (const page of PAGES(meeting.id)) {
+        const { status, html } = await read(page.path)
+        expectRendered(page.path, page, status, html)
+      }
+    })
   })
 })
 
