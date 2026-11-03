@@ -480,6 +480,25 @@ describe('the Questions card', () => {
     })
   })
 
+  describe('a park from the account block, which lands near midnight and not on it', () => {
+    it.each<[string]>([
+      ['2026-11-04T00:00:00.183Z'],
+      ['2026-11-03T23:59:59.997Z'],
+      ['2026-11-04T00:00:00.037214+00:00'],
+      ['2026-11-04T00:00:30.000Z'],
+    ])('reads %s as the daily limit', (iso) => {
+      expect(questionsOf(state({ stop: 'finished' }, parkedUntil(iso)), NOW).text).toMatch(/free daily limit/)
+    })
+
+    it.each<[string]>([
+      ['2026-11-04T00:15:00.000Z'],
+      ['2026-11-03T23:45:00.000Z'],
+      ['2026-11-03T12:15:00.000Z'],
+    ])('reads %s as a run that kept stopping', (iso) => {
+      expect(questionsOf(state({ stop: 'finished' }, parkedUntil(iso)), NOW).text).toMatch(/kept stopping/)
+    })
+  })
+
   it('says a held index is the work of something else, and offers the one thing that replaces it', () => {
     const said = questionsOf(state({ stop: 'finished' }, HELD), NOW)
     expect(said.text).toMatch(/another embedding model or an older transcript/)
