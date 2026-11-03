@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 const rootDir = fileURLToPath(new URL('../..', import.meta.url))
 
@@ -11,6 +11,21 @@ describe('config hygiene', () => {
   it('leaves DevTools off', async () => {
     const config = await readFile(`${rootDir}nuxt.config.ts`, 'utf8')
     expect(config).toMatch(/^\s*devtools: \{ enabled: false \},$/m)
+  })
+
+  // Nitro renders these into a Worker build's _headers, which is all a static asset gets
+  // there. scripts/verify-worker-streams.mjs reads that file and asks workerd for an asset.
+  it('asks for nosniff and a frame block on everything, beside the crawler and referrer headers', async () => {
+    vi.stubGlobal('defineNuxtConfig', (config: unknown) => config)
+    const { default: config } = await import('../../nuxt.config') as unknown as { default: { routeRules: Record<string, { headers?: Record<string, string> }> } }
+    vi.unstubAllGlobals()
+    expect(config.routeRules['/**']!.headers).toEqual({
+      'X-Robots-Tag': 'noindex, nofollow',
+      'Referrer-Policy': 'same-origin',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Content-Security-Policy': 'frame-ancestors \'none\'',
+    })
   })
 
   // The check walks its list. A count typed beside that list was wrong for a while

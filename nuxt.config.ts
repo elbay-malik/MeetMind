@@ -113,7 +113,19 @@ export default defineNuxtConfig({
     //
     // Referrer-Policy: a meeting's URL is the capability to read it (ADR-0013),
     // so it must not reach a third party in a Referer header.
-    '/**': { headers: { 'X-Robots-Tag': 'noindex, nofollow', 'Referrer-Policy': 'same-origin' } },
+    //
+    // Nothing here is meant to be framed or sniffed: X-Frame-Options and frame-ancestors say the
+    // first to old and new browsers, and this CSP says nothing else. A Worker's static assets
+    // never reach this code, and Nitro writes these into the build's _headers for them.
+    '/**': {
+      headers: {
+        'X-Robots-Tag': 'noindex, nofollow',
+        'Referrer-Policy': 'same-origin',
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'DENY',
+        'Content-Security-Policy': 'frame-ancestors \'none\'',
+      },
+    },
     '/spike/**': { ssr: false },
   },
   compatibilityDate: '2025-07-15',
