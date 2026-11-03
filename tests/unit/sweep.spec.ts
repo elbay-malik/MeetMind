@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { serialize } from '../../server/utils/db/local'
 import { readyWindowCount } from '../../server/utils/db/windows'
 import { deleteMeeting } from '../../server/utils/meeting-deletion'
 import { advancePipeline, type PipelineDeps } from '../../server/utils/pipeline/advance'
@@ -503,14 +504,29 @@ describe('beside an open tab', () => {
     expect(new Set(providers.sent.windows).size).toBe(providers.sent.windows.length)
   })
 
-  it('reads a ledger only in its own queue, so a claim being written is never read half way', async () => {
-    const providers = scriptedProviders(lines(1))
-    const id = await uploadedMeeting()
-    const deps = depsWith(providers)
-    const { pipeline } = deps
-    const writes = Array.from({ length: 40 }, () => pipeline.claimStep(id, 'transcription', { status: 'uploaded', leaseMs: 1 }))
-    const reads = Array.from({ length: 40 }, () => pipeline.nextForSweep({ model: 'model-a', excludeId: null, limitError: 'x' }))
-    await expect(Promise.all([...writes, ...reads])).resolves.toBeDefined()
+  // A file being written can be read half way: seen once, as a ledger with no runs in it, by a
+  // tick racing a claim. So each of these has to wait its turn in the meeting's own queue.
+  it.each<[string, (deps: PipelineDeps) => Promise<unknown>]>([
+    ['what a tick chooses', deps => deps.pipeline.nextForSweep({ model: 'model-a', excludeId: null, limitError: 'x' })],
+    ['what has expired', deps => deps.pipeline.nextExpired({ days: 1, excludeId: randomUUID() })],
+  ])('reads a meeting\'s files for %s only in that meeting\'s queue', async (_name, read) => {
+    const id = await transcribedMeeting(segmentsOf(lines(1)), 'ready')
+    const row = await db().getItem<Record<string, unknown>>(`meetings/${id}`)
+    await db().setItem(`meetings/${id}`, { ...row, createdAt: new Date(NOON - 30 * 86_400_000).toISOString() })
+
+    let release = () => {}
+    const writing = serialize(id, () => new Promise<void>((resolve) => {
+      release = resolve
+    }))
+    let answered = false
+    const reading = read(depsWith(scriptedProviders([]))).then(() => {
+      answered = true
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(answered, 'it read while a write was under way').toBe(false)
+    release()
+    await Promise.all([writing, reading])
+    expect(answered).toBe(true)
   })
 
   it('loses a claim quietly: the tab has the step, and the tick neither sends nor throws', async () => {
