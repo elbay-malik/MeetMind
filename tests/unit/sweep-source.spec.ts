@@ -83,6 +83,16 @@ describe('the retention purge', () => {
   })
 })
 
+describe('what the upload page promises', () => {
+  it('comes from the answer the tick acts on, and only on a Worker, since a test cannot render a Worker here', async () => {
+    const facts = await readFile(join(rootDir, 'app/composables/useDeploymentFacts.ts'), 'utf8')
+    expect(facts).toContain('const sweeps = event?.context.cloudflare !== undefined')
+    expect(facts).toContain('purgeDays: sweeps ? purgeDaysInEffect(config.retentionPurgeDays, config.public.demoMeetingId) : null')
+    const tick = (await sources('server'))['server/utils/pipeline/sweep.ts']!
+    expect(tick).toContain('const purgeDays = purgeDaysInEffect(config.retentionPurgeDays, demoMeetingId)')
+  })
+})
+
 describe('the cron', () => {
   const wrangler = async () => {
     const text = await readFile(join(rootDir, 'wrangler.jsonc'), 'utf8')
