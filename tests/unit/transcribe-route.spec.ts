@@ -37,8 +37,12 @@ afterAll(() => vi.unstubAllGlobals())
 describe('POST /api/meetings/:id/transcribe, when the step failed the run', () => {
   it('passes on how long the provider asked to be left alone', async () => {
     headers.clear()
-    advance.mockResolvedValueOnce({ kind: 'failed', statusCode: 429, message: 'quota', retryAt: new Date(Date.now() + 90_000) })
-    await expect(handler({})).rejects.toMatchObject({ statusCode: 429, message: 'quota' })
+    advance.mockResolvedValueOnce({ kind: 'failed', statusCode: 429, message: 'org_123 is over its tier', retryAt: new Date(Date.now() + 90_000) })
+    await expect(handler({})).rejects.toMatchObject({
+      statusCode: 429,
+      statusMessage: 'Transcription failed',
+      message: 'Transcription is being rate limited for now. Try again later.',
+    })
     const seconds = headers.get('retry-after') as number
     expect(seconds).toBeGreaterThan(85)
     expect(seconds).toBeLessThanOrEqual(90)

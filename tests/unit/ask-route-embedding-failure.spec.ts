@@ -1,5 +1,11 @@
+import { inspect } from 'node:util'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fixedSentence } from '../../server/utils/public-errors'
+import { AnswerError, AnswerSlotBusyError } from '../../server/utils/qa/answerer'
+import { QuestionError } from '../../server/utils/qa/ask'
 import { EmbeddingError } from '../../server/utils/qa/embedder'
+import { createGroqAnswerer } from '../../server/utils/qa/groq-answerer'
+import { createWorkersAiEmbedder } from '../../server/utils/qa/workers-ai'
 
 /**
  * What the route does with an embedding failure the e2e specs cannot cause: their
@@ -48,5 +54,86 @@ describe('POST /api/meetings/:id/ask, when embedding the question fails', () => 
     askMeeting.mockRejectedValueOnce(new EmbeddingError('limit', 429, false, new Date(Date.now() - 5_000)))
     await expect(handler({})).rejects.toMatchObject({ statusCode: 429, data: { retryAfterSec: 1 } })
     expect(headers.get('retry-after')).toBe(1)
+  })
+})
+
+describe('POST /api/meetings/:id/ask, of what a provider said', () => {
+  const MEETING = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  beforeEach(() => warn.mockClear())
+  afterAll(() => warn.mockRestore())
+
+  it.each([
+    ['the answerer', new AnswerError('Answering service refused the request (HTTP 400): {"organization":"org_123"}', 502, false)],
+    ['the embedder', new EmbeddingError('Embedding service refused the request (HTTP 400, code 8007): org_123', 502, false)],
+  ])('tells a caller a fixed sentence of %s, and keeps the words in the log, with the meeting', async (_name, failure) => {
+    askMeeting.mockRejectedValueOnce(failure)
+    const refused = await handler({}).catch((err: unknown) => err) as { statusCode: number, statusMessage: string, message: string }
+    expect(refused).toMatchObject({ statusCode: 502, statusMessage: 'Answering failed', message: fixedSentence('answering', 502) })
+    expect(refused.message).not.toContain('org_123')
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn.mock.lastCall![0]).toContain(MEETING)
+    expect(warn.mock.lastCall![1]).toBe(failure)
+  })
+
+  it('says the fixed sentence of a 429, and when to come back', async () => {
+    const retryAt = new Date(Date.now() + 30_000)
+    askMeeting.mockRejectedValueOnce(new AnswerError('org_123 is over its tier', 429, false, retryAt))
+    await expect(handler({})).rejects.toMatchObject({
+      statusCode: 429,
+      message: fixedSentence('answering', 429),
+      data: { retryAt: retryAt.toISOString(), retryAfterSec: expect.any(Number) },
+    })
+    expect(headers.get('retry-after')).toBeGreaterThan(0)
+  })
+
+  it('passes on a refusal of the app\'s own, and does not log what nothing went wrong to cause', async () => {
+    askMeeting.mockRejectedValueOnce(new QuestionError('Ask a question that contains words.', 400))
+    await expect(handler({})).rejects.toMatchObject({ statusCode: 400, statusMessage: 'Cannot answer', message: 'Ask a question that contains words.' })
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('does not log a question that only has to wait its turn: asking is open to anyone', async () => {
+    askMeeting.mockRejectedValueOnce(new AnswerSlotBusyError(new Date(Date.now() + 30_000)))
+    await expect(handler({})).rejects.toMatchObject({ statusCode: 429, message: expect.stringMatching(/busy/) })
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('stops a question of its own too, if it ever holds more than the sentence it should', async () => {
+    askMeeting.mockRejectedValueOnce(new QuestionError('Ask a question that contains words. org_123', 400))
+    await expect(handler({})).rejects.toMatchObject({ statusCode: 400, message: fixedSentence('answering', 400) })
+  })
+
+  it('leaves anything else for Nitro, which tells a caller nothing of it', async () => {
+    const failure = new Error('Supabase read failed (PGRST116)')
+    askMeeting.mockRejectedValueOnce(failure)
+    await expect(handler({})).rejects.toBe(failure)
+  })
+})
+
+/**
+ * What the log gets is the error object, which the real drivers build. A failure of either
+ * is built from the reply's status and body, and neither carries the request it was for.
+ */
+describe('the errors logged', () => {
+  const API_KEY = 'gsk_secret_key_0123456789'
+  const ACCOUNT = 'account0123456789'
+  const API_TOKEN = 'cf_secret_token_0123456789'
+
+  afterAll(() => vi.unstubAllGlobals())
+
+  it.each([
+    ['the answerer', () => createGroqAnswerer({
+      apiKey: API_KEY,
+      pacer: { wait: async () => {}, rateLimited: async () => {} },
+    }).answer({ question: 'q', segments: [] })],
+    ['the embedder', () => createWorkersAiEmbedder({ accountId: ACCOUNT, apiToken: API_TOKEN, maxAttempts: 1 }).embedQuery('q')],
+  ])('of %s carry no credential and no header', async (_name, fail) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ errors: [{ code: 1, message: 'said no' }] }), { status: 400 })))
+    const failure = await fail().catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(Error)
+    const printed = inspect(failure, { depth: null, showHidden: true })
+    for (const secret of [API_KEY, ACCOUNT, API_TOKEN, 'authorization', 'Bearer']) expect(printed).not.toContain(secret)
+    expect(Object.keys(failure as object)).toEqual(expect.not.arrayContaining(['headers', 'request', 'config']))
   })
 })

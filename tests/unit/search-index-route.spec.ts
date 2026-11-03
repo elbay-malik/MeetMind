@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DAILY_LIMIT_MESSAGE, EmbeddingInputTooLongError } from '../../server/utils/qa/embedder'
 import type { IndexingDeps, IndexingOutcome } from '../../server/utils/qa/steps'
 
 /**
@@ -39,6 +40,8 @@ beforeAll(async () => {
 beforeEach(() => headers.clear())
 afterAll(() => vi.unstubAllGlobals())
 
+const TOO_LONG = new EmbeddingInputTooLongError(9_000).message
+
 const INDEX = { state: 'ready', windowCount: 3, indexedCount: 3, model: 'm' } as const
 
 describe('POST /api/meetings/:id/search-index', () => {
@@ -67,9 +70,9 @@ describe('POST /api/meetings/:id/search-index', () => {
 
   // The 202 itself is held to in tests/e2e/search-index-api.spec.ts.
   it('answers with progress and nothing to wait for when the next step can go at once', async () => {
-    advance.mockResolvedValueOnce({ kind: 'progress', progress: { done: 16, total: null, lastError: null }, next: 'continue', retryAt: null })
+    advance.mockResolvedValueOnce({ kind: 'progress', progress: { done: 16, total: null, lastError: 'a raw reason' }, next: 'continue', retryAt: null })
     await expect(handler({})).resolves.toEqual({
-      progress: { done: 16, total: null, lastError: null }, next: 'continue', retryAt: null, retryAfterMs: null,
+      progress: { done: 16, total: null }, next: 'continue', retryAt: null, retryAfterMs: null,
     })
     expect(headers.has('retry-after')).toBe(false)
   })
@@ -86,20 +89,31 @@ describe('POST /api/meetings/:id/search-index', () => {
 
   it('says a stopped run resumes, and when, in the header and the body', async () => {
     const retryAt = new Date(Date.now() + 3_600_000)
-    advance.mockResolvedValueOnce({ kind: 'failed', statusCode: 429, message: 'The limit.', retryAt, resumes: true })
+    advance.mockResolvedValueOnce({ kind: 'failed', statusCode: 429, message: DAILY_LIMIT_MESSAGE, retryAt, resumes: true })
     await expect(handler({})).rejects.toMatchObject({
       statusCode: 429,
       statusMessage: 'Indexing failed',
-      message: 'The limit. Passages indexed so far are kept; indexing again resumes from there.',
+      message: `${DAILY_LIMIT_MESSAGE} Passages indexed so far are kept; indexing again resumes from there.`,
       data: { retryAt: retryAt.toISOString(), retryAfterSec: expect.any(Number) },
     })
     expect(headers.get('retry-after')).toBeGreaterThan(3_500)
   })
 
+  it('says a fixed sentence for what it does not know, and still that it resumes', async () => {
+    const retryAt = new Date(Date.now() + 3_600_000)
+    advance.mockResolvedValueOnce({ kind: 'failed', statusCode: 429, message: 'org_123 is over its tier', retryAt, resumes: true })
+    await expect(handler({})).rejects.toMatchObject({
+      statusCode: 429,
+      statusMessage: 'Indexing failed',
+      message: 'Indexing is being rate limited for now. Try again later. Passages indexed so far are kept; indexing again resumes from there.',
+      data: { retryAt: retryAt.toISOString() },
+    })
+  })
+
   it('does not promise anything of a failure trying again cannot help', async () => {
-    advance.mockResolvedValueOnce({ kind: 'failed', statusCode: 422, message: 'Too long.', retryAt: null, resumes: false })
+    advance.mockResolvedValueOnce({ kind: 'failed', statusCode: 422, message: TOO_LONG, retryAt: null, resumes: false })
     const refused = await handler({}).catch((err: unknown) => err) as { statusCode: number, message: string, data: unknown }
-    expect(refused).toMatchObject({ statusCode: 422, message: 'Too long.' })
+    expect(refused).toMatchObject({ statusCode: 422, message: TOO_LONG })
     expect(refused.data).toBeUndefined()
     expect(headers.has('retry-after')).toBe(false)
   })

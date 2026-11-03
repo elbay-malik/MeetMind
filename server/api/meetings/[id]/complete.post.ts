@@ -1,8 +1,9 @@
-import type { Meeting } from '#shared/types/meeting'
+import type { PublicMeeting } from '#shared/types/meeting'
 import { useAudioStore } from '../../../utils/storage'
 import { useMeetingRepository } from '../../../utils/db'
 import { refuseOnPublicDemo } from '../../../utils/demo-meeting'
 import { conflict, notFound, requireMeetingId } from '../../../utils/http'
+import { publicMessage, toPublicMeeting } from '../../../utils/public-errors'
 import { failMeetingUpload, inspectStoredAudio } from '../../../utils/verify-upload'
 
 /**
@@ -10,8 +11,11 @@ import { failMeetingUpload, inspectStoredAudio } from '../../../utils/verify-upl
  * the declared size, then mark the meeting `uploaded`. A mismatched or
  * oversized object is deleted and the meeting marked `failed` — the server
  * never trusts the client's word for what reached the bucket.
+ *
+ * A refusal says why, and nothing of how the delete went: the stored message keeps that,
+ * and when it failed it can name the object's key.
  */
-export default defineEventHandler(async (event): Promise<{ meeting: Meeting }> => {
+export default defineEventHandler(async (event): Promise<{ meeting: PublicMeeting }> => {
   const id = requireMeetingId(event)
   refuseOnPublicDemo(event, id)
   const repo = useMeetingRepository(event)
@@ -19,7 +23,7 @@ export default defineEventHandler(async (event): Promise<{ meeting: Meeting }> =
 
   const meeting = await repo.get(id)
   if (!meeting) throw notFound('Meeting not found')
-  if (meeting.status === 'uploaded') return { meeting }
+  if (meeting.status === 'uploaded') return { meeting: toPublicMeeting(meeting) }
   if (meeting.status !== 'pending_upload') {
     throw conflict(`Meeting is ${meeting.status}; upload can no longer be completed`)
   }
@@ -28,7 +32,10 @@ export default defineEventHandler(async (event): Promise<{ meeting: Meeting }> =
   if (!object) throw conflict('Audio has not reached storage yet')
 
   const refusal = inspectStoredAudio(meeting, object)
-  if (refusal) throw conflict(await failMeetingUpload(store, repo, meeting, refusal))
+  if (refusal) {
+    await failMeetingUpload(store, repo, meeting, refusal)
+    throw conflict(publicMessage('upload', { message: refusal, statusCode: 409 }))
+  }
 
   // Claim-gated on the status this handler already checked above, rather than a
   // plain update: between that read and this write another caller can fail the
@@ -51,8 +58,8 @@ export default defineEventHandler(async (event): Promise<{ meeting: Meeting }> =
   if (!updated) {
     const current = await repo.get(id)
     if (!current) throw notFound('Meeting not found')
-    if (current.status === 'uploaded') return { meeting: current }
+    if (current.status === 'uploaded') return { meeting: toPublicMeeting(current) }
     throw conflict(`Meeting is ${current.status}; upload can no longer be completed`)
   }
-  return { meeting: updated }
+  return { meeting: toPublicMeeting(updated) }
 })

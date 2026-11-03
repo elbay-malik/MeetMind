@@ -2,6 +2,7 @@ import type { IndexingStepResponse, SearchIndexStatus } from '#shared/types/meet
 import { refuseOnPublicDemo } from '../../../utils/demo-meeting'
 import { conflict, notFound, requireMeetingId, retryLater } from '../../../utils/http'
 import { useIndexingStepDeps } from '../../../utils/pipeline/deps'
+import { publicMessage, withoutLastError } from '../../../utils/public-errors'
 import { advanceIndexing } from '../../../utils/qa/steps'
 
 /**
@@ -30,7 +31,7 @@ export default defineEventHandler(async (event): Promise<{ index: SearchIndexSta
       const retryAfterMs = outcome.retryAt ? Math.max(0, outcome.retryAt.getTime() - Date.now()) : null
       if (retryAfterMs !== null) setResponseHeader(event, 'retry-after', Math.ceil(retryAfterMs / 1000))
       return {
-        progress: outcome.progress,
+        progress: withoutLastError(outcome.progress),
         next: outcome.next,
         retryAt: outcome.retryAt?.toISOString() ?? null,
         retryAfterMs,
@@ -44,11 +45,13 @@ export default defineEventHandler(async (event): Promise<{ index: SearchIndexSta
         // already embedded is kept, so trying again later resumes. Not for a passage
         // over the limit, which stops the next run at the same place.
         message: outcome.resumes
-          ? `${outcome.message} Passages indexed so far are kept; indexing again resumes from there.`
-          : outcome.message,
+          ? `${publicMessage('indexing', outcome)} Passages indexed so far are kept; indexing again resumes from there.`
+          : publicMessage('indexing', outcome),
         data: outcome.retryAt ? retryLater(event, outcome.retryAt) : undefined,
       })
-    case 'refused':
-      throw outcome.statusCode === 404 ? notFound(outcome.message) : conflict(outcome.message)
+    case 'refused': {
+      const message = publicMessage('indexing', outcome)
+      throw outcome.statusCode === 404 ? notFound(message) : conflict(message)
+    }
   }
 })

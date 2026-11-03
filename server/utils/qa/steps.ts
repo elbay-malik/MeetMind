@@ -285,8 +285,9 @@ function stepsFor(meetingId: string, deps: IndexingDeps, now: () => number, opti
    */
   async function stepFailed(claimed: StepClaim, err: unknown): Promise<IndexingOutcome> {
     const failure = err instanceof EmbeddingError ? err : null
-    // A provider's message is written for visitors, with the credentials scrubbed. Our
-    // own errors are not, and a database's can name its tables, so those stay in the log.
+    // A provider's message is stored, with the credentials scrubbed, and goes no further
+    // than the route's allowlist. Our own errors are not stored, as a database's can name
+    // its tables, and those stay in the log.
     if (!failure) console.warn('[meetmind] an indexing step failed:', err)
     const message = failure ? failure.message : INTERNAL_FAILURE_MESSAGE
     try {

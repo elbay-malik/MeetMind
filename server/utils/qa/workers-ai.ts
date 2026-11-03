@@ -52,8 +52,8 @@ export function createWorkersAiEmbedder(options: WorkersAiEmbedderOptions): Embe
   const timeoutMs = options.timeoutMs ?? 30_000
   const maxAttempts = options.maxAttempts ?? 2
 
-  // These messages reach visitors, and the URL holds the account id. Whatever a
-  // failure echoes, neither credential goes out with it.
+  // These messages are stored and logged, and the URL holds the account id. Whatever a
+  // failure echoes, neither credential goes with it.
   const secrets = [options.apiToken, options.accountId].filter(Boolean)
   const scrub = (text: string) => secrets.reduce((clean, secret) => clean.replaceAll(secret, '[redacted]'), text)
 
