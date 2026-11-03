@@ -130,10 +130,10 @@ Checked against the code on 2026-11-02:
 | Nav and other links | Only the page's own id, and the configured demo. |
 | Sitemap, canonical, `og:url` | None exist. `robots.txt` and `X-Robots-Tag` already refuse crawlers. |
 | The 507 from the storage budget | Byte totals (SEC-25), no id. |
-| Error messages | R2 failures name the object key, which contains the id, and can reach the client (SEC-15). Only on routes already holding that id. |
+| Error messages | R2 failures name the object key, which contains the id. They are stored and logged, and since SEC-15 no route answers with them (ADR-0012's last addendum). |
 | Requests to Groq and Google | No id: the audio goes as `audio.ogg`, and prompts and embeddings carry transcript text only. |
 | Upload URLs | Contain the id, and are returned only to the caller who just created the meeting. Cloudflare sees them as it sees everything. |
-| Application logs | Startup driver notes and rate-limit warnings. R2 errors can include the key. Operator-only. |
+| Application logs | Startup driver notes and rate-limit warnings. R2 errors can include the key, and a question's provider failure names its meeting (SEC-15). Operator-only. |
 | Cross-origin `Referer` | Closed by decision 6. |
 
 ## Consequences
