@@ -126,6 +126,9 @@ const createdAt = computed(() => now.value
   ? new Date(meeting.value.createdAt).toLocaleString()
   : `${meeting.value.createdAt.slice(0, 16).replace('T', ' ')} UTC`)
 
+/** `look` is a wait with no time, on an upload that has to be confirmed elsewhere: no tab has work. */
+const someTabIsWorking = computed(() => !state.value.stop && state.value.pause !== 'look')
+
 const heading = ref<HTMLElement | null>(null)
 
 /**
@@ -259,13 +262,13 @@ function rebuild() {
             {{ state.stop === 'finished' ? 'Indexing can carry on' : 'You can try again' }} in {{ formatWait(retryAction.opensInMs) }}.
           </p>
           <p
-            v-if="state.role === 'watching' && !state.stop"
+            v-if="state.role === 'watching' && someTabIsWorking"
             class="text-sm text-muted"
           >
             Another tab of this browser is doing the work. This one only watches, and takes over if that tab closes.
           </p>
           <p
-            v-else-if="state.role === 'driving' && !state.stop"
+            v-else-if="state.role === 'driving' && someTabIsWorking"
             class="text-sm text-muted"
           >
             This page is doing the work, so keep it open. If you close it, nothing is lost: it carries on from the same place when you open it again.
