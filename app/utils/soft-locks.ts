@@ -126,12 +126,17 @@ export function softLocks(deps: SoftLockDeps): DriverLocks {
       for (;;) {
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
         if (await take(key)) break
+        // One wait at a time on the signal: a queue can last a day, on the same one.
         await new Promise<void>((resolve) => {
-          const timer = setTimer(resolve, SOFT_RETRY_MS)
-          signal?.addEventListener('abort', () => {
+          const aborted = () => {
             clearTimer(timer)
             resolve()
-          }, { once: true })
+          }
+          const timer = setTimer(() => {
+            signal?.removeEventListener('abort', aborted)
+            resolve()
+          }, SOFT_RETRY_MS)
+          signal?.addEventListener('abort', aborted, { once: true })
         })
       }
       if (signal?.aborted) {

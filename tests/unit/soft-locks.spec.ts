@@ -1,3 +1,4 @@
+import { getEventListeners } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SOFT_LEASE_MS, SOFT_RENEW_MS, SOFT_RETRY_MS, SOFT_SETTLE_MS, softLocks, type SoftLockDeps } from '../../app/utils/soft-locks'
 
@@ -42,6 +43,24 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+})
+
+describe('softLocks, waiting in the queue a long time', () => {
+  it('leaves one listener on the signal, however many times it has tried', async () => {
+    const storage = memory()
+    void tab(storage).request(NAME, { ifAvailable: true }, holder().callback)
+    await pass(SOFT_SETTLE_MS)
+    const queue = new AbortController()
+    const rejected = vi.fn()
+    tab(storage).request(NAME, { signal: queue.signal }, holder().callback).catch(rejected)
+
+    await pass(100 * SOFT_RETRY_MS)
+    expect(getEventListeners(queue.signal, 'abort').length).toBeLessThanOrEqual(1)
+
+    queue.abort()
+    await pass(0)
+    expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ name: 'AbortError' }))
+  })
 })
 
 describe('softLocks, taking a lock from a tab that has gone quiet', () => {
