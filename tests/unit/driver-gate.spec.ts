@@ -276,6 +276,84 @@ describe('in a scheduled invocation', () => {
       expect(warned).toHaveBeenCalledTimes(1)
       expect(JSON.stringify(warned.mock.calls)).not.toMatch(/value-of/)
     })
+
+    it('reads every setting for this invocation, not as the isolate loaded, before a Worker has them', async () => {
+      configure({ ...EVERY_SETTING, public: { demoMeetingId: '' } })
+      fetched.mockImplementationOnce(async () => new Response(JSON.stringify([{ meeting_id: null, busy: [] }]), { status: 200, headers: { 'content-type': 'application/json' } }))
+      useRuntimeConfig.mockClear()
+      await tick()
+      expect(useRuntimeConfig).toHaveBeenCalled()
+      for (const [event] of useRuntimeConfig.mock.calls) expect(event?.context?.cloudflare).toBeDefined()
+    })
+
+    it('drops what is logged on the way through a sweep, as a step logs a raw error', async () => {
+      configure({ ...EVERY_SETTING, public: { demoMeetingId: '' } })
+      fetched.mockImplementationOnce(async () => {
+        console.warn('raw error from a step')
+        return new Response(JSON.stringify([{ meeting_id: null, busy: [] }]), { status: 200, headers: { 'content-type': 'application/json' } })
+      })
+      await tick()
+      expect(fetched).toHaveBeenCalledTimes(1)
+      expect(warned).not.toHaveBeenCalled()
+    })
+
+    // The setting reaches the purge through here and nowhere else, and the purge cannot be undone.
+    describe('with the retention purge\'s setting', () => {
+      const DEMO = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+      let asked: Array<{ what: string, body: unknown }>
+
+      /** A database with nothing to move and nothing expired, and what it was asked. */
+      beforeEach(() => {
+        asked = []
+        fetched.mockImplementation((async (input: string | Request, init?: RequestInit) => {
+          const what = new URL(typeof input === 'string' ? input : input.url).pathname.split('/').pop()!
+          asked.push({ what, body: init?.body ? JSON.parse(String(init.body)) : null })
+          if (what === 'sweep_next_meeting') return json([{ meeting_id: null, busy: [] }])
+          if (what === 'next_expired_meeting') return json(null)
+          if (what === 'meetings') return json([{ id: DEMO, status: 'ready', created_at: '2026-09-05T12:00:00.000Z', updated_at: '2026-09-05T12:00:00.000Z' }])
+          return new Response('not asked for', { status: 500 })
+        }) as unknown as () => Promise<Response>)
+      })
+      afterEach(() => {
+        fetched.mockReset()
+      })
+
+      const aTick = async (retentionPurgeDays: unknown, demoMeetingId: unknown = DEMO, times = 1) => {
+        configure({ ...EVERY_SETTING, retentionPurgeDays, public: { demoMeetingId } })
+        const fresh = await import('../../server/utils/pipeline/sweep')
+        for (let i = 0; i < times; i++) await fresh.runScheduledTick({ env: {}, context: {} })
+      }
+
+      it('at 30, asks for what is past those days, leaving out the demo', async () => {
+        await aTick('30')
+        expect(asked.map(request => request.what)).toEqual(['sweep_next_meeting', 'meetings', 'next_expired_meeting'])
+        expect(asked[2]!.body).toEqual({ p_days: 30, p_exclude: DEMO })
+        expect(warned).not.toHaveBeenCalled()
+      })
+
+      it.each<[string, unknown]>([['empty', ''], ['not there', undefined], ['0', 0], ['0 as text', '0']])('%s, looks for nothing to delete and says nothing', async (_name, setting) => {
+        await aTick(setting)
+        expect(asked.map(request => request.what)).toEqual(['sweep_next_meeting'])
+        expect(warned).not.toHaveBeenCalled()
+      })
+
+      it.each<[string, unknown]>([['a word', 'thirty'], ['a fraction', '30.5'], ['a number with a unit', '30d'], ['negative', '-1'], ['true', true]])('%s, looks for nothing to delete, and says so once, without the value', async (_name, setting) => {
+        await aTick(setting, DEMO, 3)
+        expect(asked.map(request => request.what)).toEqual(['sweep_next_meeting', 'sweep_next_meeting', 'sweep_next_meeting'])
+        expect(warned).toHaveBeenCalledTimes(1)
+        const line = String(warned.mock.calls[0]![0])
+        expect(line).toContain('NUXT_RETENTION_PURGE_DAYS is not a positive whole number')
+        expect(line).not.toContain(String(setting))
+      })
+
+      it('at 30 with no demo to leave out, looks for nothing to delete, and says why', async () => {
+        await aTick('30', '')
+        expect(asked.map(request => request.what)).toEqual(['sweep_next_meeting'])
+        expect(warned).toHaveBeenCalledTimes(1)
+        expect(String(warned.mock.calls[0]![0])).toContain('NUXT_PUBLIC_DEMO_MEETING_ID is not a meeting id')
+      })
+    })
   })
 })
 
