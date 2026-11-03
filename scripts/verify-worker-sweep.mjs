@@ -18,6 +18,9 @@
 // sending what would go to a provider's host to the fakes here: that is `fetch` on those hosts
 // and nothing else, so the build runs as it is. Local wrangler runs no cron by itself, so each
 // tick is /cdn-cgi/local/scheduled, which a deployed Worker does not have.
+//
+// Never run `wrangler dev` at the repo root on a Worker build. Nothing stops it there now the wasm
+// is gone from the build, and it reads the real .env, with the real database and quota behind it.
 import { spawn } from 'node:child_process'
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'

@@ -1,14 +1,24 @@
 {
-  // Cloudflare Workers config for the Phase 13 target. Added during the
-  // measurement spike that precedes Phase 9 — see docs/adr/0009-*.
+  // The deployment: MeetMind on the Workers free plan, at meetmind.elbaymalik.com. README's
+  // "Deploying the Worker" has the steps, and `pnpm deploy:worker` is the one way to run this,
+  // since it builds for Workers first and refuses a build that is not. ADR-0009 measured what fits.
   //
-  // NOT yet a deployment: nothing here has been published. Its job right now
-  // is to let `wrangler dev` run the real workerd runtime locally so CPU time
-  // and subrequest counts can be measured against the free plan's 10ms and 50
-  // limits, which is what decides Phase 9's orchestration primitive.
+  // Do not run `wrangler dev` at the repo root on a Worker build. It reads the real .env, and so
+  // writes to the real database and spends real quota. The scripts/verify-worker-*.mjs run it
+  // from a temporary copy with fakes, which is the way to see this under workerd.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "meetmind",
   "main": ".output/server/index.mjs",
+
+  // A custom domain on the account's one zone, because a WAF rate rule applies only to a zone
+  // (SEC-07): a flood would otherwise spend the 100,000 requests a day of every Worker on the
+  // account. Both of the other public hostnames are off, as neither has that rule. Wrangler
+  // leaves preview_urls as it was if the key is left out.
+  "routes": [
+    { "pattern": "meetmind.elbaymalik.com", "custom_domain": true }
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
 
   // nodejs_compat is REQUIRED, not optional: the cloudflare_module build warns
   // "Node.js compatibility is not enabled" without it, because every
@@ -32,7 +42,7 @@
   },
 
   "observability": {
-    // CPU time per invocation is the number this spike exists to get.
+    // CPU time per invocation, against the free plan's 10 ms, which only the edge can say.
     "enabled": true
   }
 }
