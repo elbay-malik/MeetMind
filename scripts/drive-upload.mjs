@@ -174,6 +174,10 @@ async function checkASecondTab(audio) {
   const firstLog = requestsOf(first)
   await first.goto(url)
   await waitUntil(() => firstLog.count(ADVANCE) === 1, 10_000, 'the first tab did not start driving by itself')
+  // A Node server has no cron, so closing this page has to be said to stop the work.
+  await first.getByText('This page is doing the work').waitFor({ timeout: 10_000 })
+  const footer = await first.getByText('This page is doing the work').innerText()
+  if (!footer.includes('when you open it again') || footer.includes('every 5 minutes')) fail(`what closing the page does, on a server with no cron: ${footer}`)
   const heldLocks = await first.evaluate(async () => (await navigator.locks.query()).held.map(lock => lock.name))
   if (!heldLocks.includes(`meeting:${id}`)) fail(`the driving tab holds no lock named for the meeting: ${heldLocks}`)
 
