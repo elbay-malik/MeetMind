@@ -46,6 +46,7 @@ async function copyLink() {
     >
       This is the public demo meeting. Anyone can open it from the home page, read the
       transcript and summary, play the audio and see the original file's name, size and type.
+      <InviteContact />
     </p>
     <p
       v-else

@@ -67,6 +67,7 @@ describe('the home page, before any code', () => {
   it('says uploading is invite-only and renders no way to start on a recording', async () => {
     const html = (await (await fetch('/')).text()).replace(/\s+/g, ' ')
     expect(html).toContain('Uploading is invite-only')
+    expect(html).toContain('mailto:elbay.malik@gmail.com')
     expect(html).not.toContain('type="file"')
   })
 
