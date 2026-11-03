@@ -323,4 +323,29 @@ describe('the page that drives it, as the server renders it', () => {
     expect(html).toMatch(words)
     expect(html).not.toContain(failure.errorMessage!)
   })
+
+  // A Node server has no cron, so it must not say it does, and nothing here moves a meeting by itself.
+  describe('with no cron, as on any server but a Worker', () => {
+    it('says only an open page moves a meeting, in what the server renders and hands to the page', async () => {
+      const meeting = await uploadedMeeting()
+      const html = await (await fetch(`/meetings/${meeting.id}`, { headers: { accept: 'text/html' } })).text()
+      expect(html).toContain('Open Pipeline and transcription starts by itself')
+      expect(html).not.toContain('every 5 minutes')
+      expect(html).toContain('deployment-facts')
+    })
+
+    it('never runs a tick: a meeting left alone stays where it is, and no rotation is stored', async () => {
+      const meeting = await uploadedMeeting()
+      await new Promise(resolve => setTimeout(resolve, 500))
+      expect((await db.getItem<Meeting>(`meetings/${meeting.id}`))!.status).toBe('uploaded')
+      expect(await db.getItem('sweep/state')).toBeNull()
+    })
+
+    it.each(['/__scheduled', '/_nitro/tasks', '/_nitro/tasks/sweep', '/api/sweep', '/api/cron'])('has no route at %s that could run one', async (path) => {
+      for (const method of ['GET', 'POST']) {
+        expect((await fetch(path, { method })).status, method).toBe(404)
+      }
+      expect(await db.getItem('sweep/state')).toBeNull()
+    })
+  })
 })

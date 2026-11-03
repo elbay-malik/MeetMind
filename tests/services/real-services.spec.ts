@@ -323,6 +323,27 @@ describe.skipIf(!has('NUXT_SUPABASE_URL', 'NUXT_SUPABASE_SERVICE_KEY'))('Supabas
     }
   })
 
+  // Cannot pass until 20261103180000_sweeper.sql is applied. Takes no step, and moves only the
+  // sweeper's rotation, which is what a tick does anyway.
+  it('answers the sweeper in one row over the real RPC, and a tick with nothing to do is a write', async () => {
+    const { createSupabasePipelineRepository } = await import('../../server/utils/db/pipeline-supabase')
+    const pipeline = createSupabasePipelineRepository({
+      url: process.env.NUXT_SUPABASE_URL!,
+      serviceKey: process.env.NUXT_SUPABASE_SERVICE_KEY!,
+    })
+    const client = await db()
+    const before = await client.from('sweep_state').select('last_tick_at').single()
+    expect(before.error, 'is the sweeper migration applied?').toBeNull()
+
+    const choice = await pipeline.nextForSweep({ model: 'verify-model', excludeId: null, limitError: 'verify-limit' })
+    expect(choice.meetingId === null || typeof choice.meetingId === 'string').toBe(true)
+    expect(Array.isArray(choice.busy)).toBe(true)
+
+    const after = await client.from('sweep_state').select('last_tick_at').single()
+    expect(after.error).toBeNull()
+    expect(Date.parse(after.data!.last_tick_at)).toBeGreaterThan(Date.parse(before.data!.last_tick_at))
+  })
+
   it('gives concurrent callers distinct request slots one interval apart, over the real RPC', async () => {
     // The whole point of the slot ledger (ADR-0012): several isolates asking at
     // once must each get their own slot. Only the database can prove that --
