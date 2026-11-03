@@ -49,7 +49,9 @@ MeetMind is a portfolio demo with no accounts, so **a meeting's link is the only
 it**. The link holds a random UUID, and nothing on the server lists meetings or searches
 across them. "Your meetings" is a list kept only in the browser that uploaded them, so
 losing the link loses access, and anyone given the link can read the meeting. A leaked
-link can only be revoked by an operator deleting the meeting. Do not upload anything
+link can only be revoked by an operator deleting the meeting. Nothing deletes a meeting by
+itself, unless someone turns on the optional purge in
+[ADR-0017](docs/adr/0017-retention-purge.md), and then the upload page says so. Do not upload anything
 sensitive: audio goes to Groq and is stored at Cloudflare, transcripts and questions go to
 Groq and Cloudflare. See [ADR-0013](docs/adr/0013-private-meeting-links.md), including its
 limits.
@@ -90,6 +92,7 @@ that can write, and what this does not do.
 | [0014](docs/adr/0014-workers-ai-embeddings.md) | Embeddings from Cloudflare Workers AI's bge-m3 at 1024 dimensions, replacing a provider whose terms require a paid plan in the EEA: measured batch limits, and a plain message at the daily limit |
 | [0015](docs/adr/0015-invite-only-uploads.md) | Visitors get the demo meeting, which can only be read and asked; uploading takes an invite code, and a missing code closes it. A guard for every route that can write |
 | [0016](docs/adr/0016-real-services-or-nothing.md) | A deployment runs on the real services or answers 503: stubs and local stores need an explicit opt-in, and are refused beside real stored data and on a Worker |
+| [0017](docs/adr/0017-retention-purge.md) | An optional purge deletes a meeting past its retention days, one per cron tick, never the demo or anything a step is live on. Off until someone turns it on |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -264,6 +267,14 @@ Nothing has been deployed yet. When it is:
    says a tick ran, and a line in `wrangler tail` says a step did. A tick with nothing to do logs nothing.
 4. Ask for `/__scheduled` and `/cdn-cgi/local/scheduled` on the deployed host, which should run no
    tick, and check that `last_tick_at` does not move for it.
+
+**The retention purge is off, and nothing here turns it on.** Set `NUXT_RETENTION_PURGE_DAYS` with
+`wrangler secret put` to have a tick with nothing else to do delete one meeting past that many days:
+its row, transcript, summary, index and audio, for good, at most 288 a day. It needs
+`20261103190000_retention_purge.sql` applied, and `NUXT_PUBLIC_DEMO_MEETING_ID` naming a real
+meeting, or it does nothing and logs why. The upload page says how many days only while all
+that is so. Run the query in [ADR-0017](docs/adr/0017-retention-purge.md) first, to see what
+the first days would delete.
 
 The sweeper is also what keeps a free Supabase project from pausing: every tick writes one row,
 including one with nothing to do. Whether Supabase counts that as activity is not known yet, so

@@ -1,6 +1,6 @@
 # ADR-0012: Pipeline orchestration under the Workers free plan
 
-- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md), [ADR-0014](0014-workers-ai-embeddings.md) and [ADR-0015](0015-invite-only-uploads.md)
+- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md), [ADR-0014](0014-workers-ai-embeddings.md), [ADR-0015](0015-invite-only-uploads.md) and [ADR-0017](0017-retention-purge.md)
 - **Date:** 2026-10-25
 - **Supersedes:** PLAYBOOK Phase 9 point 2 and its "No queue … single streaming request" key decision. Amends ADR-0006 §2–3 (per-chunk retry, chunk-local attestation), ADR-0007 §5–7 (index claim, pacing), ADR-0011 (what blocks a delete) and the Phase 13 note that "streaming AI calls … don't accrue CPU time".
 
@@ -701,6 +701,8 @@ Every 5 minutes a Cron Trigger takes one step of one meeting, with no tab open, 
 - **An index stops at its first failure,** which a transient 5xx can be. The cost is a meeting with no questions until someone opens its page, where it carries on. Allowing its second attempt needs telling that from a stop, and the run holds nothing that does; a flag on the cursor would.
 - **A tick does one thing,** so no retry of anything in the same tick, and the one chance per 5 minutes is the meeting's, whichever it is. With a backlog of 20 meetings each waits 100 minutes for its next step. Raising the rate is a change to `wrangler.jsonc` and the page's words, at more of Groq's minute and more of the free 100,000 requests.
 - **The 100 meetings looked at** are a constant in the SQL and on the local driver. Past them a meeting needs a tab.
+
+**The retention purge** ([ADR-0017](0017-retention-purge.md)) takes a tick that has no step, if someone has turned it on, which nobody has.
 
 **Not done, or unproven until Phase 13:**
 - **The acceptance itself.**
