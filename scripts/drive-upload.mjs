@@ -75,6 +75,16 @@ function failOnPageErrors(page) {
 }
 
 /**
+ * Every click a page hears from when it loads, real or scripted. "No click" is then what was
+ * heard rather than what this script meant to do: a page that needed one, and a script that
+ * gave it, would otherwise pass as a page that drives itself.
+ */
+const countClicks = context => context.addInitScript(() => {
+  window.clicksHeard = 0
+  window.addEventListener('click', () => window.clicksHeard++, true)
+})
+
+/**
  * Holds every `POST .../advance` a browser context sends, until told otherwise, so a test can
  * look at a meeting between its steps however fast the stubs are. Holds nothing back from the
  * server's own answers: what is let through goes to the real route.
@@ -142,6 +152,8 @@ const pipelineOf = async (id, base = baseURL) => (await fetch(`${base}/api/meeti
 async function expectFinished(page, id, tabName) {
   await liveRegion(page).getByText('Finished. This meeting can be read and asked questions.').waitFor({ timeout: 60_000 })
     .catch(() => fail(`${tabName} never finished: the page may need a click`))
+  const clicks = await page.evaluate(() => window.clicksHeard)
+  if (clicks !== 0) fail(`${tabName} finished, but heard ${clicks} clicks on the way`)
   if (await page.getByRole('link', { name: 'Ask on the meeting page' }).count() !== 1) fail(`${tabName} does not lead on to the meeting`)
   const answer = await pipelineOf(id)
   if (answer.status !== 'ready' || answer.next !== 'done' || answer.index.state !== 'complete') {
@@ -154,6 +166,7 @@ async function checkASecondTab(audio) {
   const id = await seedMeeting('Two tabs', audio)
   const url = `${baseURL}/meetings/${id}/progress`
   const tabs = await browser.newContext(VISITOR)
+  await countClicks(tabs)
   const gate = await gateAdvances(tabs)
 
   const first = await tabs.newPage()
@@ -207,6 +220,7 @@ async function checkLeavingAndComingBack(audio) {
   const id = await seedMeeting('Leaving', audio)
   const url = `${baseURL}/meetings/${id}/progress`
   const tabs = await browser.newContext(VISITOR)
+  await countClicks(tabs)
   const gate = await gateAdvances(tabs)
   const page = await tabs.newPage()
   failOnPageErrors(page)
@@ -343,6 +357,7 @@ async function checkNoLockManager(audio) {
   const id = await seedMeeting('No Web Locks', audio)
   const url = `${baseURL}/meetings/${id}/progress`
   const tabs = await browser.newContext(VISITOR)
+  await countClicks(tabs)
   await tabs.addInitScript(() => delete Object.getPrototypeOf(navigator).locks)
   const gate = await gateAdvances(tabs)
 
@@ -451,6 +466,7 @@ const browser = await chromium.launch({
 })
 // Clipboard access, for reading back what the Copy link control copied.
 const context = await browser.newContext({ ...VISITOR, permissions: ['clipboard-read', 'clipboard-write'] })
+await countClicks(context)
 const page = await context.newPage()
 const consoleLines = []
 page.on('console', m => consoleLines.push(`[console:${m.type()}] ${m.text()}`))
@@ -568,6 +584,9 @@ try {
 
   // Nothing has been clicked since the upload, and from here on nothing is. The page has
   // already read where the meeting stands and asked for its first step, by itself.
+  await page.evaluate(() => {
+    window.clicksHeard = 0
+  })
   await waitUntil(() => firstTab.count(ADVANCE) === 1, 10_000, 'the page did not ask for a step by itself')
   // One for the page's first render, arriving by client-side navigation, and one by the driver.
   if (firstTab.count(READ) > 2) fail(`expected at most two reads before the first step, saw ${firstTab.count(READ)}`)
