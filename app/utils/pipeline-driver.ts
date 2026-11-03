@@ -56,6 +56,12 @@ export const LONGEST_HINT_MS = 60 * 60_000
 /** Above a Whisper step's ~7 min lease, so only a request that really hung is given up on. */
 export const ADVANCE_TIMEOUT_MS = 8 * 60_000
 export const READ_TIMEOUT_MS = 30_000
+/**
+ * A step out this long is being worked on, so what the page said while it waited is over. It
+ * is not cleared on sending: a look through a long block, or a retry in an outage, comes straight
+ * back to the same pause, and the live region would say so every time.
+ */
+export const STEP_UNDER_WAY_MS = 5_000
 /** A stopped tab coming back into view looks once, if it has not asked for this long. */
 export const RELOOK_AFTER_MS = 30_000
 /** Reads a page that cannot drive makes before it says it could not read. */
@@ -435,6 +441,12 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
     if (method === 'GET') read = controller
     const timer = setTimer(() => controller.abort(), method === 'GET' ? READ_TIMEOUT_MS : ADVANCE_TIMEOUT_MS)
     requestTimers.add(timer)
+    const underWay = method === 'POST'
+      ? setTimer(() => {
+          if (state.asking && state.pause) update({ pause: null, waitMs: null, nextRequestAt: null })
+        }, STEP_UNDER_WAY_MS)
+      : null
+    if (underWay !== null) requestTimers.add(underWay)
     lastAskAt = now()
     try {
       const res = await fetch(`${api}${path}`, { method, signal: controller.signal })
@@ -447,6 +459,10 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
     finally {
       clearTimer(timer)
       requestTimers.delete(timer)
+      if (underWay !== null) {
+        clearTimer(underWay)
+        requestTimers.delete(underWay)
+      }
       if (read === controller) read = null
     }
   }

@@ -623,6 +623,7 @@ A watching tab backs off the same way and never stops for trouble, since it spen
 
 **What is said, and where.**
 - **The live region** has one sentence, always mounted, that depends on nothing that ticks: not the time, not bytes, not batches. Parts of extraction are the only count, each being a provider request, a minute apart. The banner, the countdown and the figures are outside it. The browser job watches it for changes during a countdown.
+- **A pause is over once a step is plainly being worked on.** Whatever it said while it waited stops being said 5 s into a `POST` (`STEP_UNDER_WAY_MS`). Not on sending: a look through a long block, or a retry in an outage, comes straight back to the same pause, and the live region would say so each time.
 - **The stepper** gives every state its own word and its own icon. `aria-current="step"` is on the first stage with anything going on. `prefers-reduced-motion` stills every `animate-spin` in the app, which includes the UI library's loading buttons.
 - **`etaSeconds` is not shown.** The only times on the page are the ones the server said, in the visitor's own terms and clock: "2 hours 5 minutes (14:20)".
 - **The hydration mismatch** was `createdAt` rendered with `toLocaleString()` on both sides. Until mounted it now reads as UTC on both, and nothing else on the page uses the time or the language until then, since `now` is 0. The browser job loads the page in `de-DE` in Auckland and fails on any hydration error.
