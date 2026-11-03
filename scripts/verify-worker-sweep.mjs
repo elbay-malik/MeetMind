@@ -512,6 +512,8 @@ try {
   await withWorker({ ...EVERY_SETTING, NUXT_PUBLIC_DEMO_MEETING_ID: DEMO, NUXT_RETENTION_PURGE_DAYS: '30' }, async (logs) => {
     const home = await (await fetch(`${base}/`, { headers: { accept: 'text/html' } })).text()
     check(home.includes('deleted about 30 days after upload'), 'the upload page says the true number of days')
+    const list = await (await fetch(`${base}/meetings`, { headers: { accept: 'text/html' } })).text()
+    check(list.includes('deployment-facts') && list.includes('purgeDays'), 'and a visit that lands on another page has it for the next one')
 
     const first = await tick()
     check(first.answer.outcome === 'ok' && first.claims === 0 && first.providers === 0, 'a tick deletes with no claim and no provider')
