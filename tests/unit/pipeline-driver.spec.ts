@@ -1460,6 +1460,29 @@ describe('a hidden tab', () => {
   })
 })
 
+describe('a tab taking the lock during an outage', () => {
+  it('gets its own four retries, whatever it counted while it watched', async () => {
+    const locks = fakeLocks()
+    const other = anotherTab(locks)
+    other.take()
+    await settle()
+    const server = fakeServer({ [READ]: [reply(500)], [ADVANCE]: [ok(READY)] })
+    const watcher = tab(server, { locks })
+    watcher.start()
+    await settle()
+    await pass(5 * 60_000)
+    expect(watcher.state().stop).toBeNull()
+
+    other.letGo()
+    await settle()
+    expect(watcher.state()).toMatchObject({ role: 'driving', stop: null, pause: 'server' })
+
+    server.script[READ] = [ok(READY)]
+    await pass(5_000)
+    expect(watcher.state()).toMatchObject({ role: 'driving', stop: 'finished', answer: READY })
+  })
+})
+
 describe('a tab that stopped, with something a retry could still do', () => {
   const failedHere = answer({ status: 'failed', next: 'failed', retryAt: '2026-11-03T12:01:00.000Z', retryAfterMs: 60_000, progress: { stage: 'summarization', done: 1, total: 3, etaSeconds: null } })
   const movedOn = answer({ status: 'summarizing', next: 'wait', retryAfterMs: 20_000, progress: { stage: 'summarization', done: 2, total: 3, etaSeconds: null } })

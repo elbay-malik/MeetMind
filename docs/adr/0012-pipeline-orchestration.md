@@ -613,7 +613,7 @@ Opening `/meetings/:id/progress` now takes a meeting from `uploaded` to `ready` 
 | 404 | Says the meeting no longer exists, with no retry |
 | 409 | Sends no more steps. Looks after 1–3 s, and then as for `wait` with no time |
 
-A watching tab backs off the same way and never stops for trouble, since it spends nothing.
+A watching tab backs off the same way and never stops for trouble, since it spends nothing. A tab taking the lock starts its own count, so one taking over during an outage gets its 4 retries.
 
 **One driving tab per browser.** `navigator.locks` with the name `meeting:<id>`. A tab asks with `ifAvailable`, because a request cannot have both that and a `signal`, and if the lock is taken it queues with a `signal` and watches in the meantime. The lock goes with the tab, so closing the driving tab hands over in milliseconds (56 ms in the browser job). Stopping for any reason gives it up, and each tab queued behind reads, sees the same answer and stops, sending no step. A watching tab that reads `done` or `failed` leaves the queue. A tab suspended with the lock keeps it, as the browser does not take it back, so a watching tab that reads `continue` with the same figures for 5 min (`WATCH_STALL_MS`) takes it with `steal`. A driver alive through that goes back to watching and ignores any step it had out. Whether a real browser suspends a tab holding a lock was not measured, only what this does if one does. Two browsers both drive, which the server's claim makes safe: the second is told `wait` while a step is live.
 
