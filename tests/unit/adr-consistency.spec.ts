@@ -245,6 +245,15 @@ describe('what the docs say about a built server (ADR-0016)', () => {
     expect(await inRepo('tests/e2e/helpers/local-drivers.ts')).not.toMatch(/a built server\s+(?:\*\s+)?reads no dotenv/)
   })
 
+  // They are bundled and refused, and ADR-0016 rejects leaving them out at build time, so
+  // only the refusal keeps them from running. Said otherwise, a regression there looks harmless.
+  it('does not say the stand-ins are absent from a Worker', async () => {
+    const row = (await inRepo('README.md')).split('\n').find(line => line.startsWith('| [0016]'))
+    expect(row, 'could not find the ADR-0016 row of the index').toBeTruthy()
+    expect(row).not.toMatch(/do not exist/)
+    expect(row).toMatch(/refused[^|]*on a Worker/)
+  })
+
   it('leaves no test job or harness depending on it, since it would take .env', async () => {
     for (const path of ['scripts/ci-local.sh', '.github/workflows/ci.yml', 'tests/e2e/helpers/local-drivers.ts', 'tests/e2e/driver-gate.spec.ts']) {
       expect(await inRepo(path), path).not.toMatch(/(?:pnpm|nuxt) preview/)

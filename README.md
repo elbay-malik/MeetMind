@@ -89,7 +89,7 @@ that can write, and what this does not do.
 | [0013](docs/adr/0013-private-meeting-links.md) | A meeting is reached only through its unguessable link: no global list or cross-meeting search, \"Your meetings\" lives in this browser |
 | [0014](docs/adr/0014-workers-ai-embeddings.md) | Embeddings from Cloudflare Workers AI's bge-m3 at 1024 dimensions, replacing a provider whose terms require a paid plan in the EEA: measured batch limits, and a plain message at the daily limit |
 | [0015](docs/adr/0015-invite-only-uploads.md) | Visitors get the demo meeting, which can only be read and asked; uploading takes an invite code, and a missing code closes it. A guard for every route that can write |
-| [0016](docs/adr/0016-real-services-or-nothing.md) | A deployment runs on the real services or answers 503: stubs and local stores need an explicit opt-in, are refused beside real stored data, and do not exist on a Worker |
+| [0016](docs/adr/0016-real-services-or-nothing.md) | A deployment runs on the real services or answers 503: stubs and local stores need an explicit opt-in, and are refused beside real stored data and on a Worker |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
