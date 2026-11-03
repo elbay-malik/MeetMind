@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { H3Event } from 'h3'
 import { DRIVERS_REFUSED_MESSAGE, isDriverRefusal, REQUIRED_SETTINGS } from '../../server/utils/drivers'
 import { withoutInternals } from '../../server/utils/pipeline/errors'
+import { REAL_SETTINGS_ABSENT } from '../e2e/helpers/local-drivers'
 
 /**
  * The gate through what actually builds a driver, with no network: this tier runs as a built
@@ -357,6 +358,14 @@ describe('every runtime setting', () => {
     const root = fileURLToPath(new URL('../..', import.meta.url))
     expect(await readFile(`${root}nuxt.config.ts`, 'utf8')).toMatch(/^ {4}allowLocalDrivers: false, \/\/ NUXT_ALLOW_LOCAL_DRIVERS$/m)
     expect(await readFile(`${root}wrangler.jsonc`, 'utf8')).not.toMatch(/ALLOW_LOCAL_DRIVERS|allowLocalDrivers/)
+  })
+
+  // A shell that exported a setting left out here would hand it to every e2e server, and with
+  // the opt-in a real key on local stores is allowed, so those tests would spend real quota.
+  it('is blanked on every e2e server', () => {
+    const names = Object.values(REQUIRED_SETTINGS).flatMap(group => Object.keys(group))
+    expect(names).toHaveLength(9)
+    expect(REAL_SETTINGS_ABSENT).toEqual(Object.fromEntries(names.map(name => [name, ''])))
   })
 
   it('reads a stub flag nowhere but where a stub is built', async () => {
