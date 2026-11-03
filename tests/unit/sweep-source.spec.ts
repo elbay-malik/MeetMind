@@ -54,6 +54,18 @@ describe('no route reaches a sweep', () => {
   })
 })
 
+describe('the retention purge', () => {
+  it('is reached by nothing but the tick, and only the admin route otherwise deletes', async () => {
+    const server = await sources('server')
+    const purgers = Object.keys(server).filter(file => /\bpurgeOneExpired\(/.test(server[file]!))
+    expect(purgers).toEqual(['server/utils/pipeline/sweep.ts'])
+    const deleters = Object.keys(server).filter(file => /\bdeleteMeeting\(/.test(server[file]!)).sort()
+    expect(deleters).toEqual(['server/api/meetings/[id].delete.ts', 'server/utils/meeting-deletion.ts', 'server/utils/pipeline/sweep.ts'])
+    const answering = { ...await sources('server/api'), ...await sources('server/routes'), ...await sources('server/middleware') }
+    expect(Object.keys(answering).filter(file => /purge|retention_?purge|nextExpired|next_expired/i.test(answering[file]!))).toEqual([])
+  })
+})
+
 describe('the cron', () => {
   const wrangler = async () => {
     const text = await readFile(join(rootDir, 'wrangler.jsonc'), 'utf8')

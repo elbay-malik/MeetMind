@@ -182,6 +182,12 @@ export const SUBREQUESTS: Record<string, number> = {
   'pipeline.upsertWindows': 1,
   'pipeline.finishIndex': 1,
   'pipeline.nextForSweep': 1,
+  'pipeline.nextExpired': 1,
+  'pipeline.deleteForMeeting': 3,
+  'meetings.delete': 1,
+  'summaries.deleteForMeeting': 3,
+  'transcripts.deleteForMeeting': 1,
+  'index.deleteForMeeting': 1,
   'transcripts.listRange': 1,
   'transcripts.listFrom': 1,
   // Grows with the meeting, one page per 1,000 lines. Only a transcript with no stored plan reaches it.
