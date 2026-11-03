@@ -14,6 +14,9 @@
 // Runs from a temporary copy, so wrangler cannot find this repo's .env, and with almost
 // nothing in the environment, so it cannot find a token either. The copy leaves out
 // public/ffmpeg, which is over the assets limit (ADR-0009).
+//
+// Never run `wrangler dev` at the repo root on a Worker build. Nothing stops it there now the wasm
+// is gone from the build, and it reads the real .env, with the real database and quota behind it.
 import { spawn } from 'node:child_process'
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'

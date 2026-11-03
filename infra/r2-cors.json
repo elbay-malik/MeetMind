@@ -2,7 +2,7 @@
   "rules": [
     {
       "allowed": {
-        "origins": ["http://localhost:3000"],
+        "origins": ["https://meetmind.elbaymalik.com", "http://localhost:3000"],
         "methods": ["PUT"],
         "headers": ["content-type"]
       },
