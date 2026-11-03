@@ -2,11 +2,13 @@ import type { QuestionAnswer } from '#shared/types/meeting'
 import { askBodySchema } from '#shared/schemas/qa'
 import { transcriptionFinished } from '#shared/utils/meeting'
 import { useMeetingRepository, useTranscriptIndexRepository, useTranscriptRepository } from '../../../utils/db'
+import { isPublicDemo } from '../../../utils/demo-meeting'
 import { badRequest, conflict, notFound, requireMeetingId, retryLater } from '../../../utils/http'
 import { publicMessage } from '../../../utils/public-errors'
 import { useAnswerer, useEmbedder } from '../../../utils/qa'
 import { AnswerError, AnswerSlotBusyError } from '../../../utils/qa/answerer'
 import { askMeeting, QuestionError } from '../../../utils/qa/ask'
+import { DemoQuestionRefusedError, useDemoQuestionAllowance } from '../../../utils/qa/demo-questions'
 import { EmbeddingError } from '../../../utils/qa/embedder'
 
 /** A question body is a sentence; refuse anything far larger before reading it. */
@@ -18,7 +20,8 @@ const MAX_BODY_BYTES = 4096
  *
  * A provider's failure here is stored nowhere, so the log is the only copy of what it
  * said. A turn refused by our own pacing has nothing to say, and asking is open to anyone,
- * so that one is not logged.
+ * so that one is not logged, and nor is a refusal by the demo's cap (ADR-0019). Only the public
+ * demo has a cap: no other meeting's question calls anything of it.
  */
 export default defineEventHandler(async (event): Promise<{ answer: QuestionAnswer }> => {
   const id = requireMeetingId(event)
@@ -49,6 +52,7 @@ export default defineEventHandler(async (event): Promise<{ answer: QuestionAnswe
       embedder: useEmbedder(event),
       repo: useTranscriptIndexRepository(event),
       answerer: useAnswerer(event),
+      allowance: isPublicDemo(event, id) ? useDemoQuestionAllowance(event, id) : undefined,
     })
     return { answer }
   }
@@ -57,7 +61,7 @@ export default defineEventHandler(async (event): Promise<{ answer: QuestionAnswe
       throw createError({ statusCode: err.statusCode, statusMessage: 'Cannot answer', message: publicMessage('answering', err) })
     }
     if (!(err instanceof EmbeddingError || err instanceof AnswerError)) throw err
-    if (!(err instanceof AnswerSlotBusyError)) console.warn(`[meetmind] a question on meeting ${id} failed:`, err)
+    if (!(err instanceof AnswerSlotBusyError || err instanceof DemoQuestionRefusedError)) console.warn(`[meetmind] a question on meeting ${id} failed:`, err)
     throw createError({
       statusCode: err.statusCode,
       statusMessage: 'Answering failed',

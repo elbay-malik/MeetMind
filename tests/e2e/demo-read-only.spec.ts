@@ -68,14 +68,17 @@ async function driveExtraction(id: string): Promise<void> {
   throw new Error(`extraction of ${id} did not finish in 50 steps`)
 }
 
-/** Every stored byte but the shared provider ledger, which a question is allowed to touch. */
+/**
+ * Every stored byte but the shared provider ledger and the day's count of demo questions, which
+ * a question is allowed to touch. Nothing else writes the count: tests/e2e/demo-questions.spec.ts.
+ */
 async function everythingStored(): Promise<Record<string, string>> {
   const stored: Record<string, string> = {}
   for (const file of await readdir(dataDir, { recursive: true, withFileTypes: true })) {
     if (!file.isFile()) continue
     const path = join(file.parentPath, file.name)
     const key = relative(dataDir, path)
-    if (key.startsWith(join('db', 'slots'))) continue
+    if (key.startsWith(join('db', 'slots')) || key.startsWith(join('db', 'demo-questions'))) continue
     stored[key] = createHash('sha256').update(await readFile(path)).digest('hex')
   }
   return stored

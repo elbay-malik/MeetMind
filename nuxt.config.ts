@@ -60,6 +60,10 @@ export default defineNuxtConfig({
     // 429 and Retry-After. Short, so a question never queues behind a whole
     // extraction and the queue stays bounded (ADR-0012).
     askMaxSlotWaitMs: 20_000, // NUXT_ASK_MAX_SLOT_WAIT_MS
+    // Questions a day on the public demo meeting, across everyone (ADR-0019), so strangers cannot
+    // use up Groq's 200,000 tokens a day. Other meetings have no such count. Zero or anything but a
+    // positive whole number refuses every demo question: this never removes the cap.
+    demoQuestionsPerDay: 25, // NUXT_DEMO_QUESTIONS_PER_DAY
     // ADR-0016. A built server missing any setting above refuses every request that
     // needs a provider or store, unless this is exactly true, which lets it run on stubs
     // and local stores: for the e2e and browser jobs. `pnpm dev` needs no flag. Ignored
@@ -129,16 +133,6 @@ export default defineNuxtConfig({
     '/spike/**': { ssr: false },
   },
   compatibilityDate: '2025-07-15',
-  hooks: {
-    // ffmpeg's wasm is over the 25 MiB asset limit, so a Worker build leaves it out and a route
-    // serves it from R2 (ADR-0018). Here, before Nitro lists its assets: a file only left
-    // behind by .assetsignore stays in that list, and the Worker sends the path to the assets
-    // and answers 404 without running the route. A Node build and dev keep the public file.
-    async 'nitro:build:public-assets'(nitro) {
-      if (!nitro.options.preset.startsWith('cloudflare')) return
-      await rm(join(nitro.options.output.publicDir, 'ffmpeg/ffmpeg-core.wasm'), { force: true })
-    },
-  },
   vite: {
     // ffmpeg.wasm resolves its internal worker via new URL(..., import.meta.url);
     // esbuild pre-bundling relocates the module and breaks that resolution.
@@ -151,6 +145,16 @@ export default defineNuxtConfig({
     // strict is the Nuxt 4 default; pinned explicitly. typeCheck stays off:
     // vue-tsc in dev/build is slow, CI runs `nuxt typecheck` instead.
     strict: true,
+  },
+  hooks: {
+    // ffmpeg's wasm is over the 25 MiB asset limit, so a Worker build leaves it out and a route
+    // serves it from R2 (ADR-0018). Here, before Nitro lists its assets: a file only left
+    // behind by .assetsignore stays in that list, and the Worker sends the path to the assets
+    // and answers 404 without running the route. A Node build and dev keep the public file.
+    async 'nitro:build:public-assets'(nitro) {
+      if (!nitro.options.preset.startsWith('cloudflare')) return
+      await rm(join(nitro.options.output.publicDir, 'ffmpeg/ffmpeg-core.wasm'), { force: true })
+    },
   },
   eslint: {
     config: {

@@ -1,5 +1,5 @@
 import type { Meeting, PublicMeeting } from '#shared/types/meeting'
-import { AUDIO_MIME } from '#shared/utils/meeting'
+import { AUDIO_MIME, DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE } from '#shared/utils/meeting'
 import { DAILY_LIMIT_MESSAGE } from './qa/embedder'
 
 /**
@@ -111,6 +111,8 @@ export const PUBLIC_RULES: Record<PublicStage, readonly PublicRule[]> = {
     'Could not schedule the question. Try again shortly.',
     'Answering quota is exhausted for now.',
     'The answering service rejected our credentials.',
+    DEMO_QUESTIONS_USED_MESSAGE,
+    DEMO_QUESTIONS_PAUSED_MESSAGE,
   ],
 }
 

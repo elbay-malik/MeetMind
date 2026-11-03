@@ -69,3 +69,11 @@ it('.env.example documents the retention purge under the name it reads, and leav
   expect(config).toMatch(/^ {4}retentionPurgeDays: '', \/\/ NUXT_RETENTION_PURGE_DAYS$/m)
   expect(wrangler).not.toMatch(/RETENTION_PURGE|retentionPurge/)
 })
+
+// Blank here would refuse every demo question, so it says its own default.
+it('.env.example documents the demo\'s question cap under the name it reads, with its default', async () => {
+  const example = await readFile(fileURLToPath(new URL('../../.env.example', import.meta.url)), 'utf8')
+  const config = await readFile(fileURLToPath(new URL('../../nuxt.config.ts', import.meta.url)), 'utf8')
+  expect(example).toMatch(/^NUXT_DEMO_QUESTIONS_PER_DAY=25$/m)
+  expect(config).toMatch(/^ {4}demoQuestionsPerDay: 25, \/\/ NUXT_DEMO_QUESTIONS_PER_DAY$/m)
+})

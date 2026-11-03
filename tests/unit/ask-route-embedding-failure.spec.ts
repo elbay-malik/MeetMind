@@ -26,6 +26,9 @@ vi.mock('../../server/utils/db', () => ({
   useTranscriptRepository: () => ({ listForMeeting: async () => [] }),
 }))
 
+// No demo here: tests/unit/demo-question-cap.spec.ts has the route with one.
+vi.mock('../../server/utils/demo-meeting', () => ({ isPublicDemo: () => false }))
+
 const headers = new Map<string, unknown>()
 let handler: (event: unknown) => Promise<unknown>
 
