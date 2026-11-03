@@ -67,7 +67,9 @@ existing links keep working.
 
 Set `NUXT_PUBLIC_DEMO_MEETING_ID` to link one finished meeting from the home page. Anyone can
 read that meeting and ask it questions, which spends the shared quotas, and nobody can change
-it through its link. Its audio expires with the bucket's lifecycle rule (below) like any other,
+it through its link. Its questions are capped by `NUXT_DEMO_QUESTIONS_PER_DAY` (default 25, by UTC
+day) and refused while another meeting's extraction is in progress, including one that failed and
+has not been retried or deleted ([ADR-0019](docs/adr/0019-demo-question-cap.md)). Its audio expires with the bucket's lifecycle rule (below) like any other,
 so it has to be put back every 30 days or the player stops working. To create it, see "Creating
 the demo meeting" in [ADR-0015](docs/adr/0015-invite-only-uploads.md), which also records what guards every route
 that can write, and what this does not do.
@@ -93,6 +95,8 @@ that can write, and what this does not do.
 | [0015](docs/adr/0015-invite-only-uploads.md) | Visitors get the demo meeting, which can only be read and asked; uploading takes an invite code, and a missing code closes it. A guard for every route that can write |
 | [0016](docs/adr/0016-real-services-or-nothing.md) | A deployment runs on the real services or answers 503: stubs and local stores need an explicit opt-in, and are refused beside real stored data and on a Worker |
 | [0017](docs/adr/0017-retention-purge.md) | An optional purge deletes a meeting past its retention days, one per cron tick, never the demo or anything a step is live on. Off until someone turns it on |
+| [0018](docs/adr/0018-ffmpeg-wasm-from-private-r2.md) | A Worker serves ffmpeg's wasm from the private bucket at the same path, one hardcoded key by version, since it is over the asset limit. Not yet deployed |
+| [0019](docs/adr/0019-demo-question-cap.md) | Questions on the public demo have a daily count and stop while an extraction is pending: a read before the provider slot, the count taken after it. Not yet deployed |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -102,10 +106,11 @@ New decisions follow the [ADR template](docs/adr/0000-template.md).
 app/            Nuxt 4 app: pages (5 core screens), layouts, components, composables
 app/workers/    Web Worker sources (ffmpeg orchestration) — not auto-imported
 server/api/     Nitro routes — the only place secrets are read
+server/routes/  The one route outside /api: ffmpeg's wasm on a Worker
 server/utils/   Storage drivers (R2 | local fs) and meeting repositories (Supabase | local JSON)
 shared/         Isomorphic code: `utils/` + `types/` (auto-imported), `schemas/` (zod, explicit import)
 supabase/       SQL migrations for the Postgres schema
-public/ffmpeg/  Self-hosted ffmpeg.wasm core assets (copied on postinstall, gitignored)
+public/ffmpeg/  Self-hosted ffmpeg.wasm core assets (copied on postinstall, gitignored). A Worker build leaves the wasm out
 scripts/        Fixture generation and headless-browser drivers (spike, upload flow)
 docs/           Playbook + ADRs
 tests/          Vitest: `unit/`, Nuxt-runtime `nuxt/`, and server-route `e2e/` (built app)
@@ -148,6 +153,8 @@ With any of them missing, every route that needs a provider or store answers 503
 that names nothing, before anything is claimed, called or written, and the server log names
 what is missing, never a value. The home page and `/api/health` still answer, and a meeting's page
 shows a plain failure. [ADR-0016](docs/adr/0016-real-services-or-nothing.md) has the reasons.
+`pnpm secrets:worker` sends these from `.env`, with `NUXT_INVITE_CODE`, `NUXT_R2_RETENTION_DAYS` and
+`NUXT_ADMIN_TOKEN`, and nothing else: see "Deploying the Worker" below.
 
 | Running | Every setting present | Some missing, stores local | A real database or bucket, something else missing | Half of a group |
 | --- | --- | --- | --- | --- |
@@ -174,7 +181,8 @@ upload through it writes real data and spends quota. An opt-in in that `.env` op
    npx wrangler r2 bucket cors set <bucket> --file infra/r2-cors.json
    ```
 
-   Add the deployed origin to `infra/r2-cors.json` when there is one. Note the
+   `infra/r2-cors.json` has the deployed origin and localhost, and setting it replaces the whole
+   policy, so keep both. Note the
    dashboard (bucket → Settings → CORS Policy) takes a *different*, S3-style
    shape for the same policy — `[{"AllowedOrigins": [...], "AllowedMethods":
    [...]}]` — and wrangler rejects it. Each tool is right for itself; the
@@ -255,18 +263,85 @@ indexing resumes from where it stopped. See
 
 ### Deploying the Worker (Phase 13)
 
-Nothing has been deployed yet. When it is:
+Nothing has been deployed yet. These are the steps for the first time, in order, on the Workers free
+plan, at `meetmind.elbaymalik.com`. Every step past the first changes something real.
 
-1. `pnpm db:migrate`, for the migrations this needs, including `20261103180000_sweeper.sql`,
-   without which every tick fails.
-2. `NITRO_PRESET=cloudflare_module pnpm build`, then `wrangler deploy`. That is what registers the
-   cron in `wrangler.jsonc`: one tick every 5 minutes, of the 5 crons the free plan allows. It
-   can take up to 15 minutes to reach Cloudflare's network, and a new Worker up to 30 to show in
-   Past Cron Events.
-3. Upload a meeting, close the tab, and watch it move: `select last_tick_at from sweep_state`
-   says a tick ran, and a line in `wrangler tail` says a step did. A tick with nothing to do logs nothing.
-4. Ask for `/__scheduled` and `/cdn-cgi/local/scheduled` on the deployed host, which should run no
-   tick, and check that `last_tick_at` does not move for it.
+Wrangler reads `CLOUDFLARE_API_TOKEN` from `.env` when run here. A token cannot read its own rights,
+so check in the dashboard that it can edit Workers scripts, routes and custom domains on the zone, and write R2 objects.
+
+**Never run `wrangler dev` at the repo root on a Worker build.** Only the wasm used to stop it, and
+that is gone from the build. It reads the real `.env`, so it writes to the real database and
+spends real quota. `scripts/verify-worker-*.mjs` run it from a temporary copy, with fakes.
+
+1. **Check the code.** `pnpm ci:local`, then under a Worker build the three scripts, and `pnpm build` afterwards:
+
+   ```bash
+   NITRO_PRESET=cloudflare_module pnpm build
+   node scripts/verify-worker-gate.mjs
+   node scripts/verify-worker-sweep.mjs
+   node scripts/verify-worker-streams.mjs
+   pnpm build
+   ```
+
+2. **Apply the migrations.** `scripts/verify-migrations.sh`, then `pnpm db:migrate`. Without
+   `20261103180000_sweeper.sql` every tick fails, and without `20261104120000_demo_question_cap.sql`
+   every question on the demo is refused, and nothing else is.
+3. **Put the wasm in the private bucket.** `pnpm upload:ffmpeg-wasm`. It is over the asset limit, so
+   a route serves it from there ([ADR-0018](docs/adr/0018-ffmpeg-wasm-from-private-r2.md)). The bucket stays private.
+4. **Set the bucket's CORS**, or uploads fail in a real browser only, and so does creating the demo:
+
+   ```bash
+   npx wrangler r2 bucket cors set meet-mind --file infra/r2-cors.json
+   ```
+
+   This replaces the whole policy, which is why the file keeps localhost.
+   `VERIFY_ORIGIN=https://meetmind.elbaymalik.com pnpm test:services` checks the preflight.
+   Do it now: nothing is live yet, and it must not run from step 6 on (see below).
+5. **Send the secrets.** Put a new `NUXT_ADMIN_TOKEN` in `.env` (`openssl rand -base64 32`), so someone
+   holds it. Then `pnpm secrets:worker`, which sends these twelve and nothing else, refuses if one is
+   missing, and prints names only: `NUXT_GROQ_API_KEY`, `NUXT_WORKERS_AI_ACCOUNT_ID`,
+   `NUXT_WORKERS_AI_API_TOKEN`, `NUXT_SUPABASE_URL`, `NUXT_SUPABASE_SERVICE_KEY`, `NUXT_R2_ACCOUNT_ID`,
+   `NUXT_R2_ACCESS_KEY_ID`, `NUXT_R2_SECRET_ACCESS_KEY`, `NUXT_R2_BUCKET`, `NUXT_INVITE_CODE`,
+   `NUXT_R2_RETENTION_DAYS`, `NUXT_ADMIN_TOKEN`. With no Worker yet, this creates a placeholder, and
+   the deploy keeps its secrets. **Never `wrangler secret bulk .env`:** it uploads every key in the file,
+   the wrangler token and the database URL included. `NUXT_PUBLIC_DEMO_MEETING_ID` stays unset until step 10.
+6. **Deploy.** `pnpm deploy:worker`. It builds for Workers, refuses a build that is not one or that still
+   has the wasm, runs `wrangler deploy`, and then runs `pnpm build`, so the Node build is back even on
+   failure. That makes the site live and registers the cron in `wrangler.jsonc`: one tick every 5
+   minutes, of the 5 crons the free plan allows. It can take up to 15 minutes to reach Cloudflare's
+   network, and a new Worker up to 30 to show in Past Cron Events. The database is empty at first, so
+   a tick spends nothing.
+7. **Add the rate rule, straight after.** The free plan's 100,000 requests a day are per account, so a
+   flood from one address, at about 1.2 requests a second, takes down every Worker on it until 00:00 UTC.
+   In the dashboard: `elbaymalik.com`, Security, WAF, Rate limiting rules. The one free rule: by IP,
+   10 requests in 10 seconds, block for 10 seconds, on any path not starting with `/_nuxt/`, so a
+   page's static assets do not count towards it. A blocked request never reaches the Worker, so one
+   address gets at most 10 every 10 seconds, about 86,000 a day, which stays under the allowance.
+   It is untested. If the dashboard refuses that path match, use `/api/`, `/meetings` and `/ffmpeg/`.
+   If real audio seeks trip it, raising it gives up that bound. It stops one address and not many,
+   and a stranger's questions are capped separately
+   ([ADR-0019](docs/adr/0019-demo-question-cap.md)).
+8. **Look at it before telling anyone.** Load `/` from cold and read its CPU in the Worker's logs, and any
+   1102. Check `curl -I https://meetmind.elbaymalik.com/ffmpeg/ffmpeg-core.wasm` says
+   `application/wasm`. Read one invocation's log for the invite header. Ask for `/__scheduled` and
+   `/cdn-cgi/local/scheduled`, which should run no tick. `workers.dev` should not answer.
+9. **Run the acceptance.** Upload a short real meeting, close the tab, and watch it reach `ready`. A
+   line in `wrangler tail` says a step ran, and a tick with nothing to do logs nothing.
+   Delete it afterwards with the admin token. Read Whisper's CPU while you are there.
+10. **Create the demo.** See "Creating the demo meeting" in
+    [ADR-0015](docs/adr/0015-invite-only-uploads.md). Only once it is finished,
+    `wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID`. Then check it in a private window, including
+    audio seeks and the page's CPU.
+
+**`pnpm test:services`, and a local server on `.env`, must not run during acceptance.** There is no
+staging. Both share the one real database with the live cron, so a tick can pick up the rows they
+insert, and spend real quota on them. **Past Cron Events is the proof that the cron fires, and
+`last_tick_at` is not**, because `test:services` moves it too, with nothing deployed.
+
+**To roll back:** `pnpm exec wrangler rollback`, which goes back to an earlier version. Leave any older wasm in
+the bucket, as that version asks for its own. To stop the ticks as well, set `"crons": []` in
+`wrangler.jsonc` and run `pnpm deploy:worker`, or remove the trigger in the dashboard. That is from
+Cloudflare's docs, and has not been run here.
 
 **The retention purge is off, and nothing here turns it on.** Set `NUXT_RETENTION_PURGE_DAYS` with
 `wrangler secret put` to have a tick with nothing else to do delete one meeting past that many days:
@@ -299,6 +374,10 @@ addendum for what a tick retries, which is no failed stage, and what stays unpro
 | `NITRO_PRESET=cloudflare_module pnpm build && node scripts/verify-worker-gate.mjs` | Runs the Worker build under local workerd with fake services, and checks what it refuses and what it selects ([ADR-0016](docs/adr/0016-real-services-or-nothing.md)). Run `pnpm build` afterwards, since the other jobs need the Node build |
 | `pnpm test:postgrest` | The real Supabase drivers against a throwaway Postgres behind PostgREST (Docker). No credentials, and no real project. A job in `pnpm ci:local` |
 | `NITRO_PRESET=cloudflare_module pnpm build && node scripts/verify-worker-sweep.mjs` | Not in `pnpm ci:local`, as it needs its own build: run it by hand before merging a change to the sweeper or the purge. Runs the Worker build under local workerd and asks it for cron ticks, against real SQL on a throwaway Postgres and fake providers: a meeting with no tab open reaches `ready`, a tick with nothing to do still writes to Postgres, and what it refuses and leaves alone. Then `pnpm build` to put the Node build back |
+| `NITRO_PRESET=cloudflare_module pnpm build && node scripts/verify-worker-streams.mjs` | Not in `pnpm ci:local`, as it needs its own build. Serves real audio bytes, with and without Range, and the wasm, through the built Worker under local workerd with a fake R2 stopped part way, and shows bytes arriving before R2 has finished. Also the headers a static asset gets. Then `pnpm build` |
+| `pnpm upload:ffmpeg-wasm` | Puts the installed wasm in the real bucket, at the key the route reads ([ADR-0018](docs/adr/0018-ffmpeg-wasm-from-private-r2.md)). Before the first deploy, and before deploying an upgrade |
+| `pnpm secrets:worker` | Sends the named secrets from `.env` to the real Worker, printing names only, and refuses if one is missing |
+| `pnpm deploy:worker` | Builds for Workers, refuses anything else, deploys to the real Worker, and puts the Node build back |
 | `scripts/verify-migrations.sh` | Applies `supabase/migrations/` to a throwaway Postgres (Docker) and asserts the schema invariants |
 | `pnpm db:migrate` | Applies `supabase/migrations/` to the real project at `SUPABASE_DB_URL`, in order, skipping what a ledger says is already there. Run `verify-migrations.sh` first; pass `--dry-run` to see what is pending |
 | `pnpm ci:local` | Runs every job in `.github/workflows/ci.yml` on this machine — a PR can be judged green without waiting on GitHub. A job it cannot run counts as a failure, not a skip |
@@ -322,7 +401,7 @@ browser driver and its cron sweeper: the progress page takes a meeting through e
 itself for as long as a tab has it open, and on a deployed Worker the server carries on with it closed, at
 most one step every 5 minutes ([ADR-0012](docs/adr/0012-pipeline-orchestration.md)). A Node server
 has no cron, and there a meeting waits for its page. That has run only under local workerd, since nothing
-has been deployed. Next: rate limiting, Cloudflare Workers.
+has been deployed. Next: the first deploy, whose steps are under "Deploying the Worker".
 
 ## Acknowledgements
 
@@ -330,4 +409,12 @@ Claude, Anthropic's AI model, was also used for building DevSprint. Claude worke
 
 ## License
 
-[MIT](LICENSE)
+MeetMind's own code is [MIT](LICENSE).
+
+The browser runs `@ffmpeg/core` 0.12.10, a build of FFmpeg compiled to WebAssembly, to compress a
+recording. It is not under MeetMind's licence. The package declares `GPL-2.0-or-later`, and the
+build configuration inside the wasm says `--enable-gpl`, with libx264 and libx265. Its source, with the
+scripts that build it, is the commit that released that version:
+[ffmpegwasm/ffmpeg.wasm at 71aa99d](https://github.com/ffmpegwasm/ffmpeg.wasm/tree/71aa99d37c02a7b4c435275ca9ef50e612f6efa1),
+which builds FFmpeg n5.1.4. The repo's `v0.12.10` tag is a release of its wrapper, with an older core.
+The upload page says the same in one line. This is a statement of what is in the package, and not legal advice.

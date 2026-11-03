@@ -1,6 +1,6 @@
 # ADR-0012: Pipeline orchestration under the Workers free plan
 
-- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md), [ADR-0014](0014-workers-ai-embeddings.md), [ADR-0015](0015-invite-only-uploads.md) and [ADR-0017](0017-retention-purge.md)
+- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md), [ADR-0014](0014-workers-ai-embeddings.md), [ADR-0015](0015-invite-only-uploads.md), [ADR-0017](0017-retention-purge.md) and [ADR-0019](0019-demo-question-cap.md)
 - **Date:** 2026-10-25
 - **Supersedes:** PLAYBOOK Phase 9 point 2 and its "No queue … single streaming request" key decision. Amends ADR-0006 §2–3 (per-chunk retry, chunk-local attestation), ADR-0007 §5–7 (index claim, pacing), ADR-0011 (what blocks a delete) and the Phase 13 note that "streaming AI calls … don't accrue CPU time".
 

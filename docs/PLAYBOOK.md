@@ -222,8 +222,8 @@
 1. Deploy to Cloudflare Workers via the Nitro Cloudflare preset.
 2. Because MeetMind's server work is API-proxying + DB + embeddings (no server-side video processing), it fits Cloudflare's **free** tier: streaming AI calls are I/O-bound and don't accrue CPU time. *(Withdrawn by ADR-0012: CPU is per invocation and the parsing, attestation and multi-chunk work around those calls does count. Each request is a bounded step instead, and the deploy measures per-step CPU.)*
 3. If you ever choose the multi-thread FFmpeg path, set COOP/COEP headers (e.g., a Cloudflare `_headers` file) and self-host core assets — but the recommended single-thread path avoids this entirely.
-4. The sweeper (ADR-0012, step 11) is the keep-alive against the 7-day pause: every tick writes to Postgres, with something to do or not. There is no separate cron or GitHub Action to set up. Watch the first idle week, since whether Supabase counts a tick as activity is unproven. Configure DB backups to R2.
-5. Configure all secrets with `wrangler secret put`, including `NUXT_PUBLIC_DEMO_MEETING_ID` (`wrangler deploy` deletes a dashboard variable that `wrangler.jsonc` does not list; see ADR-0015).
+4. The sweeper (ADR-0012, step 11) is the keep-alive against the 7-day pause: every tick writes to Postgres, with something to do or not. There is no separate cron or GitHub Action to set up. Watch the first idle week, since whether Supabase counts a tick as activity is unproven. **No database backups for this demo:** decided on 2026-11-04, since the demo can be recreated from its recording.
+5. Configure the secrets with `pnpm secrets:worker`, which sends only the ones it names from `.env`, and `NUXT_PUBLIC_DEMO_MEETING_ID` with `wrangler secret put` once the demo is finished (`wrangler deploy` deletes a dashboard variable that `wrangler.jsonc` does not list; see ADR-0015). The host is `meetmind.elbaymalik.com`, with the zone's rate rule, and the wasm is served from the private bucket (ADR-0018). The README's deployment steps have the order.
 6. Run ADR-0012 step 11's acceptance: a meeting with no open tab reaches `ready` on the deployed Worker. `wrangler deploy` registers the cron in `wrangler.jsonc`, and the README's deployment steps say how to watch it. Everything its addendum leaves unproven is checked here: that the cron fires with the deployed secrets, how long a tick may run, its CPU, real providers, and that no URL on the deployed host starts a tick.
 7. `NUXT_RETENTION_PURGE_DAYS` stays unset unless the user decides otherwise: it deletes meetings for good, and ADR-0017 has what to look at before setting it with `wrangler secret put`. Apply `20261103180000_sweeper.sql` and `20261103190000_retention_purge.sql` either way.
 
@@ -256,10 +256,10 @@
 ## Risk Register (top 5)
 
 1. **ffmpeg.wasm memory limits on large files (2GB WASM ceiling).** Mitigation: audio-only extraction, WORKERFS mount to avoid MEMFS copy, File.slice segmenting, warn/reject inputs above a size threshold, spike this first.
-2. **Groq free-tier exhaustion during demos.** Mitigation: preloaded demo meeting (no upload needed), per-IP daily caps, Gemini fallback, cost math kept under 2,000 Whisper RPD / 1,000 Llama RPD.
+2. **Groq free-tier exhaustion during demos.** Mitigation: preloaded demo meeting (no upload needed), a daily cap on its questions (ADR-0019), Gemini fallback, cost math kept under 2,000 Whisper RPD / 1,000 Llama RPD.
 3. **COOP/COEP breaking third-party embeds.** Mitigation: use single-thread core (no cross-origin isolation needed); if forced to core-mt, isolate the FFmpeg page and self-host assets.
 4. **Timestamp drift across chunks.** Mitigation: dedicated unit-tested offset/merge module, overlap + boundary de-duplication, reset-then-offset pattern.
-5. **Supabase 7-day pause / data loss.** Mitigation: the sweeper's tick writes every 5 minutes (ADR-0012, step 11; unproven that this counts as activity until a deployed project sits idle for a week), automated DB backups to R2, monitor egress/storage against 500MB/1GB caps.
+5. **Supabase 7-day pause / data loss.** Mitigation: the sweeper's tick writes every 5 minutes (ADR-0012, step 11; unproven that this counts as activity until a deployed project sits idle for a week), monitor egress/storage against 500MB/1GB caps. No database backups: the demo can be recreated from its recording, and that is accepted for a portfolio demo.
 
 ---
 
