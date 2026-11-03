@@ -1,2 +1,10 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
+
+/* A spinner says "working" and nothing else, so it can simply stand still. Every other
+   way of saying that on the page is text. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin {
+    animation: none;
+  }
+}
