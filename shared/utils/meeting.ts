@@ -104,6 +104,12 @@ export function uploadWasRejected(meeting: Pick<Meeting, 'status' | 'failedStage
 export const PROVIDER_BLOCKED_ERROR = 'The transcription provider\'s quota is used up for now.'
 
 /**
+ * What the server's guard refuses to move the public demo with, which is how a page tells that
+ * from a 403 by anything in front of the app: a WAF rule's says nothing about the meeting.
+ */
+export const DEMO_READ_ONLY_MESSAGE = 'The demo meeting is read-only: it can be read and asked questions, not changed.'
+
+/**
  * Whether this id is the public demo's (ADR-0015), for the guard on the server and for a page
  * deciding not to drive. Compared in lower case: `requireMeetingId` accepts a UUID in capitals,
  * which is the same row to Postgres, and the configured id may be written either way. Trimmed,

@@ -3,6 +3,7 @@ import { flushPromises } from '@vue/test-utils'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import ProgressPage from '~/pages/meetings/[id]/progress.vue'
 import type { Meeting, PipelineResponse } from '../../shared/types/meeting'
+import { DEMO_READ_ONLY_MESSAGE } from '../../shared/utils/meeting'
 
 /** A stored error, which the routes a page reads for the driver never carry and it never shows. */
 const RAW = 'PGRST116 relation "pipeline_runs" does not exist'
@@ -95,6 +96,7 @@ function aMeeting(scenario: Scenario) {
 }
 
 const ok = (body: unknown): Reply => ({ body })
+const DEMO_REFUSAL: Reply = { status: 403, body: { statusCode: 403, statusMessage: 'Forbidden', message: DEMO_READ_ONLY_MESSAGE } }
 
 const mountAt = (id: string) => mountSuspended(ProgressPage, { route: `/meetings/${id}/progress` })
 type Mounted = Awaited<ReturnType<typeof mountAt>>
@@ -121,6 +123,17 @@ const SUMMARIZING = answer({ status: 'summarizing', progress: { stage: 'summariz
 
 /** Long enough for a read the status set off, and the one retry `useFetch` makes of it, to be over. */
 const readsSettled = () => new Promise(resolve => setTimeout(resolve, 300))
+
+describe('a 403 from something in front of the app', () => {
+  it('does not call an ordinary meeting the demo, or give up on it', async () => {
+    const { id, sent } = aMeeting({ pipeline: [ok(answer())], advance: [{ status: 403, body: { message: 'Blocked by a rule' } }] })
+    const page = await open(id)
+    await vi.waitFor(() => expect(page.text()).toContain('The server hit a problem'))
+
+    expect(page.text()).not.toMatch(/demo/i)
+    expect(sent.advance).toBe(1)
+  })
+})
 
 describe('a read of the row or the transcript that fails', () => {
   it('keeps the transcript it has, and says nothing about speech, when the status moves', async () => {
@@ -488,7 +501,7 @@ describe('the public demo', () => {
 
   it('never asks for a step, and shows an unfinished demo as read-only', async () => {
     const unfinished = answer({ status: 'uploaded', next: 'wait' })
-    const { id, sent } = aMeeting({ pipeline: [ok(unfinished)], advance: [{ status: 403, body: {} }], searchIndex: [{ status: 403, body: {} }] })
+    const { id, sent } = aMeeting({ pipeline: [ok(unfinished)], advance: [DEMO_REFUSAL], searchIndex: [DEMO_REFUSAL] })
     asDemo(id)
     const page = await open(id)
 
@@ -542,7 +555,7 @@ describe('the public demo', () => {
   })
 
   it('goes read-only when the server says so before the page knew', async () => {
-    const { id, sent } = aMeeting({ pipeline: [ok(answer()), ok(answer()), ok(answer({ next: 'wait' }))], advance: [{ status: 403, body: { message: 'The demo meeting is read-only' } }] })
+    const { id, sent } = aMeeting({ pipeline: [ok(answer()), ok(answer()), ok(answer({ next: 'wait' }))], advance: [DEMO_REFUSAL] })
     const page = await open(id)
     await vi.waitFor(() => expect(sent.advance).toBe(1))
     await vi.waitFor(() => expect(page.text()).toContain('This demo meeting is read-only'))

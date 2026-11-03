@@ -607,7 +607,8 @@ Opening `/meetings/:id/progress` now takes a meeting from `uploaded` to `ready` 
 | 503 from the gate (ADR-0016) | The same, and it says MeetMind is not available |
 | 429 | The same, and it says the server asked it to slow down |
 | `Retry-After` or `retryAfterMs` on any of those | Never sooner than that, up to an hour: not the next try, not the "Try again" of a stop, and not a tab coming back into view. The `online` event ends only the wait of a network error. Only a click on rebuilding goes against it |
-| 403 | The page is read-only from then on, as below, with no more steps |
+| 403 with the demo guard's own message | The page is read-only from then on, as below, with no more steps |
+| Any other 403 | Trouble, like a 500: it comes from something in front of the app, and says nothing about the meeting |
 | 404 | Says the meeting no longer exists, with no retry |
 | 409 | Sends no more steps. Looks after 1–3 s, and then as for `wait` with no time |
 
@@ -617,7 +618,7 @@ A watching tab backs off the same way and never stops for trouble, since it spen
 
 **With no `navigator.locks`** (plain http, or an old browser) there is a choice. Letting every tab drive is safe, and would double the requests for as long as both are open, each mostly hearing `wait`. Refusing to drive would leave the page doing nothing over http. So `softLocks` stands in: a lease in `localStorage`, implementing the same small interface, renewed every 20 s and removed on the way out, and only the driving tab has one. It lasts 90 s so that a hidden tab's once-a-minute timers cannot lose it while it drives, which is also the longest a crashed tab holds up the next. Its key is a hash of the lock's name, since a meeting's id is the capability to read it. It is weaker than a lock: two tabs can both believe they won, and refused storage makes it say yes to everyone. Both only cost the requests this is here to save. A rejected `locks.request` drives with no lock, for the same reason.
 
-**The public demo** is recognised on the client by `isDemoMeetingId`, the same check as the server's guard. Its page takes no lock, sets no timer and sends nothing unless its first read failed, in which case it reads at most 3 times, and never a step. It says it is read-only and not finished, offers no button, and a finished one shows no banner and leads on to asking. If the setting ever disagrees with the server, the 403 turns the page read-only there and then.
+**The public demo** is recognised on the client by `isDemoMeetingId`, the same check as the server's guard. Its page takes no lock, sets no timer and sends nothing unless its first read failed, in which case it reads at most 3 times, and never a step. It says it is read-only and not finished, offers no button, and a finished one shows no banner and leads on to asking. If the setting ever disagrees with the server, the guard's 403 turns the page read-only there and then. The message is a shared constant, and an e2e case holds what the route really sends to it.
 
 **What is said, and where.**
 - **The live region** has one sentence, always mounted, that depends on nothing that ticks: not the time, not bytes, not batches. Parts of extraction are the only count, each being a provider request, a minute apart. The banner, the countdown and the figures are outside it. The browser job watches it for changes during a countdown.

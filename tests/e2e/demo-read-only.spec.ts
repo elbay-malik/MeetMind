@@ -8,6 +8,7 @@ import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup, startServer } from '@nuxt/test-utils/e2e'
 import type { CreateMeetingResponse, ExtractionStepResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
+import { DEMO_READ_ONLY_MESSAGE } from '../../shared/utils/meeting'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
@@ -94,11 +95,14 @@ const ask = (id: string) => fetch(`/api/meetings/${id}/ask`, {
   body: JSON.stringify({ question: 'What did we decide about the marketing budget?' }),
 })
 
+// The words themselves, and the same constant the page tells this refusal from any other 403 by.
 const READ_ONLY = 'The demo meeting is read-only: it can be read and asked questions, not changed.'
 
 async function expectReadOnly(res: Response) {
   expect(res.status).toBe(403)
-  expect((await res.json() as { message: string }).message).toBe(READ_ONLY)
+  const { message } = await res.json() as { message: string }
+  expect(message).toBe(READ_ONLY)
+  expect(message).toBe(DEMO_READ_ONLY_MESSAGE)
 }
 
 /**
