@@ -194,6 +194,10 @@ export interface Database {
         /** 'complete', 'changed' or 'lost'. */
         Returns: string
       }
+      next_expired_meeting: {
+        Args: { p_days: number, p_exclude: string }
+        Returns: string | null
+      }
       sweep_next_meeting: {
         Args: { p_model: string, p_exclude: string | null, p_limit_error: string }
         /** Always one row. `busy` names the providers that cannot be asked right now. */

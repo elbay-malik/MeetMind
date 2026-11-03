@@ -217,6 +217,12 @@ export interface PipelineRepository {
    * One request, reading at most {@link SWEEP_POOL} of each kind of meeting.
    */
   nextForSweep(options: SweepOptions): Promise<SweepChoice>
+  /**
+   * The oldest meeting created more than `days` days ago with no live step, leaving out
+   * `excludeId`, or null. Age is judged from `createdAt`, by the store's own clock. Deletes
+   * nothing: `deleteMeeting` does that, and checks everything again (ADR-0017). One request.
+   */
+  nextExpired(options: { days: number, excludeId: string }): Promise<string | null>
 }
 
 /** What `nextForSweep` needs to be told. */
@@ -304,6 +310,12 @@ export function afterInRotation(row: { createdAt: string, id: string }, last: { 
   if (!last) return true
   const created = Date.parse(row.createdAt) - Date.parse(last.createdAt)
   return created > 0 || (created === 0 && row.id > last.id)
+}
+
+/** Neither driver looks for anything with no age or no demo to leave out, alike: see `next_expired_meeting`. */
+export function assertValidExpiry({ days, excludeId }: { days: number, excludeId: string }): void {
+  if (!Number.isInteger(days) || days <= 0) throw new Error(`The days must be a positive whole number, got ${days}`)
+  if (!excludeId) throw new Error('The public demo must be named')
 }
 
 /** The largest lease Postgres's `integer` holds; both drivers refuse more, alike. */

@@ -6,7 +6,7 @@ import { createLocalPipelineRepository } from '../../server/utils/db/pipeline-lo
 import { hashTranscript } from '../../server/utils/db/windows-local'
 import { readPipeline } from '../../server/utils/pipeline/assess'
 import { indexingHarness } from './helpers/indexing'
-import { describeSweepSelection, MODEL, type MeetingSeed, type SweepDriver } from './helpers/sweep-cases'
+import { describeExpirySelection, describeSweepSelection, MODEL, type MeetingSeed, type SweepDriver } from './helpers/sweep-cases'
 
 let dataDir: string
 beforeAll(async () => {
@@ -39,8 +39,8 @@ async function seed(id: string, meeting: MeetingSeed) {
   const runs = Object.fromEntries(Object.entries(meeting.runs ?? {}).map(([stage, run]) => [stage, {
     runId: `run-${stage}`,
     cursor: run.cursor ?? {},
-    stepToken: run.leaseInMs ? 'token' : null,
-    stepLeaseUntil: run.leaseInMs ? now + run.leaseInMs : null,
+    stepToken: run.leaseInMs !== undefined ? 'token' : null,
+    stepLeaseUntil: run.leaseInMs !== undefined ? now + run.leaseInMs : null,
     attempts: run.attempts ?? 0,
     lastError: run.lastError ?? null,
     retryAt: run.retryInMs === undefined ? null : now + run.retryInMs,
@@ -85,3 +85,4 @@ const driver = (): SweepDriver => ({
 })
 
 describeSweepSelection('the local driver', driver)
+describeExpirySelection('the local driver', driver)

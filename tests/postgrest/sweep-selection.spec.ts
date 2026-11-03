@@ -1,5 +1,5 @@
 import { afterAll, beforeAll } from 'vitest'
-import { describeSweepSelection } from '../unit/helpers/sweep-cases'
+import { describeExpirySelection, describeSweepSelection } from '../unit/helpers/sweep-cases'
 import { startSupabaseStandIn } from './helpers'
 
 /** The local driver's cases (tests/unit/sweep-selection.spec.ts), through the real Supabase driver and real SQL. */
@@ -13,3 +13,4 @@ afterAll(async () => {
 })
 
 describeSweepSelection('the Supabase driver', () => standIn.driver())
+describeExpirySelection('the Supabase driver', () => standIn.driver())

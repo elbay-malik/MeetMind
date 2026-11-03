@@ -11,6 +11,7 @@ import { createSupabasePipelineRepository } from '../../server/utils/db/pipeline
 const MIGRATION = readFileSync('supabase/migrations/20261101120000_transcription_steps.sql', 'utf8')
   + readFileSync('supabase/migrations/20261103120000_search_index_steps.sql', 'utf8')
   + readFileSync('supabase/migrations/20261103180000_sweeper.sql', 'utf8')
+  + readFileSync('supabase/migrations/20261103190000_retention_purge.sql', 'utf8')
 
 function sqlParameters(fn: string): string[] {
   const signature = new RegExp(`create (?:or replace )?function public\\.${fn}\\(([\\s\\S]*?)\\n\\)`).exec(MIGRATION)
@@ -291,5 +292,38 @@ describe('nextForSweep', () => {
   it('throws when the function refuses', async () => {
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ code: '22023', message: 'a model is required' }), { status: 400, headers: { 'content-type': 'application/json' } }))
     await expect(repo.nextForSweep(OPTIONS)).rejects.toThrow(/sweep selection failed/)
+  })
+})
+
+describe('nextExpired', () => {
+  it('sends exactly the function\'s parameters, and reads its one id', async () => {
+    const calls = stubRpc(MEETING)
+    await expect(repo.nextExpired({ days: 30, excludeId: TOKEN })).resolves.toBe(MEETING)
+    expect(calls[0]!.fn).toBe('next_expired_meeting')
+    expect(Object.keys(calls[0]!.body).sort()).toEqual(sqlParameters('next_expired_meeting'))
+    expect(calls[0]!.body).toEqual({ p_days: 30, p_exclude: TOKEN })
+  })
+
+  it('reads null as nothing having expired', async () => {
+    stubRpc(null)
+    await expect(repo.nextExpired({ days: 30, excludeId: TOKEN })).resolves.toBeNull()
+  })
+
+  // Anything else is not to be deleted by, or read as nothing to do.
+  it.each<[string, unknown]>([['a number', 7], ['a row', [{ id: MEETING }]], ['a boolean', true]])('throws on %s', async (_name, answer) => {
+    stubRpc(answer)
+    await expect(repo.nextExpired({ days: 30, excludeId: TOKEN })).rejects.toThrow(/unusable answer/)
+  })
+
+  it.each([0, -1, 1.5])('sends nothing with %s days', async (days) => {
+    const calls = stubRpc(null)
+    await expect(repo.nextExpired({ days, excludeId: TOKEN })).rejects.toThrow(/positive whole number/)
+    expect(calls).toEqual([])
+  })
+
+  it('sends nothing with no demo to leave out', async () => {
+    const calls = stubRpc(null)
+    await expect(repo.nextExpired({ days: 30, excludeId: '' })).rejects.toThrow(/public demo/)
+    expect(calls).toEqual([])
   })
 })
