@@ -6,11 +6,11 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { createStorage } from 'unstorage'
 import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
-import type { CreateMeetingResponse, Meeting, PublicMeeting, TranscriptSegment } from '../../shared/types/meeting'
+import type { CreateMeetingResponse, Meeting, PipelineResponse, PublicMeeting, TranscriptSegment } from '../../shared/types/meeting'
 import { INJECTED_FAILURE_TEXT } from '../../server/utils/injected-failure'
 import { fixedSentence } from '../../server/utils/public-errors'
 import { DAILY_LIMIT_MESSAGE } from '../../server/utils/qa/embedder'
-import { driveToDone } from './helpers/pipeline'
+import { advance, driveToDone, STEP_BOUND } from './helpers/pipeline'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 import { LOCAL_DRIVERS } from './helpers/local-drivers'
 import { driveTranscription } from './helpers/transcribe'
@@ -495,6 +495,61 @@ describe('what a provider throws', () => {
       expect(res.status).toBe(500)
       expectClean(stage, text)
     })
+  })
+})
+
+/**
+ * `/advance` runs the same steps as the routes above and answers from a second read, so what
+ * goes wrong during a step must not reach that answer. Asked first, while nothing is resting,
+ * since the sweeps above only reach it once the run is parked or on a step with no marker.
+ */
+describe('what a provider throws during /advance', () => {
+  /**
+   * Asks until the failure is stored, as a step that plans first or a stage that comes later
+   * takes more than one, which is what shows the failing step was reached. Every answer on the
+   * way is held, the one the step failed in most of all.
+   */
+  async function advanceUntilStored(id: string, stage: string, where: string, stored = INJECTED_FAILURE_TEXT): Promise<void> {
+    for (let i = 0; i < STEP_BOUND; i++) {
+      const res = await advance(id)
+      const text = await res.text()
+      expect(res.status, where).toBe(200)
+      expectClean(`${where}: request ${i + 1}`, JSON.stringify([...res.headers]) + text)
+      if ((await db.getItem<Ledger>(`pipeline/${id}`))?.runs[stage]?.lastError === stored) return
+      const answer = JSON.parse(text) as PipelineResponse
+      expect(answer.next, `${where}: stopped at request ${i + 1} without failing`).not.toMatch(/^(?:done|failed)$/)
+      if (answer.next === 'wait') await new Promise(resolve => setTimeout(resolve, Math.min(answer.retryAfterMs ?? 0, 6000) + 20))
+    }
+    throw new Error(`${where}: the failure was not stored in ${STEP_BOUND} requests`)
+  }
+
+  it.each(['refused', 'retryable', 'rate-limited', 'internal'])('in transcription, failing as %s', async (kind) => {
+    const marked = audio.slice()
+    marked.set(new TextEncoder().encode(`${CANARY}:transcribe:${kind}`), 100)
+    const { id } = await uploaded(marked)
+    await advanceUntilStored(id, 'transcription', `${kind} transcription`)
+    await sweep(id, `${kind} transcription after /advance`)
+  })
+
+  it.each(['refused', 'retryable', 'rate-limited', 'internal'])('in extraction, failing as %s', async (kind) => {
+    const { id } = await transcribed()
+    await markTranscript(id, `${CANARY}:summarize:${kind}`)
+    await advanceUntilStored(id, 'summarization', `${kind} extraction`)
+    await sweep(id, `${kind} extraction after /advance`)
+  })
+
+  it.each(['refused', 'retryable', 'rate-limited'])('in indexing, failing as %s', async (kind) => {
+    const { id } = await transcribed()
+    await markTranscript(id, `${CANARY}:embed:${kind}`)
+    await advanceUntilStored(id, 'search_index', `${kind} index`)
+    await sweep(id, `${kind} index after /advance`)
+  })
+
+  it('in indexing, failing as no provider\'s error, with our own words on the run', async () => {
+    const { id } = await transcribed()
+    await markTranscript(id, `${CANARY}:embed:internal`)
+    await advanceUntilStored(id, 'search_index', 'internal index', 'Indexing hit a problem on the server.')
+    await sweep(id, 'internal index after /advance')
   })
 })
 
