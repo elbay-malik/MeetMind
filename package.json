@@ -16,6 +16,7 @@
     "test:services": "vitest run --config vitest.services.config.ts",
     "test:postgrest": "vitest run --config vitest.postgrest.config.ts",
     "db:migrate": "bash scripts/apply-migrations.sh",
+    "upload:ffmpeg-wasm": "node scripts/upload-ffmpeg-wasm.mjs",
     "ci:local": "bash scripts/ci-local.sh",
     "test:watch": "vitest"
   },

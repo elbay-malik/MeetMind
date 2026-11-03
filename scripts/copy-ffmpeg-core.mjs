@@ -1,6 +1,8 @@
 // Copies the self-hosted ffmpeg.wasm assets into public/ffmpeg/ (gitignored).
 // Runs on postinstall so dev, build and CI all serve the core same-origin —
 // loading it from a CDN is not an option once cross-origin rules get involved.
+// A Worker build deletes the wasm from its output, and a route serves it from R2 at
+// the same path, so that is same-origin too (ADR-0018).
 import { cp, mkdir } from 'node:fs/promises'
 
 const root = new URL('../', import.meta.url)

@@ -1,4 +1,5 @@
 import { FFmpeg, FFFSType } from '@ffmpeg/ffmpeg'
+import { FFMPEG_CORE_WASM_URL } from '../../shared/utils/ffmpeg-core'
 import type { ExtractRequest, ExtractResponse, ExtractOptions } from './ffmpeg.protocol'
 
 // Worker global scope: the DOM lib types `postMessage` with a targetOrigin
@@ -21,7 +22,7 @@ async function newInstance(jobId: string, options: ExtractOptions): Promise<FFmp
   post({ type: 'loading', jobId, phase: 'fetch-core' })
   await ffmpeg.load({
     coreURL: new URL('/ffmpeg/ffmpeg-core.js', self.location.origin).href,
-    wasmURL: new URL('/ffmpeg/ffmpeg-core.wasm', self.location.origin).href,
+    wasmURL: new URL(FFMPEG_CORE_WASM_URL, self.location.origin).href,
     ...(options.selfHostedClassWorker
       ? { classWorkerURL: new URL('/ffmpeg/esm/worker.js', self.location.origin).href }
       : {}),
