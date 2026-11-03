@@ -276,3 +276,51 @@ describe('an index of another model', () => {
     expect(await (await advance(id)).json()).toMatchObject({ next: 'done', index: { state: 'complete' } })
   })
 })
+
+describe('the page that drives it, as the server renders it', () => {
+  const page = (id: string) => fetch(`/meetings/${id}/progress`, { headers: { accept: 'text/html' } })
+
+  it('moves nothing and stores nothing: a render is not a driver, and neither is a crawler', async () => {
+    const meeting = await uploadedMeeting()
+    const before = await everythingStored()
+    const res = await page(meeting.id)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('Audio uploaded')
+    expect(await everythingStored()).toEqual(before)
+    expect((await meetingOf(meeting.id)).status).toBe('uploaded')
+  })
+
+  it('says where a meeting stands, from the same answer the driver reads', async () => {
+    const meeting = await uploadedMeeting()
+    await driveToDone(meeting.id)
+    const html = await (await page(meeting.id)).text()
+    expect(html).toContain('Ready for questions')
+    expect(html).toContain('Ask on the meeting page')
+  })
+
+  it('carries no stored error, not on the page and not in what it sends with it', async () => {
+    const meeting = await uploadedMeeting()
+    const raw = 'PGRST116 relation pipeline_runs does not exist'
+    const row = await db.getItem<Meeting>(`meetings/${meeting.id}`)
+    await db.setItem(`meetings/${meeting.id}`, { ...row!, status: 'failed', failedStage: 'transcription', errorMessage: raw })
+
+    const html = await (await page(meeting.id)).text()
+    expect(html).toContain('Transcription did not finish')
+    expect(html).not.toContain('PGRST116')
+  })
+
+  it.each<[string, Partial<Meeting>, RegExp]>([
+    ['a rejected upload', { failedStage: 'upload', errorMessage: 'Uploaded object is text/html, expected audio/ogg; object deleted' }, /rejected and removed/],
+    ['audio gone', { failedStage: 'transcription', errorMessage: 'The meeting audio is missing from storage' }, /missing or has changed/],
+    ['too many chunks', { failedStage: 'summarization', errorMessage: 'This transcript would need 41 sequential requests, over the 40 limit.' }, /too long to extract/],
+  ])('says %s is final, in its own words, from the real assessment', async (_name, failure, words) => {
+    const meeting = await uploadedMeeting()
+    const row = await db.getItem<Meeting>(`meetings/${meeting.id}`)
+    await db.setItem(`meetings/${meeting.id}`, { ...row!, status: 'failed', ...failure })
+
+    expect(await pipeline(meeting.id)).toMatchObject({ next: 'failed', retryAt: null })
+    const html = await (await page(meeting.id)).text()
+    expect(html).toMatch(words)
+    expect(html).not.toContain(failure.errorMessage!)
+  })
+})
