@@ -170,6 +170,9 @@ console.log('\n# The opt-in, every stub flag and nothing else set')
 await withWorker({ ...ALWAYS, ...OPT_IN_AND_FLAGS }, async (logs) => {
   await checkAllRefused(logs, Object.keys(EVERY_SETTING))
   check((await fetch(`${base}/api/health`)).status === 200, 'the health check still answers')
+  // Not a JSON route, so its own plain answer. scripts/verify-worker-streams.mjs has the rest of it.
+  const wasm = await fetch(`${base}/ffmpeg/ffmpeg-core.wasm`)
+  check(wasm.status === 503 && await wasm.text() === REFUSED, `the ffmpeg wasm route answers the same sentence, in plain text (got ${wasm.status})`)
   check((await fetch(`${base}/`, { headers: { accept: 'text/html' } })).status === 200, 'the home page still renders')
   const page = await fetch(`${base}/meetings/${MEETING}`, { headers: { accept: 'text/html' } })
   const html = await page.text()
