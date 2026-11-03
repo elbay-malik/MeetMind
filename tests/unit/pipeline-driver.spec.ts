@@ -183,6 +183,17 @@ function fakeLocks() {
   return locks
 }
 
+/** Another tab of the browser, taking the lock and giving it back when told. */
+function anotherTab(locks: ReturnType<typeof fakeLocks>) {
+  let letGo = () => {}
+  return {
+    take: () => void locks.request(LOCK, { ifAvailable: true }, () => new Promise<void>((resolve) => {
+      letGo = resolve
+    })),
+    letGo: () => letGo(),
+  }
+}
+
 function tab(server: { fetch: DriverFetch }, overrides: Partial<DriverDeps> = {}) {
   return createPipelineDriver({
     meetingId: ID,
@@ -493,12 +504,11 @@ describe('driving', () => {
 
   describe('told it failed', () => {
     it('stops at once rather than waiting out the cooldown, and says when a retry could help', async () => {
-      const server = fakeServer({ [READ]: [ok(answer())], [ADVANCE]: [ok(FAILED)] })
+      const server = fakeServer({ [READ]: [ok(answer()), ok(FAILED)], [ADVANCE]: [ok(FAILED)] })
       const driver = tab(server)
       driver.start()
       await settle()
       expect(driver.state()).toMatchObject({ stop: 'failed', retryFrom: Date.now() + 60_000, answer: FAILED })
-      expect(vi.getTimerCount()).toBe(0)
       await pass(HOUR)
       expect(server.count(ADVANCE)).toBe(1)
     })
@@ -577,13 +587,13 @@ describe('driving', () => {
       await settle()
       expect(driver.state()).toMatchObject({ stop: 'finished', retryFrom: Date.now() + HOUR })
       expect(server.count(ADVANCE)).toBe(0)
-      expect(vi.getTimerCount()).toBe(0)
 
       await pass(HOUR)
-      expect(server.count(READ)).toBe(1)
+      expect(server.count(ADVANCE)).toBe(0)
       driver.retry()
       await settle()
-      expect(server.routes()).toEqual([READ, READ, ADVANCE])
+      expect(server.count(REBUILD)).toBe(0)
+      expect(server.routes().slice(-2)).toEqual([READ, ADVANCE])
       expect(driver.state().answer).toEqual(READY)
     })
   })
@@ -1085,12 +1095,15 @@ describe('one driving tab per browser', () => {
     await pass(WATCH_POLL_MS)
     expect(watcher.state().stop).toBe(stop)
     expect(locks.queued()).toBe(0)
-    expect(vi.getTimerCount()).toBeLessThanOrEqual(1)
     await pass(HOUR)
-    expect(watcherServer.count(READ)).toBe(1)
+    // A failure with a time looks now and then, in case another tab retries it. It stays out of the queue.
+    expect(watcherServer.count(READ)).toBeLessThanOrEqual(1 + HOUR / SLOW_LOOK_MS)
+    if (stop === 'finished') expect(watcherServer.count(READ)).toBe(1)
+    expect(locks.queued()).toBe(0)
+    const looks = watcherServer.count(READ)
     driver.stop()
     await settle()
-    expect(watcherServer.count(READ)).toBe(1)
+    expect(watcherServer.count(READ)).toBe(looks)
     expect(watcherServer.count(ADVANCE)).toBe(0)
   })
 
@@ -1444,6 +1457,153 @@ describe('a hidden tab', () => {
     driver.wake('visible')
     await settle()
     expect(server.count(READ)).toBe(1)
+  })
+})
+
+describe('a tab that stopped, with something a retry could still do', () => {
+  const failedHere = answer({ status: 'failed', next: 'failed', retryAt: '2026-11-03T12:01:00.000Z', retryAfterMs: 60_000, progress: { stage: 'summarization', done: 1, total: 3, etaSeconds: null } })
+  const movedOn = answer({ status: 'summarizing', next: 'wait', retryAfterMs: 20_000, progress: { stage: 'summarization', done: 2, total: 3, etaSeconds: null } })
+
+  it('looks once a minute, and takes part again when another tab has moved the meeting', async () => {
+    const locks = fakeLocks()
+    const other = anotherTab(locks)
+    const server = fakeServer({ [READ]: [ok(failedHere), ok(failedHere), ok(movedOn)] })
+    const driver = tab(server, { locks })
+    driver.start()
+    await settle()
+    expect(driver.state().stop).toBe('failed')
+    other.take()
+    await settle()
+
+    await pass(SLOW_LOOK_MS)
+    expect(server.count(READ)).toBe(2)
+    expect(driver.state().stop).toBe('failed')
+
+    await pass(SLOW_LOOK_MS)
+    await settle()
+    expect(driver.state()).toMatchObject({ stop: null, role: 'watching', answer: movedOn })
+  })
+
+  it('takes over when the tab that moved it closes, with no event at all', async () => {
+    const locks = fakeLocks()
+    const other = anotherTab(locks)
+    const server = fakeServer({ [READ]: [ok(failedHere), ok(movedOn)], [ADVANCE]: [ok(READY)] })
+    const driver = tab(server, { locks })
+    driver.start()
+    await settle()
+    other.take()
+    await settle()
+    await pass(SLOW_LOOK_MS)
+    await settle()
+    expect(driver.state().role).toBe('watching')
+
+    other.letGo()
+    await pass(2 * MAX_JITTER_MS + 20_000)
+    expect(driver.state()).toMatchObject({ role: 'driving', stop: 'finished', answer: READY })
+  })
+
+  it('spends no retry of its own while nothing has moved', async () => {
+    const onOffer = { ...failedHere, next: 'continue' as const, retryAt: null, retryAfterMs: null, index: { state: 'complete' as const, done: 1, total: 1, retryAt: null } }
+    const server = fakeServer({ [READ]: [ok(failedHere), ok(onOffer)] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    await pass(10 * SLOW_LOOK_MS)
+    expect(server.count(ADVANCE)).toBe(0)
+    expect(driver.state().stop).toBe('failed')
+  })
+
+  it('does not come back for a park merely running out, which takes a click or a return to view', async () => {
+    const parked = answer({ status: 'ready', next: 'done', retryAfterMs: HOUR, retryAt: '2026-11-03T13:00:00.000Z', index: { state: 'parked', done: 3, total: null, retryAt: '2026-11-03T13:00:00.000Z' } })
+    const over = answer({ status: 'ready', next: 'continue', index: { state: 'building', done: 3, total: null, retryAt: null } })
+    const server = fakeServer({ [READ]: [ok(parked), ok(over)] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    await pass(2 * HOUR)
+    expect(server.count(ADVANCE)).toBe(0)
+    expect(driver.state().stop).toBe('finished')
+  })
+
+  it('does carry on with a parked index another tab has started moving', async () => {
+    const parked = answer({ status: 'ready', next: 'done', retryAfterMs: HOUR, retryAt: '2026-11-03T13:00:00.000Z', index: { state: 'parked', done: 3, total: null, retryAt: '2026-11-03T13:00:00.000Z' } })
+    const moved = answer({ status: 'ready', next: 'continue', index: { state: 'building', done: 19, total: null, retryAt: null } })
+    const server = fakeServer({ [READ]: [ok(parked), ok(moved)], [ADVANCE]: [ok(READY)] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    await pass(SLOW_LOOK_MS)
+    await settle()
+    expect(driver.state()).toMatchObject({ stop: 'finished', answer: READY })
+  })
+
+  it('does not look at all when no retry could do anything', async () => {
+    const server = fakeServer({ [READ]: [ok(FAILED_FOR_GOOD)] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    await pass(HOUR)
+    expect(server.count(READ)).toBe(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('says the meeting is gone if it finds that out, and looks no more', async () => {
+    const server = fakeServer({ [READ]: [ok(failedHere), reply(404, {})] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    await pass(SLOW_LOOK_MS)
+    expect(driver.state().stop).toBe('missing')
+    await pass(HOUR)
+    expect(server.count(READ)).toBe(2)
+  })
+
+  it('takes trouble as nothing to report, and is no faster for it', async () => {
+    const server = fakeServer({ [READ]: [ok(failedHere), reply(429, {}, String(HOUR / 1000)), ok(failedHere)] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    await pass(SLOW_LOOK_MS)
+    expect(server.count(READ)).toBe(2)
+    await pass(HOUR - 1)
+    expect(server.count(READ)).toBe(2)
+    expect(driver.state()).toMatchObject({ stop: 'failed', pause: null })
+  })
+
+  it('stops looking in the end, and when the tab leaves', async () => {
+    const leaving = fakeServer({ [READ]: [ok(failedHere)] })
+    const left = tab(leaving)
+    left.start()
+    await settle()
+    left.stop()
+    await pass(HOUR)
+    expect(leaving.count(READ)).toBe(1)
+    expect(vi.getTimerCount()).toBe(0)
+
+    const forgotten = fakeServer({ [READ]: [ok(failedHere)] })
+    const open = tab(forgotten)
+    open.start()
+    await settle()
+    await pass(LONGEST_NO_PROGRESS_MS + HOUR)
+    const looks = forgotten.count(READ)
+    expect(looks).toBeLessThanOrEqual(LONGEST_NO_PROGRESS_MS / SLOW_LOOK_MS + 2)
+    await pass(HOUR)
+    expect(forgotten.count(READ)).toBe(looks)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not put off what a return to view does, however lately it looked', async () => {
+    const parked = answer({ status: 'ready', next: 'done', retryAfterMs: SLOW_LOOK_MS, retryAt: '2026-11-03T12:01:00.000Z', index: { state: 'parked', done: 3, total: null, retryAt: '2026-11-03T12:01:00.000Z' } })
+    const over = answer({ status: 'ready', next: 'continue', index: { state: 'building', done: 3, total: null, retryAt: null } })
+    const server = fakeServer({ [READ]: [ok(parked), ok(parked), ok(over)], [ADVANCE]: [ok(READY)] })
+    const driver = tab(server)
+    driver.start()
+    await settle()
+    await pass(SLOW_LOOK_MS)
+    expect(server.count(READ)).toBe(2)
+    driver.wake('visible')
+    await settle()
+    expect(driver.state()).toMatchObject({ stop: 'finished', answer: READY })
   })
 })
 
