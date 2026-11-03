@@ -1,8 +1,8 @@
 /**
  * Blank, not left out, because a server inherits this process's environment. Nothing puts
- * `.env` there (the Nuxt test config loads `.env.test`, and a built server reads no dotenv
- * file), but a shell could have exported real keys, and writing to the real database from a
- * test run is not a mistake to leave open.
+ * `.env` there (the Nuxt test config loads `.env.test`, and `node .output/server/index.mjs`
+ * reads no dotenv file), but a shell could have exported real keys, and writing to the real
+ * database from a test run is not a mistake to leave open.
  */
 export const REAL_SETTINGS_ABSENT = {
   NUXT_GROQ_API_KEY: '',
