@@ -184,8 +184,8 @@ describe('a production build with nothing set and no opt-in', () => {
     expect((await page(path)).status).toBe(200)
   })
 
-  it('tells a wrong code only that it is wrong', async () => {
-    const res = await fetch('/api/invite-check', { method: 'POST', headers: { authorization: 'Bearer not-the-code' } })
+  it.each(['/api/invite-check', '/api/meetings'])('tells a wrong code at %s only that it is wrong', async (path) => {
+    const res = await fetch(path, { method: 'POST', headers: { authorization: 'Bearer not-the-code' } })
     expect(res.status).toBe(401)
     expect(await res.text()).not.toContain(REFUSED)
   })
