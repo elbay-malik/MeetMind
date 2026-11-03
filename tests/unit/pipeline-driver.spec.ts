@@ -1461,6 +1461,26 @@ describe('a hidden tab', () => {
   })
 })
 
+describe('jitter on the pauses that are not a told wait', () => {
+  it.each<[string, Script, string, number, Partial<DriverDeps>]>([
+    ['a 503', { [READ]: [ok(answer())], [ADVANCE]: [reply(503, {}), ok(READY)] }, ADVANCE, 5_000, {}],
+    ['a 429', { [READ]: [ok(answer())], [ADVANCE]: [reply(429, {}), ok(READY)] }, ADVANCE, 5_000, {}],
+    ['a lost connection', { [READ]: [ok(answer())], [ADVANCE]: [LOST, ok(READY)] }, ADVANCE, 5_000, {}],
+    ['a 409', { [READ]: [reply(409, {}), ok(READY)] }, READ, SHORTEST_WAIT_MS, {}],
+    ['the spin bound', { [READ]: [ok(atByte(1))], [ADVANCE]: [ok(atByte(1))] }, ADVANCE, SPIN_PAUSE_MS, {}],
+    ['a demo page that could not read', { [READ]: [reply(500, {}), ok(READY)] }, READ, 5_000, { readOnly: true }],
+  ])('%s', async (_name, script, route, shortest, overrides) => {
+    const server = fakeServer(script)
+    tab(server, { random: () => 1, ...overrides }).start()
+    await settle()
+    const sent = server.count(route)
+    await pass(shortest + MAX_JITTER_MS - 1)
+    expect(server.count(route)).toBe(sent)
+    await pass(1)
+    expect(server.count(route)).toBeGreaterThan(sent)
+  })
+})
+
 describe('a step out for a while after a pause', () => {
   it('is not still paused once the server has plainly taken the step', async () => {
     const server = fakeServer({ [READ]: [ok(answer())], [ADVANCE]: [ok(wait(3 * 60_000)), NOT_ANSWERED] })
@@ -1812,6 +1832,31 @@ describe('asking for a rebuild while another tab holds the lock', () => {
     watching.rebuildIndex()
     await settle()
     expect(server.count(REBUILD)).toBe(1)
+  })
+})
+
+describe('trouble now and then over a long run', () => {
+  it('counts it in a row, so a good answer between starts the bound again', async () => {
+    const trouble = [reply(503, {}), reply(503, {}), reply(503, {}), reply(503, {})]
+    const server = fakeServer({ [READ]: [ok(answer())], [ADVANCE]: [...trouble, ok(atByte(1)), ...trouble, ok(READY)] })
+    const driver = tab(server)
+    driver.start()
+    await pass(10 * 60_000)
+    expect(driver.state().stop).toBe('finished')
+  })
+})
+
+describe('a watching tab reading a failure a retry could help', () => {
+  it('stops there, like the tab with the lock, and sends no step', async () => {
+    const locks = fakeLocks()
+    anotherTab(locks).take()
+    await settle()
+    const server = fakeServer({ [READ]: [ok(answer({ status: 'failed' }))] })
+    const driver = tab(server, { locks })
+    driver.start()
+    await settle()
+    expect(driver.state()).toMatchObject({ stop: 'failed', retryFrom: Date.now() })
+    expect(server.count(ADVANCE)).toBe(0)
   })
 })
 
