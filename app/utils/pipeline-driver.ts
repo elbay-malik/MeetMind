@@ -723,6 +723,8 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriver {
       releaseLock = resolve
     })
     if (state.rebuildError === REBUILD_ELSEWHERE) update({ rebuildError: null })
+    // What it counted as a watcher, which is never bound, is not what a driver is bound by.
+    resetBounds()
     void drive(nextLoop())
     return released
   }
