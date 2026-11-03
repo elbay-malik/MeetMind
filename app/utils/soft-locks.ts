@@ -95,6 +95,9 @@ export function softLocks(deps: SoftLockDeps): DriverLocks {
   async function hold(key: string, callback: (lock: unknown) => Promise<void> | void) {
     let timer: unknown
     const renew = () => {
+      // Taken from this tab: it is not this tab's to take back.
+      const current = holder(key)
+      if (current && current !== me) return
       write(key)
       timer = setTimer(renew, SOFT_RENEW_MS)
     }
@@ -111,6 +114,10 @@ export function softLocks(deps: SoftLockDeps): DriverLocks {
   return {
     async request(name, options, callback) {
       const key = keyFor(name)
+      if (options.steal) {
+        write(key)
+        return hold(key, callback)
+      }
       if (options.ifAvailable) {
         if (await take(key)) return hold(key, callback)
         return callback(null)
