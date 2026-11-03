@@ -18,7 +18,7 @@
 - Groq Whisper: 25MB file cap on free tier (100MB dev tier, URL only), models downsample to 16kHz mono internally. Per Groq's launch post citing Artificial Analysis, "Groq's implementation of Whisper Large v3 Turbo clocks in at a speed factor rate of 216x real-time"; whisper-large-v3 was "independently benchmarked... at a real-time speed factor of 299x" (WER held at 10.3%). In practice, per eesel AI's 2026 Groq analysis, "an hour of audio processes in about 15 seconds." verbose_json gives segment timestamps; word timestamps supported (extra latency). Per Groq's Rate Limits docs, "Both Whisper models give you 2,000 requests per day and 7,200 audio seconds per hour."
 - Groq llama-3.3-70b-versatile free tier (as of June 4, 2026): 30 RPM, 1,000 RPD, 12,000 TPM, 100,000 TPD.
 - Gemini free tier (2026): Flash models only (Pro moved behind billing Dec 2025); Gemini 2.5 Flash ~10 RPM / 250 RPD / 250K TPM; native audio understanding handles ~9.5 hours per request, can transcribe with timestamps + speaker labels via prompt. gemini-embedding-001: 768/1536/3072 dims (MRL), 2,048 token input cap, ~10M tokens/min embedding free tier, ~1,500 embedding requests/day free.
-- Supabase free tier: 500MB Postgres DB with pgvector, Storage 1GB total with 50MB per-file cap, 7-day inactivity pause (needs keep-alive), no automatic backups. pgvector 0.8+ supports iterative index scans for filtered queries; HNSW is default index.
+- Supabase free tier: 500MB Postgres DB with pgvector, Storage 1GB total with 50MB per-file cap, 7-day inactivity pause (needs keep-alive, which is ADR-0012's sweeper), no automatic backups. pgvector 0.8+ supports iterative index scans for filtered queries; HNSW is default index.
 - Cloudflare Workers free tier: per the Workers Limits docs, the free plan has "a daily request limit of 100,000 requests, resetting at midnight UTC," a 10ms CPU-time cap per request, 128MB memory per isolate, and 50 subrequests per invocation. Critically, per Cloudflare's docs, "CPU time is active processing time: not time spent waiting on network requests, storage calls, or other general I/O, which don't count towards your CPU time" — so streaming AI proxies (mostly waiting) are viable on the free tier. R2 free tier: 10GB storage, zero egress, 1M Class A + 10M Class B ops/month.
 - Vercel Hobby: non-commercial only; functions default 60s (Node), Fluid Compute enabled; 12 functions/deployment cap.
 - Wavesurfer.js v7 (~7.12.x): TypeScript rewrite, Shadow DOM, HTML5-audio/video backend only, Regions plugin (Markers removed), client-only in Nuxt. Recommends pre-decoded peaks for large files (generate with bbc/audiowaveform); streaming supported only with pre-decoded peaks + duration.
@@ -222,12 +222,13 @@
 1. Deploy to Cloudflare Workers via the Nitro Cloudflare preset.
 2. Because MeetMind's server work is API-proxying + DB + embeddings (no server-side video processing), it fits Cloudflare's **free** tier: streaming AI calls are I/O-bound and don't accrue CPU time. *(Withdrawn by ADR-0012: CPU is per invocation and the parsing, attestation and multi-chunk work around those calls does count. Each request is a bounded step instead, and the deploy measures per-step CPU.)*
 3. If you ever choose the multi-thread FFmpeg path, set COOP/COEP headers (e.g., a Cloudflare `_headers` file) and self-host core assets — but the recommended single-thread path avoids this entirely.
-4. Set up a Supabase keep-alive (cron/GitHub Action) to prevent the 7-day pause; configure DB backups to R2.
+4. The sweeper (ADR-0012, step 11) is the keep-alive against the 7-day pause: every tick writes to Postgres, with something to do or not. There is no separate cron or GitHub Action to set up. Watch the first idle week, since whether Supabase counts a tick as activity is unproven. Configure DB backups to R2.
 5. Configure all secrets with `wrangler secret put`, including `NUXT_PUBLIC_DEMO_MEETING_ID` (`wrangler deploy` deletes a dashboard variable that `wrangler.jsonc` does not list; see ADR-0015).
+6. Run ADR-0012 step 11's acceptance: a meeting with no open tab reaches `ready` on the deployed Worker. `wrangler deploy` registers the cron in `wrangler.jsonc`, and the README's deployment steps say how to watch it. Everything its addendum leaves unproven is checked here: that the cron fires with the deployed secrets, how long a tick may run, its CPU, real providers, and that no URL on the deployed host starts a tick.
 
 **Packages:** `wrangler` (Cloudflare deploy), Nitro Cloudflare preset.
 **Key decision:** **Cloudflare Workers free tier over Vercel Hobby.** Verdict: MeetMind offloads heavy compute to the browser, so Cloudflare's 10ms CPU limit is not a blocker for I/O-bound AI proxies, and it permits a public portfolio demo (Vercel Hobby is non-commercial and its function model is less favorable here). Rejected Cloudflare paid ($5/mo) as unnecessary without server-side heavy compute.
-**Acceptance:** Public URL live with preloaded demo; Supabase keep-alive running; costs at 0 EUR.
+**Acceptance:** Public URL live with preloaded demo; the sweeper's ticks reaching Supabase (`sweep_state.last_tick_at` moving); a meeting with no open tab reaches `ready`; costs at 0 EUR.
 
 ### Phase 14 — README Whitepaper, ADRs, Demo Video (0.5-1 week, ~8h)
 **Goal:** Portfolio-grade documentation.
@@ -257,7 +258,7 @@
 2. **Groq free-tier exhaustion during demos.** Mitigation: preloaded demo meeting (no upload needed), per-IP daily caps, Gemini fallback, cost math kept under 2,000 Whisper RPD / 1,000 Llama RPD.
 3. **COOP/COEP breaking third-party embeds.** Mitigation: use single-thread core (no cross-origin isolation needed); if forced to core-mt, isolate the FFmpeg page and self-host assets.
 4. **Timestamp drift across chunks.** Mitigation: dedicated unit-tested offset/merge module, overlap + boundary de-duplication, reset-then-offset pattern.
-5. **Supabase 7-day pause / data loss.** Mitigation: scheduled keep-alive (cron/GitHub Action), automated DB backups to R2, monitor egress/storage against 500MB/1GB caps.
+5. **Supabase 7-day pause / data loss.** Mitigation: the sweeper's tick writes every 5 minutes (ADR-0012, step 11; unproven that this counts as activity until a deployed project sits idle for a week), automated DB backups to R2, monitor egress/storage against 500MB/1GB caps.
 
 ---
 
@@ -271,7 +272,7 @@
 - [ ] Rate limiting + demo protection active; cost math documented.
 - [ ] TypeScript strict; Vitest + Playwright green in CI.
 - [ ] Lighthouse/CWV numbers recorded; accessibility (keyboard seek) passes.
-- [ ] Deployed on Cloudflare free tier; Supabase keep-alive running; 0 EUR/month.
+- [ ] Deployed on Cloudflare free tier; the sweeper's ticks reaching Supabase; 0 EUR/month.
 - [ ] README whitepaper with ADRs + demo video.
 
 ## Stretch Goals
