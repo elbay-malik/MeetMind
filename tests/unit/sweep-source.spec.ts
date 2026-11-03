@@ -40,6 +40,23 @@ describe('no route reaches a sweep', () => {
     expect(server['server/plugins/sweeper.ts']).toContain('\'cloudflare:scheduled\'')
   })
 
+  it('is imported by its hook and nothing else, under whatever name a caller would give it', async () => {
+    const server = await sources('server')
+    expect(Object.keys(server).filter(file => /['"][^'"]*\/sweep['"]/.test(server[file]!))).toEqual(['server/plugins/sweeper.ts'])
+  })
+
+  it('keeps what takes a step with nobody watching, and what chooses for it, to the sweep', async () => {
+    const server = await sources('server')
+    const naming = (pattern: RegExp) => Object.keys(server).filter(file => pattern.test(server[file]!)).sort()
+    expect(naming(/\badvanceUnattended\b/)).toEqual(['server/utils/pipeline/advance.ts', 'server/utils/pipeline/sweep.ts'])
+    expect(naming(/\.(nextForSweep|nextExpired)\(/)).toEqual(['server/utils/pipeline/sweep.ts'])
+  })
+
+  it('has one hook in its plugin, on the cron', async () => {
+    const plugin = await readFile(join(rootDir, 'server/plugins/sweeper.ts'), 'utf8')
+    expect(plugin.match(/hooks\.\w+\([^,]*/g)).toEqual(['hooks.hook(\'cloudflare:scheduled\''])
+  })
+
   it('leaves out Nitro\'s tasks, which would add a route under dev and run on a Node server', async () => {
     const config = await readFile(join(rootDir, 'nuxt.config.ts'), 'utf8')
     expect(config).not.toMatch(/scheduledTasks|tasks:/)
