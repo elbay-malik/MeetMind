@@ -80,13 +80,25 @@ requires of it.
 The five `NUXT_*` stub flags and the local stores' settings are read only inside `selectDriver`'s
 `local` branch. A test hands the real path a config that throws when any of them is read.
 
-### 6. A new provider cannot forget this.
+### 6. A new provider has to say what it is.
 
 `source-hygiene.spec.ts` fails if a stub, local driver or real driver is built anywhere but the
-matching branch of `selectDriver`, going by what the source does rather than by a list of files.
-`driver-gate.spec.ts` (unit) walks the selection modules' exports, so a new selector is covered
-without being named, and fails on a key in `runtimeConfig` that is neither required nor explained.
-`driver-gate.spec.ts` (e2e) fails on a route under `server/api` that is missing from its table.
+matching branch of `selectDriver`, or is renamed, re-exported or imported in a way that would hide it
+from that check. It goes by what the source does, and it knows a driver by its name, so the names are
+a rule this decision relies on: a stand-in is `createStub*` or `createLocal*`, in a module named
+`stub*`, `local` or `*-local`, and a real driver is `create<Provider>*`, for a provider on that test's list.
+A `create*` function under `server/` that fits neither fails the test until it is added or has a
+written reason why it is not a driver, so `createFakeReranker` or `createCohereReranker` cannot pass unseen.
+
+`driver-gate.spec.ts` (unit) finds every `use*` exported under `server/`, so a selector is covered
+without being named, in a new module too. Each one has to refuse in every refused case, and with all
+nine settings present it has to hold no driver whose `kind` is `stub` or `local`. The same spec fails on a
+key in `runtimeConfig` that is neither required nor explained. `driver-gate.spec.ts` (e2e) fails on a route
+under `server/api` that is missing from its table.
+
+These read source and walk exports. They do not prove anything about code that avoids both rules:
+a factory not called `create*`, used on a route that a gated selector has already let through, with no
+`kind` to look at, gets past all of them and is left to review.
 
 ## NUXT_UPLOAD_TOKEN_SECRET and NUXT_ADMIN_TOKEN
 

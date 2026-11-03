@@ -7,8 +7,8 @@ import { withoutInternals } from '../../server/utils/pipeline/errors'
 
 /**
  * The gate through what actually builds a driver, with no network: this tier runs as a built
- * server, with `import.meta.dev` false. Each selector is found by walking the modules'
- * exports, not listed, so one added later is covered without being named here.
+ * server, with `import.meta.dev` false. Each selector is any `use*` that a file under server/
+ * exports, found on disk, so one added later is covered without being named, in a new module too.
  */
 
 const useRuntimeConfig = vi.hoisted(() => vi.fn())
@@ -26,9 +26,25 @@ const MODULES = {
 
 type Selector = (event: H3Event) => unknown
 
-const SELECTORS = Object.values(MODULES)
-  .flatMap(module => Object.entries(module as unknown as Record<string, unknown>))
+const EXPORTS_A_SELECTOR = /^export\s+(?:async\s+)?(?:function|const)\s+use[A-Z]|^export\s*\{[^}]*\buse[A-Z]/m
+
+const SERVER_SOURCES = import.meta.glob<string>('../../server/**/*.ts', { query: '?raw', import: 'default', eager: true })
+const SERVER_MODULES = import.meta.glob('../../server/**/*.ts')
+const SELECTION_MODULES = Object.keys(SERVER_SOURCES).filter(path => EXPORTS_A_SELECTOR.test(SERVER_SOURCES[path]!))
+
+const SELECTORS = (await Promise.all(SELECTION_MODULES.map(path => SERVER_MODULES[path]!())))
+  .flatMap(module => Object.entries(module as Record<string, unknown>))
   .filter((entry): entry is [string, Selector] => /^use[A-Z]/.test(entry[0]) && typeof entry[1] === 'function')
+
+/** Every `kind` a selector's result holds, in it or in the bundle of drivers it returns. */
+function kindsIn(value: unknown, depth = 3): string[] {
+  if (depth === 0 || typeof value !== 'object' || value === null) return []
+  const { kind } = value as { kind?: unknown }
+  return [
+    ...typeof kind === 'string' ? [kind] : [],
+    ...Object.values(value).flatMap(inner => kindsIn(inner, depth - 1)),
+  ]
+}
 
 const KEYS = Object.values(REQUIRED_SETTINGS).flatMap(group => Object.values(group))
 /** A value per setting, each one recognisable, so a test can look for it in what was said. */
@@ -82,6 +98,33 @@ afterEach(() => {
 })
 
 describe('the selectors it walks', () => {
+  it.each([
+    ['a function', 'export function useReranker(event: H3Event) {}'],
+    ['a constant', 'export const useReranker = (event: H3Event) => {}'],
+    ['an async function', 'export async function useReranker(event: H3Event) {}'],
+    ['a list', 'export { other, useReranker }'],
+    ['a list across lines', 'export {\n  other,\n  useReranker,\n}'],
+  ])('include one exported as %s, wherever it is', (_name, source) => {
+    expect(EXPORTS_A_SELECTOR.test(source)).toBe(true)
+  })
+
+  it('leave out a name that only looks like one, or is not exported', () => {
+    expect(EXPORTS_A_SELECTOR.test('function useInternal() {}\nexport function user() {}')).toBe(false)
+  })
+
+  it('include every module that calls the gate', () => {
+    const callers = Object.keys(SERVER_SOURCES).filter(path => /\bselectDriver(?:<[^(]*>)?\(/.test(SERVER_SOURCES[path]!) && !path.endsWith('/drivers.ts'))
+    // Guard the guard: a pattern that stopped matching would pass this for ever.
+    expect(callers.length).toBeGreaterThanOrEqual(5)
+    expect(SELECTION_MODULES).toEqual(expect.arrayContaining(callers))
+  })
+
+  it('tells a stand-in from a real driver inside a bundle', () => {
+    expect(kindsIn({ transcriber: { kind: 'stub' }, meetings: { kind: 'supabase' } })).toEqual(['stub', 'supabase'])
+    expect(kindsIn({ kind: 'local' })).toEqual(['local'])
+    expect(kindsIn(undefined)).toEqual([])
+  })
+
   // Guard the guard: a walk that found nothing would pass everything below.
   it('include every selection point there is today', () => {
     expect(SELECTORS.map(([name]) => name).sort()).toEqual(expect.arrayContaining([
@@ -181,6 +224,11 @@ describe('with every setting present', () => {
     expect(() => select(OK_EVENT)).not.toThrow()
     expect(fetched).not.toHaveBeenCalled()
     expect(logged).not.toHaveBeenCalled()
+  })
+
+  it.each(SELECTORS)('%s holds no stub or local driver, once the gate has let it through', (_selector, select) => {
+    configure(EVERY_SETTING)
+    expect(kindsIn(select(OK_EVENT)).filter(kind => kind === 'stub' || kind === 'local')).toEqual([])
   })
 
   it('does the same on a Worker, which needs no opt-in', () => {
