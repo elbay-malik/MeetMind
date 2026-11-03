@@ -156,7 +156,10 @@ shows a plain failure. [ADR-0016](docs/adr/0016-real-services-or-nothing.md) has
 `NUXT_ALLOW_LOCAL_DRIVERS=true` is for the e2e and browser jobs, which run a production build
 on local drivers. A deployment does not set it: a Worker ignores it outright, and so does
 any server beside a real database. It does not belong in `wrangler.jsonc`, or in a real `.env`.
-`pnpm preview` and `node .output/server/index.mjs` are built servers, so they refuse without it.
+`node .output/server/index.mjs` reads no dotenv file, so without the opt-in it refuses unless the
+environment holds all nine settings. `pnpm preview` is different, because `nuxt preview` loads `.env`
+into the server it starts: with a full `.env` it runs on the real services, as `pnpm dev` does, so an
+upload through it writes real data and spends quota. An opt-in in that `.env` opens it too.
 
 ### Storage setup (Cloudflare R2)
 

@@ -231,3 +231,23 @@ describe('ADRs changed by ADR-0015', () => {
     expect(missing).toEqual([])
   })
 })
+
+describe('what the docs say about a built server (ADR-0016)', () => {
+  const inRepo = (path: string) => readFile(fileURLToPath(new URL(`../../${path}`, import.meta.url)), 'utf8')
+
+  // `nuxt preview` loads .env into the server it starts, and this repo's .env has every setting,
+  // so believing it refuses is how real data gets written by accident.
+  it('does not tell anyone that `pnpm preview` refuses, or that nothing reads a dotenv file', async () => {
+    const readme = await inRepo('README.md')
+    expect(readme).not.toMatch(/`pnpm preview`[^\n]*\brefuse/)
+    expect(readme).toMatch(/`pnpm preview`[^.]*\bloads `\.env`/)
+    expect(await adr('0016')).not.toMatch(/a built server\s+reads no dotenv file/)
+    expect(await inRepo('tests/e2e/helpers/local-drivers.ts')).not.toMatch(/a built server\s+(?:\*\s+)?reads no dotenv/)
+  })
+
+  it('leaves no test job or harness depending on it, since it would take .env', async () => {
+    for (const path of ['scripts/ci-local.sh', '.github/workflows/ci.yml', 'tests/e2e/helpers/local-drivers.ts', 'tests/e2e/driver-gate.spec.ts']) {
+      expect(await inRepo(path), path).not.toMatch(/(?:pnpm|nuxt) preview/)
+    }
+  })
+})

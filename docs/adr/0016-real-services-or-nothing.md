@@ -56,9 +56,10 @@ counts rows (ADR-0010), so R2's only spending limit would not see them.
 for good, and real output in a throwaway store has no such consequence. It spends quota, which is
 what whoever set the key asked for, and it is how a provider gets tried without touching real data.
 A developer's `.env` holds every real key, so `pnpm dev` there runs entirely on the real services, as
-it did. The test tiers do not see that file: the Nuxt test config loads `.env.test`, a built server
-reads no dotenv file, and `nuxt build` bakes none of the values into its output, which was checked
-by searching the output of both presets for them.
+it did. So does `pnpm preview`, because `nuxt preview` loads `.env` into the server it starts. The test
+tiers do not see that file: the Nuxt test config loads `.env.test`, `node .output/server/index.mjs` reads
+no dotenv file and none of them runs preview, and `nuxt build` bakes none of the values into its output,
+which was checked by searching the output of both presets for them.
 
 ### 4. The refusal comes before anything happens, and says nothing.
 
