@@ -1,7 +1,7 @@
 // Puts the installed ffmpeg wasm in the private bucket, where the route serves it from on a
 // Worker (ADR-0018). A step of the first deploy, and of every upgrade of @ffmpeg/core: run it
 // BEFORE deploying the new version, and leave the old key there so a rollback still finds its
-// file. Changes the real bucket. Nothing else runs this, and no test does.
+// file. Changes the real bucket. Nothing else runs this, and the only test that does has a stand-in for pnpm.
 //
 // Usage: pnpm upload:ffmpeg-wasm
 import { spawnSync } from 'node:child_process'
