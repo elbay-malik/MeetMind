@@ -227,6 +227,8 @@ describe('a meeting whose audio cannot be loaded', () => {
     })
 
     describe('standing still as "playing", which is all WebKit shows of a failed range', () => {
+      const WAITING = 'Still waiting for the audio'
+
       async function playing() {
         vi.useFakeTimers()
         const failed = await failedPage()
@@ -235,52 +237,94 @@ describe('a meeting whose audio cannot be loaded', () => {
         Object.defineProperty(audio, 'paused', { configurable: true, value: false })
         Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 1052 })
         await page.find('audio').trigger('playing')
+        await page.find('audio').trigger('play')
         return failed
       }
 
-      it('says so after 20 seconds with no progress, and loads it again at that place', async () => {
-        const { page, audio, load, play } = await playing()
+      it('says so after 20 seconds with no progress, and does not touch a download that may only be slow', async () => {
+        const { page, load } = await playing()
         vi.advanceTimersByTime(19_999)
-        expect(load).not.toHaveBeenCalled()
-        vi.advanceTimersByTime(1)
-        expect(load).toHaveBeenCalledOnce()
         await page.vm.$nextTick()
-        expect(page.findAll('[role="alert"]').map(a => a.text()).join(' ')).toContain(LOST)
-        audio.currentTime = 0
-        await page.find('audio').trigger('loadedmetadata')
-        expect(audio.currentTime).toBe(1052)
-        expect(play).toHaveBeenCalledOnce()
+        expect(page.text()).not.toContain(WAITING)
+        vi.advanceTimersByTime(1)
+        await page.vm.$nextTick()
+        expect(page.text()).toContain(WAITING)
+        expect(page.findAll('[role="alert"]')).toHaveLength(0)
+        vi.advanceTimersByTime(600_000)
+        expect(load).not.toHaveBeenCalled()
       })
 
-      it('leaves it alone while the time moves', async () => {
-        const { page, audio, load } = await playing()
+      it('goes away when the time moves', async () => {
+        const { page, audio } = await playing()
+        vi.advanceTimersByTime(20_000)
+        await page.vm.$nextTick()
+        expect(page.text()).toContain(WAITING)
+        audio.currentTime += 1
+        await page.find('audio').trigger('timeupdate')
+        expect(page.text()).not.toContain(WAITING)
+      })
+
+      it('does not go away, or start counting again, for a playing event with no progress', async () => {
+        const { page } = await playing()
+        vi.advanceTimersByTime(15_000)
+        await page.find('audio').trigger('playing')
+        vi.advanceTimersByTime(5_000)
+        await page.vm.$nextTick()
+        expect(page.text()).toContain(WAITING)
+        await page.find('audio').trigger('playing')
+        expect(page.text()).toContain(WAITING)
+      })
+
+      it('says nothing while the time moves', async () => {
+        const { page, audio } = await playing()
         for (let i = 0; i < 10; i++) {
           vi.advanceTimersByTime(5_000)
           audio.currentTime += 5
           await page.find('audio').trigger('timeupdate')
         }
-        expect(load).not.toHaveBeenCalled()
+        expect(page.text()).not.toContain(WAITING)
       })
 
-      it('leaves it alone once paused', async () => {
-        const { page, audio, load } = await playing()
+      it('says nothing once paused, and takes the notice back', async () => {
+        const { page, audio } = await playing()
+        vi.advanceTimersByTime(20_000)
+        await page.vm.$nextTick()
         Object.defineProperty(audio, 'paused', { configurable: true, value: true })
         await page.find('audio').trigger('pause')
+        expect(page.text()).not.toContain(WAITING)
         vi.advanceTimersByTime(60_000)
-        expect(load).not.toHaveBeenCalled()
+        await page.vm.$nextTick()
+        expect(page.text()).not.toContain(WAITING)
       })
 
-      it('stops after two, with the alert left up', async () => {
-        const { page, audio, load } = await playing()
-        for (let round = 0; round < 5; round++) {
-          vi.advanceTimersByTime(20_000)
-          await page.find('audio').trigger('loadedmetadata')
-          await page.find('audio').trigger('play')
-        }
-        expect(load).toHaveBeenCalledTimes(2)
+      it('starts counting again at a seek, which is a new wait', async () => {
+        const { page } = await playing()
+        vi.advanceTimersByTime(15_000)
+        await page.find('audio').trigger('seeking')
+        vi.advanceTimersByTime(19_999)
         await page.vm.$nextTick()
-        expect(audio.error).toBeNull()
-        expect(page.findAll('[role="alert"]').map(a => a.text()).join(' ')).toContain(LOST)
+        expect(page.text()).not.toContain(WAITING)
+        vi.advanceTimersByTime(1)
+        await page.vm.$nextTick()
+        expect(page.text()).toContain(WAITING)
+      })
+
+      it('loads again at the line selected once it has said so, and only then', async () => {
+        const { page, audio, load, play } = await playing()
+        Object.defineProperty(audio, 'duration', { configurable: true, value: 10 })
+        const line = page.find('[data-idx="1"]')
+        await line.trigger('click')
+        expect(load).not.toHaveBeenCalled()
+        expect(audio.currentTime).toBe(5)
+        vi.advanceTimersByTime(20_000)
+        await page.vm.$nextTick()
+        await line.trigger('click')
+        expect(load).toHaveBeenCalledOnce()
+        expect(page.text()).not.toContain(WAITING)
+        audio.currentTime = 0
+        await page.find('audio').trigger('loadedmetadata')
+        expect(audio.currentTime).toBe(5)
+        expect(play).toHaveBeenCalled()
       })
     })
   })

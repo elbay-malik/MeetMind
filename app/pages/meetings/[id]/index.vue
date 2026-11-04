@@ -38,6 +38,7 @@ const list = ref<HTMLElement | null>(null)
 const currentMs = ref(0)
 const followPlayback = ref(true)
 const audioError = ref<string | null>(null)
+const audioStalled = ref(false)
 
 const activeIndex = computed(() => findActiveSegment(segments.value, currentMs.value))
 const followIndex = computed(() => findFollowSegment(segments.value, currentMs.value))
@@ -81,22 +82,21 @@ function onAudioError() {
 }
 
 /**
- * WebKit raises no error when a range fails after the metadata: it asks again and takes the
- * failure's body for audio, and can stand still as "playing" after the failure has ended. Long,
- * as a far seek on a slow connection is also no progress for a while, and this restarts it.
+ * WebKit raises no error when a range fails after the metadata, and can stand still as "playing"
+ * after the failure has ended. Only says so, and a click reloads: this looks the same as a far
+ * seek on a slow connection, which a load of its own would restart, and a load during a block
+ * would leave the element failed where it would otherwise have recovered by itself.
  */
 const AUDIO_STUCK_MS = 20_000
 let stuckTimer: ReturnType<typeof setTimeout> | undefined
 function watchForStuck() {
   clearTimeout(stuckTimer)
+  audioStalled.value = false
   const audio = player.value
   if (!audio || audio.paused || audio.ended || audio.error) return
   stuckTimer = setTimeout(() => {
     if (audio.paused || audio.ended || audio.error) return
-    audioError.value = LOAD_FAILED
-    if (audioRetries >= AUDIO_MAX_RETRIES) return
-    audioRetries++
-    recoverAudio(audio.currentTime, true)
+    audioStalled.value = true
   }, AUDIO_STUCK_MS)
 }
 
@@ -104,6 +104,7 @@ function watchForStuck() {
 function recoverAudio(sec: number, play: boolean) {
   clearTimeout(audioRetryTimer)
   audioRetryTimer = undefined
+  watchForStuck()
   resumeAt = { sec, play }
   currentMs.value = Math.round(sec * 1000)
   player.value?.load()
@@ -123,7 +124,6 @@ function onAudioReady() {
 function onAudioPlaying() {
   onAudioReady()
   audioRetries = 0
-  watchForStuck()
 }
 
 /** Not proof of anything: the head of a file can load when the part wanted does not. */
@@ -231,7 +231,8 @@ function seekTo(segment: TranscriptSegment) {
     recoverAudio(sec, true)
   }
   // After the end, WebKit ends again at once on a seek to an MP4, and believes the new end.
-  else if (audio.ended) {
+  // An element standing still does not act on a seek either.
+  else if (audio.ended || audioStalled.value) {
     recoverAudio(sec, true)
   }
   // A load is under way, so this line replaces the one it was going to land on.
@@ -444,6 +445,7 @@ onMounted(() => {
         preload="metadata"
         class="w-full"
         @timeupdate="onTimeUpdate"
+        @seeking="watchForStuck"
         @seeked="onTimeUpdate"
         @error="onAudioError"
         @play="onAudioPlay"
@@ -461,6 +463,16 @@ onMounted(() => {
         class="mt-3"
         title="Audio unavailable"
         :description="audioError"
+      />
+      <UAlert
+        v-else-if="audioStalled"
+        role="status"
+        color="info"
+        variant="subtle"
+        icon="i-lucide-info"
+        class="mt-3"
+        title="Still waiting for the audio"
+        description="This can take a while on a slow connection. Selecting a line loads it again."
       />
       <p class="mt-2 text-xs text-muted">
         Select any line to jump there. The transcript follows playback until you scroll away.
