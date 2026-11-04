@@ -135,15 +135,21 @@ health check also answers 503 when [ADR-0016](0016-real-services-or-nothing.md) 
    accurately. The key keeps its name, so the lifecycle rule and the admin delete still find it, and
    no route but the audio route reads the object from here on, as the demo's pipeline refuses:
 
+   `<id>` is the last part of the meeting's link. Check the length before the put, as the row
+   refuses anything over 25,000,000 bytes, and at about 50 kbps as measured, container included,
+   that is about 66 minutes:
+
    ```bash
    ffmpeg -i meeting-audio.ogg -vn -map_metadata -1 -c:a aac -b:a 48k -movflags +faststart meeting-audio.m4a
    wc -c meeting-audio.m4a
-   wrangler r2 object put <bucket>/meetings/<id>/audio.ogg --file meeting-audio.m4a --content-type audio/mp4 --remote
-   psql "$SUPABASE_DB_URL" -c "update public.meetings set audio_mime = 'audio/mp4', audio_bytes = <bytes from wc> where id = '<id>'"
+   pnpm exec wrangler r2 object put <bucket>/meetings/<id>/audio.ogg --file meeting-audio.m4a --content-type audio/mp4 --remote
+   echo "update public.meetings set audio_mime = 'audio/mp4', audio_bytes = <bytes from wc> where id = '<id>'" | docker run -i --rm -e PGURL="$SUPABASE_DB_URL" --entrypoint sh pgvector/pgvector:pg17 -c 'exec psql "$PGURL" -v ON_ERROR_STOP=1'
    ```
 
-   At 48 kbps a recording over about 69 minutes is past the 25 MB the row allows, so the demo is
-   shorter than that. To transcribe it again, put the Ogg back and undo the update first.
+   It should say `UPDATE 1`. Set `SUPABASE_DB_URL` in the shell first, as `.env` is not read here. The
+   URL stays out of the arguments, as in `scripts/apply-migrations.sh`. If the update fails, nothing is
+   public yet: fix it and run it again. To transcribe the recording again, put the Ogg back with
+   `--content-type audio/ogg`, and update the row to `audio/ogg` and the Ogg's length first.
 4. Take the id from the meeting's link and set it with `wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID`,
    as for the code in step 2, and not as a dashboard variable. `wrangler deploy` deletes a plain
    variable that `wrangler.jsonc` does not list, and with it would go the home page's link and the
@@ -155,8 +161,8 @@ of `meetings/`, a rule goes by prefix so it cannot leave out one key, and nothin
 upload to an existing meeting again. The transcript, summary and questions live in Postgres and
 carry on, but the player and citation seeks stop working 30 days after upload. Before then, and
 again every time, put the same file back, which restarts the object's age:
-`wrangler r2 object put <bucket>/meetings/<id>/audio.ogg --file meeting-audio.m4a --content-type audio/mp4 --remote`.
-The bytes must be the ones uploaded, because the row holds their length. `wrangler r2 object get --remote`
+`pnpm exec wrangler r2 object put <bucket>/meetings/<id>/audio.ogg --file meeting-audio.m4a --content-type audio/mp4 --remote`.
+The bytes must be that m4a, because the row holds its length and type: the Ogg under a row that says `audio/mp4` plays in Chromium and fails in Safari. `wrangler r2 object get --remote`
 fetches a copy while the object still exists. This has not yet been run against a real bucket. The
 alternative is to create a new demo and change the id. The storage budget's estimate stops counting
 the object after `NUXT_R2_RETENTION_DAYS`, which for one recording is small enough to ignore.

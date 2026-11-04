@@ -128,7 +128,7 @@ Checked against the code on 2026-11-02:
 | Server queries with no meeting filter | Only `stored_audio_bytes` and the local driver's equivalent, which return a sum. |
 | SSR payloads | `/` and `/meetings` carry none (tested). Meeting pages carry only their own. |
 | Nav and other links | Only the page's own id, and the configured demo. |
-| Sitemap, canonical, `og:url` | None exist. `robots.txt` and `X-Robots-Tag` already refuse crawlers. |
+| Sitemap, canonical, `og:url` | None exist. `robots.txt` and `X-Robots-Tag` already refuse crawlers. LinkedIn's preview bot may read only the home page and its image, which hold no meeting. |
 | The 507 from the storage budget | Byte totals (SEC-25), no id. |
 | Error messages | R2 failures name the object key, which contains the id. They are stored and logged, and since SEC-15 no route answers with them (ADR-0012's last addendum). |
 | Requests to Groq and Google | No id: the audio goes as `audio.ogg`, and prompts and embeddings carry transcript text only. |
