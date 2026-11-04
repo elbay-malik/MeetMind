@@ -5,7 +5,7 @@ import type { StageState } from '~/utils/pipeline-view'
 const route = useRoute()
 const meetingId = computed(() => String(route.params.id))
 
-const { data, error, refresh } = await useFetch<{ meeting: PublicMeeting }>(`/api/meetings/${meetingId.value}`)
+const { data, error, refresh } = await useFetch<{ meeting: PublicMeeting }>(`/api/meetings/${meetingId.value}`, PAGE_READ)
 if (error.value) {
   throw createError({
     statusCode: error.value.statusCode ?? 500,
@@ -19,7 +19,7 @@ const meeting = shallowRef(data.value!.meeting)
 useSeoMeta({ title: () => `MeetMind — ${meeting.value.title}` })
 
 const { data: transcriptData, error: transcriptError, refresh: refreshTranscript }
-  = await useFetch<{ segments: TranscriptSegment[] }>(`/api/meetings/${meetingId.value}/transcript`)
+  = await useFetch<{ segments: TranscriptSegment[] }>(`/api/meetings/${meetingId.value}/transcript`, PAGE_READ)
 const segments = shallowRef(transcriptData.value?.segments ?? [])
 
 /** Failing to read this costs only what it says: the driver asks again as soon as it starts. */
@@ -376,11 +376,6 @@ function rebuild() {
           <span>{{ segment.text }}</span>
         </li>
       </ol>
-      <template #footer>
-        <p class="text-sm text-muted">
-          Clicking a line to seek the audio arrives with the player in the next phase.
-        </p>
-      </template>
     </UCard>
 
     <div class="flex gap-3">

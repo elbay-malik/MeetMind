@@ -3,7 +3,7 @@ import { meetingIdSchema } from '#shared/schemas/meeting'
 import { FFMPEG_CORE_LICENSE, FFMPEG_CORE_PACKAGE, FFMPEG_CORE_SOURCE_URL, FFMPEG_CORE_VERSION } from '#shared/utils/ffmpeg-core'
 import type { ExtractOptions } from '../workers/ffmpeg.protocol'
 
-useSeoMeta({ title: 'MeetMind — Upload' })
+useSeoMeta({ title: 'MeetMind — Meeting transcripts, summaries and answers' })
 
 // An id the server's own check refuses could only open a 404, so no button for it. This
 // cannot catch a well-formed id with no meeting behind it: that would take a lookup on
@@ -169,6 +169,7 @@ async function uploadAndContinue() {
       >
         <UButton
           :to="`/meetings/${demoMeetingId}`"
+          external
           size="lg"
           icon="i-lucide-play"
         >

@@ -4,7 +4,7 @@ import type { MeetingSummary, PublicMeeting, TranscriptSegment } from '#shared/t
 const route = useRoute()
 const meetingId = computed(() => String(route.params.id))
 
-const { data, error } = await useFetch<{ meeting: PublicMeeting }>(`/api/meetings/${meetingId.value}`)
+const { data, error } = await useFetch<{ meeting: PublicMeeting }>(`/api/meetings/${meetingId.value}`, PAGE_READ)
 if (error.value) {
   throw createError({
     statusCode: error.value.statusCode ?? 500,
@@ -14,15 +14,20 @@ if (error.value) {
 }
 const meeting = computed(() => data.value!.meeting)
 
-const { data: transcriptData } = await useFetch<{ segments: TranscriptSegment[] }>(
+const { data: transcriptData, error: transcriptError, refresh: refreshTranscript } = await useFetch<{ segments: TranscriptSegment[] }>(
   `/api/meetings/${meetingId.value}/transcript`,
+  PAGE_READ,
 )
 const segments = computed(() => transcriptData.value?.segments ?? [])
+/** A failed read is not an empty transcript, which would say that nobody spoke. */
+const transcriptUnread = computed(() => !!transcriptError.value && !transcriptData.value)
 
-const { data: summaryData } = await useFetch<{ summary: MeetingSummary | null }>(
+const { data: summaryData, error: summaryError, refresh: refreshSummary } = await useFetch<{ summary: MeetingSummary | null }>(
   `/api/meetings/${meetingId.value}/summary`,
+  PAGE_READ,
 )
 const summary = computed(() => summaryData.value?.summary ?? null)
+const summaryUnread = computed(() => !!summaryError.value && !summaryData.value)
 
 useSeoMeta({ title: () => `MeetMind — ${meeting.value.title}` })
 
@@ -40,8 +45,25 @@ function onTimeUpdate() {
   currentMs.value = Math.round((player.value?.currentTime ?? 0) * 1000)
 }
 
+/** Past the rate rule's 10-second block, so the one retry that is made by itself can work. */
+const AUDIO_RETRY_MS = 11_000
+let audioRetryTimer: ReturnType<typeof setTimeout> | undefined
+let audioRetried = false
+let resumeAt: { sec: number, play: boolean } | null = null
+
 function onAudioError() {
   audioError.value = 'The audio could not be loaded, so seeking is unavailable.'
+  if (audioRetried) return
+  audioRetried = true
+  const sec = player.value?.currentTime ?? 0
+  audioRetryTimer = setTimeout(() => recoverAudio(sec, false), AUDIO_RETRY_MS)
+}
+
+/** An element that has failed stays failed until it is told to load again, which starts it from 0. */
+function recoverAudio(sec: number, play: boolean) {
+  clearTimeout(audioRetryTimer)
+  resumeAt = { sec, play }
+  player.value?.load()
 }
 
 /** Without replacing a load failure: audio that has gone from storage will never be ready. */
@@ -52,7 +74,24 @@ function explainNoAudio() {
 /** Clear a previous complaint once the element proves it can play. */
 function onAudioReady() {
   audioError.value = null
+  audioRetried = false
 }
+
+function onAudioMetadata() {
+  onAudioReady()
+  const audio = player.value
+  if (!audio || !resumeAt) return
+  audio.currentTime = resumeAt.sec
+  currentMs.value = Math.round(resumeAt.sec * 1000)
+  if (resumeAt.play) {
+    void audio.play().catch(() => {
+      // Autoplay can be refused; the seek still happened, which is the point.
+    })
+  }
+  resumeAt = null
+}
+
+onBeforeUnmount(() => clearTimeout(audioRetryTimer))
 
 function lineAt(index: number) {
   return list.value?.querySelector<HTMLElement>(`[data-idx="${index}"]`) ?? null
@@ -134,6 +173,11 @@ function resumeFollow() {
 function seekTo(segment: TranscriptSegment) {
   const audio = player.value
   if (!audio) return
+  if (audio.error) {
+    explainNoAudio()
+    recoverAudio(segment.startMs / 1000, true)
+    return
+  }
   if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
     explainNoAudio()
     return
@@ -168,6 +212,11 @@ function seekToCitation(startMs: number, segmentIdx: number) {
   // Same guard and the same message as seekTo: this used to be a silent no-op
   // when the audio was not ready, while clicking a transcript line in that
   // same state explained itself.
+  if (audio.error) {
+    explainNoAudio()
+    recoverAudio(startMs / 1000, true)
+    return
+  }
   if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
     explainNoAudio()
     return
@@ -290,6 +339,8 @@ const hasAudio = computed(() =>
  * half-formed query string should render the page normally, not half-seek it.
  */
 onMounted(() => {
+  // A failure before hydration fired its event with nobody listening.
+  if (player.value?.error) onAudioError()
   const startMs = Number(route.query.t)
   const segmentIdx = Number(route.query.seg)
   if (!Number.isFinite(startMs) || !Number.isFinite(segmentIdx)) return
@@ -314,7 +365,9 @@ onMounted(() => {
         <template v-if="meeting.durationSec">
           · {{ formatDuration(meeting.durationSec) }}
         </template>
-        · {{ segments.length }} transcript segments{{ incompleteTranscript ? ' so far' : '' }}
+        <template v-if="!transcriptUnread">
+          · {{ segments.length }} transcript segments{{ incompleteTranscript ? ' so far' : '' }}
+        </template>
       </p>
     </div>
 
@@ -330,7 +383,7 @@ onMounted(() => {
         @timeupdate="onTimeUpdate"
         @seeked="onTimeUpdate"
         @error="onAudioError"
-        @loadedmetadata="onAudioReady"
+        @loadedmetadata="onAudioMetadata"
         @canplay="onAudioReady"
         @playing="onAudioReady"
       />
@@ -449,6 +502,16 @@ onMounted(() => {
       </div>
     </UCard>
 
+    <UAlert
+      v-else-if="summaryUnread"
+      role="alert"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      title="The summary could not be loaded"
+      :actions="[{ label: 'Try again', color: 'neutral', variant: 'subtle', onClick: () => refreshSummary() }]"
+    />
+
     <MeetingQuestions
       :meeting-id="meetingId"
       @seek="seekToCitation"
@@ -513,6 +576,16 @@ onMounted(() => {
         </ol>
       </div>
     </UCard>
+
+    <UAlert
+      v-else-if="transcriptUnread"
+      role="alert"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      title="The transcript could not be loaded"
+      :actions="[{ label: 'Try again', color: 'neutral', variant: 'subtle', onClick: () => refreshTranscript() }]"
+    />
 
     <!-- Driven by status, not by the segment count alone: a silent recording
          is `ready` with no segments, and telling that reader to "run
