@@ -5,6 +5,30 @@ import { join } from 'node:path'
 export default defineNuxtConfig({
   modules: ['@nuxt/ui', '@nuxt/eslint'],
   devtools: { enabled: false },
+  app: {
+    // The same for every page, and so naming no meeting: a meeting's link is the key to it, and
+    // no og:url for the same reason (ADR-0013).
+    head: {
+      htmlAttrs: { lang: 'en' },
+      link: [
+        { rel: 'icon', href: '/favicon.ico', sizes: '48x48' },
+        { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' },
+        { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
+      ],
+      meta: [
+        { name: 'description', content: 'Turns a meeting recording into a timestamped transcript, a summary of decisions and action items, and answers that cite the lines they came from.' },
+        { property: 'og:type', content: 'website' },
+        { property: 'og:site_name', content: 'MeetMind' },
+        { property: 'og:title', content: 'MeetMind' },
+        { property: 'og:description', content: 'Turns a meeting recording into a timestamped transcript, a summary of decisions and action items, and answers that cite the lines they came from.' },
+        { property: 'og:image', content: 'https://meetmind.elbaymalik.com/og.png' },
+        { property: 'og:image:width', content: '1200' },
+        { property: 'og:image:height', content: '630' },
+        { property: 'og:image:alt', content: 'MeetMind: ask a meeting recording, and get answers that cite the lines they came from.' },
+        { name: 'twitter:card', content: 'summary_large_image' },
+      ],
+    },
+  },
   css: ['~/assets/css/main.css'],
   runtimeConfig: {
     // Server-only secrets, overridden by NUXT_* env vars at runtime.
