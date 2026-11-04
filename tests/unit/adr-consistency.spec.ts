@@ -190,7 +190,7 @@ describe('ADRs changed by ADR-0015', () => {
     it('is told that the demo\'s audio expires with the bucket\'s lifecycle rule, and what to do about it', async () => {
       const text = await procedure()
       expect(text).toContain('`expire-meeting-audio-30d`')
-      expect(text).toContain('`wrangler r2 object put')
+      expect(text).toContain('`pnpm exec wrangler r2 object put <bucket>/meetings/<id>/audio.ogg --file meeting-audio.m4a')
       expect(text).toContain('Download audio')
     })
 
