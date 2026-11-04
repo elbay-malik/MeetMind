@@ -71,9 +71,9 @@ IMAGE=pgvector/pgvector:pg17
 
 # The URL goes in as an environment variable, never as an argv element: argv is
 # world-readable in `ps` for the lifetime of the call, and this one carries the
-# password. Hence the `sh -c` hop -- the expansion has to happen inside the
-# container, where the variable exists.
-psql_url() { docker run -i --rm -e PGURL="$SUPABASE_DB_URL" --entrypoint sh "$IMAGE" \
+# password. So `-e PGURL` with no value, which docker takes from its own environment,
+# and the `sh -c` hop -- the expansion has to happen inside the container.
+psql_url() { PGURL="$SUPABASE_DB_URL" docker run -i --rm -e PGURL --entrypoint sh "$IMAGE" \
   -c 'exec psql "$PGURL" -v ON_ERROR_STOP=1 "$@"' -- "$@"; }
 
 echo "pulling ${IMAGE} if needed ..."
@@ -132,7 +132,7 @@ for f in supabase/migrations/*.sql; do
   # One transaction per file, so a failure leaves nothing half-applied and the
   # ledger row lands only if the SQL did. --single-transaction plus
   # ON_ERROR_STOP is what makes that true.
-  if ! out=$(docker run -i --rm -e PGURL="$SUPABASE_DB_URL" --entrypoint sh "$IMAGE" -c \
+  if ! out=$(PGURL="$SUPABASE_DB_URL" docker run -i --rm -e PGURL --entrypoint sh "$IMAGE" -c \
       'exec psql "$PGURL" -v ON_ERROR_STOP=1 --single-transaction -q -f -' < "$f" 2>&1); then
     echo "FAIL: ${name} did not apply. Nothing was committed from it."
     echo "$out" | sed 's/postgres:\/\/[^ ]*/<redacted>/g' | tail -20

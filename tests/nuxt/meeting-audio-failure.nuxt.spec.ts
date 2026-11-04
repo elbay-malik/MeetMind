@@ -21,9 +21,10 @@ const meeting = {
   createdAt: '2026-11-01T00:00:00.000Z',
 }
 const segment = { idx: 0, startMs: 0, endMs: 1000, text: 'We agreed to ship on Friday.' }
+const later = { idx: 1, startMs: 5000, endMs: 6000, text: 'And then we went home.' }
 
 registerEndpoint(`/api/meetings/${ID}`, () => ({ meeting }))
-registerEndpoint(`/api/meetings/${ID}/transcript`, () => ({ segments: [segment] }))
+registerEndpoint(`/api/meetings/${ID}/transcript`, () => ({ segments: [segment, later] }))
 registerEndpoint(`/api/meetings/${ID}/summary`, () => ({ summary: null }))
 registerEndpoint(`/api/meetings/${ID}/search-index`, () => ({ index: { state: 'ready', windowCount: 1, indexedCount: 1, model: 'stub' } }))
 
@@ -69,6 +70,7 @@ describe('a meeting whose audio cannot be loaded', () => {
       await page.find('audio').trigger('loadedmetadata')
       await flushPromises()
       expect(play).toHaveBeenCalledOnce()
+      await page.find('audio').trigger('canplay')
       expect(page.findAll('[role="alert"]').map(a => a.text()).join(' ')).not.toContain(LOST)
     })
 
@@ -129,30 +131,157 @@ describe('a meeting whose audio cannot be loaded', () => {
       expect(play).toHaveBeenCalledOnce()
     })
 
-    it('resumes playing after the block when the failed seek had asked to play', async () => {
+    it('resumes playing after the block, in the order a browser really reports it: paused before the error', async () => {
       vi.useFakeTimers()
       const { page, audio, play } = await failedPage()
       Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 900 })
-      Object.defineProperty(audio, 'paused', { configurable: true, value: false })
+      await page.find('audio').trigger('play')
       await page.find('audio').trigger('error')
+      await page.find('audio').trigger('pause')
+      expect(audio.paused).toBe(true)
       vi.advanceTimersByTime(11_000)
       await page.find('audio').trigger('loadedmetadata')
       expect(audio.currentTime).toBe(900)
       expect(play).toHaveBeenCalledOnce()
     })
 
-    it('keeps the highlight where it was while the element is back at 0 loading', async () => {
+    it('does not start playing when the visitor had paused', async () => {
+      vi.useFakeTimers()
+      const { page, audio, play } = await failedPage()
+      const failure = Object.getOwnPropertyDescriptor(audio, 'error')!
+      Object.defineProperty(audio, 'error', { configurable: true, value: null })
+      await page.find('audio').trigger('play')
+      await page.find('audio').trigger('pause')
+      Object.defineProperty(audio, 'error', failure)
+      await page.find('audio').trigger('error')
+      vi.advanceTimersByTime(11_000)
+      await page.find('audio').trigger('loadedmetadata')
+      expect(play).not.toHaveBeenCalled()
+    })
+
+    it('goes where the visitor went during the wait, and not back to where it failed', async () => {
       vi.useFakeTimers()
       const { page, audio } = await failedPage()
       Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 900 })
       await page.find('audio').trigger('error')
+      audio.currentTime = 300
       vi.advanceTimersByTime(11_000)
       audio.currentTime = 0
+      await page.find('audio').trigger('loadedmetadata')
+      expect(audio.currentTime).toBe(300)
+    })
+
+    const highlighted = (page: Awaited<ReturnType<typeof mountSuspended>>) => page.find('[aria-current="true"]').attributes('data-idx') ?? page.find('[aria-current="true"] [data-idx]').attributes('data-idx')
+
+    it('keeps the highlight on the clicked line while the element is back at 0 loading, and turns following back on', async () => {
+      vi.useFakeTimers()
+      const { page, audio } = await failedPage()
+      Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 0 })
+      await page.find('audio').trigger('error')
+      await page.find('[data-idx="1"]').trigger('click')
+      await page.vm.$nextTick()
+      expect(highlighted(page)).toBe('1')
       await page.find('audio').trigger('timeupdate')
+      await page.vm.$nextTick()
+      expect(highlighted(page)).toBe('1')
       await page.find('audio').trigger('error')
       vi.advanceTimersByTime(11_000)
       await page.find('audio').trigger('loadedmetadata')
-      expect(audio.currentTime).toBe(900)
+      expect(audio.currentTime).toBe(5)
+    })
+
+    it('lands on the last line clicked while a load is under way', async () => {
+      const { page, audio, load, play } = await failedPage()
+      Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 0 })
+      await page.find('[data-idx="0"]').trigger('click')
+      expect(load).toHaveBeenCalledOnce()
+      Object.defineProperty(audio, 'error', { configurable: true, value: null })
+      await page.find('[data-idx="1"]').trigger('click')
+      expect(load).toHaveBeenCalledOnce()
+      await page.find('audio').trigger('loadedmetadata')
+      expect(audio.currentTime).toBe(5)
+      expect(play).toHaveBeenCalledOnce()
+    })
+
+    it('does not clear the alert for the head of the file alone', async () => {
+      const { page } = await failedPage()
+      await page.find('audio').trigger('error')
+      await page.find('audio').trigger('loadedmetadata')
+      expect(page.findAll('[role="alert"]').map(a => a.text()).join(' ')).toContain(LOST)
+      await page.find('audio').trigger('canplay')
+      expect(page.findAll('[role="alert"]').map(a => a.text()).join(' ')).not.toContain(LOST)
+    })
+
+    it('reloads to the line when one is clicked after the end, which WebKit would end again at once', async () => {
+      const { page, audio, load, play } = await failedPage()
+      Object.defineProperty(audio, 'error', { configurable: true, value: null })
+      Object.defineProperty(audio, 'ended', { configurable: true, value: true })
+      Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 10 })
+      await page.find('[data-idx="1"]').trigger('click')
+      expect(load).toHaveBeenCalledOnce()
+      Object.defineProperty(audio, 'ended', { configurable: true, value: false })
+      await page.find('audio').trigger('loadedmetadata')
+      expect(audio.currentTime).toBe(5)
+      expect(play).toHaveBeenCalledOnce()
+      expect(page.findAll('[role="alert"]')).toHaveLength(0)
+    })
+
+    describe('standing still as "playing", which is all WebKit shows of a failed range', () => {
+      async function playing() {
+        vi.useFakeTimers()
+        const failed = await failedPage()
+        const { audio, page } = failed
+        Object.defineProperty(audio, 'error', { configurable: true, value: null })
+        Object.defineProperty(audio, 'paused', { configurable: true, value: false })
+        Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 1052 })
+        await page.find('audio').trigger('playing')
+        return failed
+      }
+
+      it('says so after 20 seconds with no progress, and loads it again at that place', async () => {
+        const { page, audio, load, play } = await playing()
+        vi.advanceTimersByTime(19_999)
+        expect(load).not.toHaveBeenCalled()
+        vi.advanceTimersByTime(1)
+        expect(load).toHaveBeenCalledOnce()
+        await page.vm.$nextTick()
+        expect(page.findAll('[role="alert"]').map(a => a.text()).join(' ')).toContain(LOST)
+        audio.currentTime = 0
+        await page.find('audio').trigger('loadedmetadata')
+        expect(audio.currentTime).toBe(1052)
+        expect(play).toHaveBeenCalledOnce()
+      })
+
+      it('leaves it alone while the time moves', async () => {
+        const { page, audio, load } = await playing()
+        for (let i = 0; i < 10; i++) {
+          vi.advanceTimersByTime(5_000)
+          audio.currentTime += 5
+          await page.find('audio').trigger('timeupdate')
+        }
+        expect(load).not.toHaveBeenCalled()
+      })
+
+      it('leaves it alone once paused', async () => {
+        const { page, audio, load } = await playing()
+        Object.defineProperty(audio, 'paused', { configurable: true, value: true })
+        await page.find('audio').trigger('pause')
+        vi.advanceTimersByTime(60_000)
+        expect(load).not.toHaveBeenCalled()
+      })
+
+      it('stops after two, with the alert left up', async () => {
+        const { page, audio, load } = await playing()
+        for (let round = 0; round < 5; round++) {
+          vi.advanceTimersByTime(20_000)
+          await page.find('audio').trigger('loadedmetadata')
+          await page.find('audio').trigger('play')
+        }
+        expect(load).toHaveBeenCalledTimes(2)
+        await page.vm.$nextTick()
+        expect(audio.error).toBeNull()
+        expect(page.findAll('[role="alert"]').map(a => a.text()).join(' ')).toContain(LOST)
+      })
     })
   })
 })

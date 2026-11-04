@@ -95,7 +95,8 @@ function holdUntil(at: Date) {
 /** The server's message when it gave one, rather than a generic failure. */
 function describeError(err: unknown): string {
   const data = (err as { data?: { message?: string } }).data
-  return data?.message ?? (err instanceof Error ? err.message : String(err))
+  // Never the fetch's own text, which holds the path, or a framework's two words.
+  return data?.message && data.message !== 'Server Error' ? data.message : 'The question could not be answered. Try again in a moment.'
 }
 
 /**
@@ -108,10 +109,13 @@ function retryAtOf(err: unknown): Date | null {
   return new Date(Date.now() + seconds * 1000)
 }
 
-/** With the day when it is not today: a day's cap can send someone to tomorrow morning. */
-const formatClock = (at: Date) => at.toDateString() === new Date().toDateString()
-  ? at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  : at.toLocaleString([], { weekday: 'long', hour: '2-digit', minute: '2-digit' })
+/** With the day only when it is far off: a day's cap can send someone to tomorrow morning. */
+function formatWhen(at: Date) {
+  const time = { hour: '2-digit', minute: '2-digit' } as const
+  return at.getTime() - Date.now() > 12 * 3_600_000 && at.toDateString() !== new Date().toDateString()
+    ? `on ${at.toLocaleDateString([], { weekday: 'long' })} at ${at.toLocaleTimeString([], time)}`
+    : `at ${at.toLocaleTimeString([], { ...time, second: '2-digit' })}`
+}
 
 async function ask() {
   const text = question.value.trim()
@@ -136,7 +140,7 @@ async function ask() {
     failureWaits.value = !!at
     if (at) {
       holdUntil(at)
-      failure.value = `${describeError(err)} Try again at ${formatClock(at)}.`
+      failure.value = `${describeError(err)} Try again ${formatWhen(at)}.`
     }
     else {
       failure.value = describeError(err)
@@ -252,7 +256,7 @@ const status = computed(() => {
         v-if="retryAt"
         class="text-sm text-muted"
       >
-        Questions can be asked again at {{ formatClock(retryAt) }}.
+        Questions can be asked again {{ formatWhen(retryAt) }}.
       </p>
     </form>
 

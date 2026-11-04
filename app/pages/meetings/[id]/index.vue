@@ -46,25 +46,58 @@ const followIndex = computed(() => findFollowSegment(segments.value, currentMs.v
 function onTimeUpdate() {
   // A load starts the element from 0, which is not where the visitor is.
   if (resumeAt) return
-  currentMs.value = Math.round((player.value?.currentTime ?? 0) * 1000)
+  const ms = Math.round((player.value?.currentTime ?? 0) * 1000)
+  if (ms !== currentMs.value) watchForStuck()
+  currentMs.value = ms
 }
 
 /** Few, and not reset by metadata: a recording whose head loads and whose middle fails loads again and again. */
 const AUDIO_MAX_RETRIES = 2
+const LOAD_FAILED = 'The audio could not be loaded, so seeking is unavailable.'
 let audioRetryTimer: ReturnType<typeof setTimeout> | undefined
 let audioRetries = 0
 let resumeAt: { sec: number, play: boolean } | null = null
 
+/** From the element's events, as Chromium has already paused it by the time it reports an error. */
+let wantsPlay = false
+function onAudioPlay() {
+  wantsPlay = true
+  watchForStuck()
+}
+function onAudioPause() {
+  if (!player.value?.error) wantsPlay = false
+  watchForStuck()
+}
+
 function onAudioError() {
-  audioError.value = 'The audio could not be loaded, so seeking is unavailable.'
+  audioError.value = LOAD_FAILED
   if (audioRetryTimer || audioRetries >= AUDIO_MAX_RETRIES) return
-  const audio = player.value
-  // A load that failed has no position of its own, so what it was asked for still stands.
-  const { sec, play } = resumeAt ?? { sec: audio?.currentTime ?? 0, play: audio ? !audio.paused : false }
   audioRetryTimer = setTimeout(() => {
     audioRetries++
+    // A load that failed has no position of its own, so what it was asked for still stands.
+    const { sec, play } = resumeAt ?? { sec: player.value?.currentTime ?? 0, play: wantsPlay }
     recoverAudio(sec, play)
   }, PAGE_RETRY_MS)
+}
+
+/**
+ * WebKit raises no error when a range fails after the metadata: it asks again and takes the
+ * failure's body for audio, and can stand still as "playing" after the failure has ended. Long,
+ * as a far seek on a slow connection is also no progress for a while, and this restarts it.
+ */
+const AUDIO_STUCK_MS = 20_000
+let stuckTimer: ReturnType<typeof setTimeout> | undefined
+function watchForStuck() {
+  clearTimeout(stuckTimer)
+  const audio = player.value
+  if (!audio || audio.paused || audio.ended || audio.error) return
+  stuckTimer = setTimeout(() => {
+    if (audio.paused || audio.ended || audio.error) return
+    audioError.value = LOAD_FAILED
+    if (audioRetries >= AUDIO_MAX_RETRIES) return
+    audioRetries++
+    recoverAudio(audio.currentTime, true)
+  }, AUDIO_STUCK_MS)
 }
 
 /** An element that has failed stays failed until it is told to load again, which starts it from 0. */
@@ -72,6 +105,7 @@ function recoverAudio(sec: number, play: boolean) {
   clearTimeout(audioRetryTimer)
   audioRetryTimer = undefined
   resumeAt = { sec, play }
+  currentMs.value = Math.round(sec * 1000)
   player.value?.load()
 }
 
@@ -89,10 +123,11 @@ function onAudioReady() {
 function onAudioPlaying() {
   onAudioReady()
   audioRetries = 0
+  watchForStuck()
 }
 
+/** Not proof of anything: the head of a file can load when the part wanted does not. */
 function onAudioMetadata() {
-  onAudioReady()
   const audio = player.value
   if (!audio || !resumeAt) return
   audio.currentTime = resumeAt.sec
@@ -105,7 +140,10 @@ function onAudioMetadata() {
   resumeAt = null
 }
 
-onBeforeUnmount(() => clearTimeout(audioRetryTimer))
+onBeforeUnmount(() => {
+  clearTimeout(audioRetryTimer)
+  clearTimeout(stuckTimer)
+})
 
 function lineAt(index: number) {
   return list.value?.querySelector<HTMLElement>(`[data-idx="${index}"]`) ?? null
@@ -187,17 +225,33 @@ function resumeFollow() {
 function seekTo(segment: TranscriptSegment) {
   const audio = player.value
   if (!audio) return
+  const sec = segment.startMs / 1000
   if (audio.error) {
     explainNoAudio()
-    recoverAudio(segment.startMs / 1000, true)
-    return
+    recoverAudio(sec, true)
   }
-  if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
+  // After the end, WebKit ends again at once on a seek to an MP4, and believes the new end.
+  else if (audio.ended) {
+    recoverAudio(sec, true)
+  }
+  // A load is under way, so this line replaces the one it was going to land on.
+  else if (resumeAt) {
+    resumeAt = { sec, play: true }
+    currentMs.value = segment.startMs
+  }
+  else if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
     explainNoAudio()
     return
   }
-  audio.currentTime = segment.startMs / 1000
-  currentMs.value = segment.startMs
+  else {
+    audio.currentTime = sec
+    currentMs.value = segment.startMs
+    if (audio.paused) {
+      void audio.play().catch(() => {
+        // Autoplay can be refused; the seek still happened, which is the point.
+      })
+    }
+  }
   const wasFollowing = followPlayback.value
   followPlayback.value = true
   // Re-enabling following on the line that is ALREADY the follow target does
@@ -207,11 +261,6 @@ function seekTo(segment: TranscriptSegment) {
   if (!wasFollowing) {
     const index = followIndex.value
     if (index >= 0) void nextTick(() => centreAndTrack(index))
-  }
-  if (audio.paused) {
-    void audio.play().catch(() => {
-      // Autoplay can be refused; the seek still happened, which is the point.
-    })
   }
 }
 
@@ -397,6 +446,8 @@ onMounted(() => {
         @timeupdate="onTimeUpdate"
         @seeked="onTimeUpdate"
         @error="onAudioError"
+        @play="onAudioPlay"
+        @pause="onAudioPause"
         @loadedmetadata="onAudioMetadata"
         @canplay="onAudioReady"
         @playing="onAudioPlaying"

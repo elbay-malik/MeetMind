@@ -80,11 +80,22 @@ describe('the error page', () => {
       page.unmount()
     })
 
-    it('offers the button at once when it will not reload by itself', async () => {
+    it('offers the button only once the block has passed when it will not reload by itself', async () => {
       for (let i = 0; i < 3; i++) (await shown(503, 'x')).unmount()
       const page = await shown(503, 'x')
+      expect(tryAgain(page).attributes('disabled')).toBeDefined()
+      await vi.advanceTimersByTimeAsync(11_000)
+      await page.vm.$nextTick()
       expect(tryAgain(page).attributes('disabled')).toBeUndefined()
+      expect(reload).not.toHaveBeenCalled()
       page.unmount()
+    })
+
+    it('does not reload after leaving the page', async () => {
+      const page = await shown(503, 'x')
+      page.unmount()
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(reload).not.toHaveBeenCalled()
     })
 
     it('forgets the count after a minute, as blocks minutes apart are not one outage', async () => {

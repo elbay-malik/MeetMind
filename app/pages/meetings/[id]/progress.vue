@@ -63,7 +63,10 @@ watch(status, async (moved) => {
 const transcriptUnread = computed(() => !!transcriptError.value && !segments.value.length)
 async function readTranscript() {
   const at = status.value
+  const thisRead = latestRead
   await refreshTranscript()
+  // The status moved meanwhile, and the read that started is the one that counts.
+  if (thisRead !== latestRead) return
   if (transcriptData.value && !transcriptError.value) {
     segments.value = transcriptData.value.segments
     transcriptReadAt.value = at

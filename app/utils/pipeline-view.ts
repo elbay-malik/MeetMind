@@ -292,7 +292,9 @@ export function bannerOf(state: DriverState, now: number, sweeps = false): Banne
       title: 'This demo meeting is read-only',
       description: state.answer?.status === 'ready'
         ? 'It can be read and played. Questions stay off until its index is finished, and nothing on this page can do that.'
-        : 'It is not finished, and nothing on this page can move it on. What is stored so far can still be read.',
+        : state.answer
+          ? 'It is not finished, and nothing on this page can move it on. What is stored so far can still be read.'
+          : 'What is stored can still be read.',
       icon: 'i-lucide-eye',
       color: 'neutral',
     }
@@ -436,7 +438,7 @@ export function questionsOf(state: DriverState, now: number): QuestionsView {
   if (state.rebuild) return { text: `Rebuilding the index for questions: ${indexFigures(state.rebuild)}`, link: null, rebuildLabel: null }
   const { answer } = state
   // With no status to read, every reason below would be a guess.
-  if (!answer) return { text: 'Could not check whether this meeting can be asked questions. Reload the page to try again.', link: null, rebuildLabel: null }
+  if (!answer) return { text: 'Could not check whether this meeting can be asked questions yet.', link: null, rebuildLabel: null }
   const { index } = answer
   switch (index.state) {
     case 'unavailable':
