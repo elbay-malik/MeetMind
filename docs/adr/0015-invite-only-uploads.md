@@ -143,7 +143,7 @@ health check also answers 503 when [ADR-0016](0016-real-services-or-nothing.md) 
    ffmpeg -i meeting-audio.ogg -vn -map_metadata -1 -c:a aac -b:a 48k -movflags +faststart meeting-audio.m4a
    wc -c meeting-audio.m4a
    pnpm exec wrangler r2 object put <bucket>/meetings/<id>/audio.ogg --file meeting-audio.m4a --content-type audio/mp4 --remote
-   echo "update public.meetings set audio_mime = 'audio/mp4', audio_bytes = <bytes from wc> where id = '<id>'" | docker run -i --rm -e PGURL="$SUPABASE_DB_URL" --entrypoint sh pgvector/pgvector:pg17 -c 'exec psql "$PGURL" -v ON_ERROR_STOP=1'
+   echo "update public.meetings set audio_mime = 'audio/mp4', audio_bytes = <bytes from wc> where id = '<id>'" | PGURL="$SUPABASE_DB_URL" docker run -i --rm -e PGURL --entrypoint sh pgvector/pgvector:pg17 -c 'exec psql "$PGURL" -v ON_ERROR_STOP=1'
    ```
 
    It should say `UPDATE 1`. Set `SUPABASE_DB_URL` in the shell first, as `.env` is not read here. The

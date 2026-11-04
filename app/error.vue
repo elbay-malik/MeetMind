@@ -15,6 +15,8 @@ const RETRIES_FORGOTTEN_MS = 60_000
 const RETRIES_KEY = 'meetmind-error-reloads'
 
 const retrying = ref(false)
+/** Until the block has passed, as a full page load during it leaves the app with nothing to bring it back. */
+const waiting = ref(false)
 let timer: ReturnType<typeof setTimeout> | undefined
 
 /** How many reloads this tab has spent on this page, so an outage does not reload it for ever. */
@@ -37,9 +39,13 @@ function reload() {
 }
 
 onMounted(() => {
-  if (notFound.value || !spendRetry()) return
-  retrying.value = true
-  timer = setTimeout(reload, PAGE_RETRY_MS)
+  if (notFound.value) return
+  retrying.value = spendRetry()
+  waiting.value = true
+  timer = setTimeout(() => {
+    if (retrying.value) reload()
+    waiting.value = false
+  }, PAGE_RETRY_MS)
 })
 onBeforeUnmount(() => clearTimeout(timer))
 </script>
@@ -68,7 +74,7 @@ onBeforeUnmount(() => clearTimeout(timer))
           <UButton
             v-if="!notFound"
             icon="i-lucide-refresh-cw"
-            :disabled="retrying"
+            :disabled="waiting"
             @click="reload"
           >
             Try again

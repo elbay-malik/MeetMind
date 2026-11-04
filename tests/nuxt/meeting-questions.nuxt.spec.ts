@@ -93,16 +93,25 @@ describe('the question form, asked again too soon', () => {
     }
   })
 
-  it('gives the day when the time is not today', async () => {
+  it('gives the day only when the time is far off', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], now: new Date(2026, 10, 4, 22) })
     try {
       const wrapper = await askWith({ ...REFUSED, data: { ...REFUSED.data, retryAfterSec: 8 * 3_600 } })
       const day = new Date(2026, 10, 5).toLocaleDateString([], { weekday: 'long' })
-      expect(wrapper.find('[role="alert"]').text()).toContain(`Try again at ${day}`)
+      expect(wrapper.find('[role="alert"]').text()).toContain(`Try again at `)
+      expect(wrapper.find('[role="alert"]').text()).not.toContain(day)
+      const far = await askWith({ ...REFUSED, data: { ...REFUSED.data, retryAfterSec: 14 * 3_600 } })
+      expect(far.find('[role="alert"]').text()).toContain(`Try again on ${day} at `)
     }
     finally {
       vi.useRealTimers()
     }
+  })
+
+  it('never shows the fetch\'s own text, which holds the path, when a block answers with no sentence', async () => {
+    const wrapper = await askWith({ statusCode: 429, message: '' })
+    expect(wrapper.find('[role="alert"]').text()).not.toMatch(/\/api\/|POST|Too Many/)
+    expect(wrapper.find('[role="alert"]').text()).toContain('Try again in a moment.')
   })
 })
 

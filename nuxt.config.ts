@@ -186,5 +186,6 @@ export default defineNuxtConfig({
     },
   },
   // In the bundle, so an icon costs no counted request, and a blocked one no call to Iconify.
-  icon: { clientBundle: { scan: true, sizeLimitKb: 0 }, fallbackToApi: false },
+  // The scan does not read .ts, so what only pipeline-view.ts names is listed.
+  icon: { clientBundle: { scan: true, sizeLimitKb: 0, icons: ['lucide:file-x', 'lucide:pause', 'lucide:wifi-off'] }, fallbackToApi: false },
 })

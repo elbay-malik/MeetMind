@@ -39,6 +39,17 @@ describe('what the rate rule counts', () => {
     expect(await inRepo('app/pages/index.vue')).toMatch(/:to="`\/meetings\/\$\{demoMeetingId\}`"\s+external/)
   })
 
+  it('sets the words of a subtle alert apart from its colour, for every colour the banners use', async () => {
+    const source = await inRepo('app/app.config.ts')
+    expect(source).toContain('[\'warning\', \'error\', \'info\']')
+    expect(source).toContain('variant: \'subtle\'')
+    expect(source).toContain('title: \'text-highlighted\'')
+  })
+
+  it('goes home from the error page inside the app', async () => {
+    expect(await inRepo('app/error.vue')).not.toMatch(/\bexternal\b/)
+  })
+
   it('does not repeat a blocked read at once, and does repeat other failures', async () => {
     const { PAGE_READ } = await import('../../app/utils/page-read')
     expect(PAGE_READ.retryStatusCodes).not.toContain(429)
