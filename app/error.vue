@@ -10,9 +10,8 @@ const title = computed(() => {
 })
 useSeoMeta({ title: () => `MeetMind — ${title.value}` })
 
-/** Past the rate rule's 10-second block, which is the likeliest reason for being here. */
-const RETRY_MS = 11_000
-const MAX_RETRIES = 3
+/** Separate blocks minutes apart are not one outage, and each recovered. */
+const RETRIES_FORGOTTEN_MS = 60_000
 const RETRIES_KEY = 'meetmind-error-reloads'
 
 const retrying = ref(false)
@@ -21,10 +20,11 @@ let timer: ReturnType<typeof setTimeout> | undefined
 /** How many reloads this tab has spent on this page, so an outage does not reload it for ever. */
 function spendRetry(): boolean {
   try {
-    const spent = JSON.parse(sessionStorage.getItem(RETRIES_KEY) ?? '{}') as { path?: string, count?: number }
-    const count = spent.path === location.pathname ? spent.count ?? 0 : 0
-    if (count >= MAX_RETRIES) return false
-    sessionStorage.setItem(RETRIES_KEY, JSON.stringify({ path: location.pathname, count: count + 1 }))
+    const spent = JSON.parse(sessionStorage.getItem(RETRIES_KEY) ?? '{}') as { path?: string, count?: number, at?: number }
+    const recent = spent.path === location.pathname && Date.now() - (spent.at ?? 0) < RETRIES_FORGOTTEN_MS
+    const count = recent ? spent.count ?? 0 : 0
+    if (count >= PAGE_MAX_RETRIES) return false
+    sessionStorage.setItem(RETRIES_KEY, JSON.stringify({ path: location.pathname, count: count + 1, at: Date.now() }))
     return true
   }
   catch {
@@ -39,7 +39,7 @@ function reload() {
 onMounted(() => {
   if (notFound.value || !spendRetry()) return
   retrying.value = true
-  timer = setTimeout(reload, RETRY_MS)
+  timer = setTimeout(reload, PAGE_RETRY_MS)
 })
 onBeforeUnmount(() => clearTimeout(timer))
 </script>
@@ -55,7 +55,7 @@ onBeforeUnmount(() => clearTimeout(timer))
           v-if="notFound"
           class="text-muted"
         >
-          The link may be wrong, or the meeting may have been deleted.
+          {{ title === 'Meeting not found' ? 'The link may be wrong, or the meeting may have been deleted.' : 'The link may be wrong.' }}
         </p>
         <p
           v-else
@@ -68,13 +68,13 @@ onBeforeUnmount(() => clearTimeout(timer))
           <UButton
             v-if="!notFound"
             icon="i-lucide-refresh-cw"
+            :disabled="retrying"
             @click="reload"
           >
             Try again
           </UButton>
           <UButton
             to="/"
-            external
             variant="subtle"
             color="neutral"
           >

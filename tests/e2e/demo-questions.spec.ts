@@ -174,7 +174,7 @@ describe('questions on the public demo', () => {
     for (let i = 0; i < 12; i++) {
       const res = await ask(demoId)
       expect(res.status).toBe(429)
-      expect((await res.json() as Refused).message).toMatch(/busy/)
+      expect((await res.json() as Refused).message).toMatch(/cannot take another question/)
     }
     expect(await countToday()).toBe(0)
     await db.setItem<SlotState>('slots/groq-chat', { nextAvailableAt: 0, blockedUntil: 0 })

@@ -18,12 +18,12 @@ const meeting = shallowRef(data.value!.meeting)
 
 useSeoMeta({ title: () => `MeetMind — ${meeting.value.title}` })
 
-const { data: transcriptData, error: transcriptError, refresh: refreshTranscript }
+const { data: transcriptData, error: transcriptError, refresh: refreshTranscript, status: transcriptReadStatus }
   = await useFetch<{ segments: TranscriptSegment[] }>(`/api/meetings/${meetingId.value}/transcript`, PAGE_READ)
 const segments = shallowRef(transcriptData.value?.segments ?? [])
 
 /** Failing to read this costs only what it says: the driver asks again as soon as it starts. */
-const { data: firstAnswer } = await useFetch<PipelineResponse>(`/api/meetings/${meetingId.value}/pipeline`)
+const { data: firstAnswer } = await useFetch<PipelineResponse>(`/api/meetings/${meetingId.value}/pipeline`, PAGE_READ)
 
 /**
  * The page drives the meeting, with no click (ADR-0012 §1), and opening it is enough
@@ -58,6 +58,18 @@ watch(status, async (moved) => {
     transcriptReadAt.value = moved
   }
 })
+
+/** A finished meeting's status never moves, so nothing above would read it again. */
+const transcriptUnread = computed(() => !!transcriptError.value && !segments.value.length)
+async function readTranscript() {
+  const at = status.value
+  await refreshTranscript()
+  if (transcriptData.value && !transcriptError.value) {
+    segments.value = transcriptData.value.segments
+    transcriptReadAt.value = at
+  }
+}
+useReadAgain(() => transcriptUnread.value, readTranscript)
 
 const facts = computed(() => ({
   status: status.value,
@@ -353,6 +365,16 @@ function rebuild() {
       icon="i-lucide-message-square-off"
       title="No speech was found"
       description="Transcription ran and returned nothing. The recording may be silent."
+    />
+
+    <UAlert
+      v-if="transcriptUnread"
+      role="alert"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      title="The transcript could not be loaded"
+      :actions="[{ label: 'Try again', color: 'neutral', variant: 'subtle', loading: transcriptReadStatus === 'pending', onClick: () => readTranscript() }]"
     />
 
     <UCard v-if="segments.length">

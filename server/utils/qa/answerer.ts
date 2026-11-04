@@ -1,5 +1,6 @@
 import type { TranscriptSegment } from '#shared/types/meeting'
 import type { WireAnswer } from '#shared/schemas/qa'
+import { ANSWER_SLOT_BUSY_MESSAGE } from '#shared/utils/meeting'
 import { ProviderBusyError, type RequestPacer } from '../summary/groq'
 
 export interface AnswerInput {
@@ -50,7 +51,7 @@ export class AnswerError extends Error {
 /** No request slot starts within the question's wait. */
 export class AnswerSlotBusyError extends AnswerError {
   constructor(retryAt: Date) {
-    super('The answering model takes one request a minute, and the last one was moments ago.', 429, false, retryAt)
+    super(ANSWER_SLOT_BUSY_MESSAGE, 429, false, retryAt)
     this.name = 'AnswerSlotBusyError'
   }
 }

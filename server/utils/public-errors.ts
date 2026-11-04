@@ -1,5 +1,5 @@
 import type { Meeting, PublicMeeting } from '#shared/types/meeting'
-import { AUDIO_MIME, DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE } from '#shared/utils/meeting'
+import { ANSWER_SLOT_BUSY_MESSAGE, AUDIO_MIME, DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE } from '#shared/utils/meeting'
 import { DAILY_LIMIT_MESSAGE } from './qa/embedder'
 
 /**
@@ -107,7 +107,7 @@ export const PUBLIC_RULES: Record<PublicStage, readonly PublicRule[]> = {
     DAILY_LIMIT_MESSAGE,
     EMBEDDER_OUT_OF_CAPACITY,
     EMBEDDER_CREDENTIALS,
-    'The answering model is busy with other requests, such as a running extraction.',
+    ANSWER_SLOT_BUSY_MESSAGE,
     'Could not schedule the question. Try again shortly.',
     'Answering quota is exhausted for now.',
     'The answering service rejected our credentials.',

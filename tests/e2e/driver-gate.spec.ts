@@ -176,7 +176,8 @@ describe('a production build with nothing set and no opt-in', () => {
     const res = await page(path)
     const html = await res.text()
     expect(res.status).toBe(503)
-    expect(html).toContain('Could not load meeting')
+    // Outside the scripts: the payload holds what the page no longer shows.
+    expect(html.replace(/<script[\s\S]*?<\/script>/g, '')).toContain('This page could not be loaded')
     expect(html).not.toMatch(/\.mjs|\bat setup\b|node_modules/)
     for (const name of SETTING_NAMES) expect(html).not.toContain(name)
   })

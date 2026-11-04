@@ -122,7 +122,7 @@ describe('POST /api/meetings/:id/ask, of what a provider said', () => {
 
   it('does not log a question that only has to wait its turn: asking is open to anyone', async () => {
     askMeeting.mockRejectedValueOnce(new AnswerSlotBusyError(new Date(Date.now() + 30_000)))
-    await expect(handler({})).rejects.toMatchObject({ statusCode: 429, message: expect.stringMatching(/busy/) })
+    await expect(handler({})).rejects.toMatchObject({ statusCode: 429, message: expect.stringMatching(/cannot take another question/) })
     expect(warn).not.toHaveBeenCalled()
   })
 

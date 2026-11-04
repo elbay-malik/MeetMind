@@ -45,7 +45,13 @@ describe('what the rate rule counts', () => {
     expect(PAGE_READ.retryStatusCodes).toEqual(expect.arrayContaining([500, 502, 503, 504]))
   })
 
-  it.each(['app/pages/meetings/[id]/index.vue', 'app/pages/meetings/[id]/progress.vue', 'app/components/MeetingQuestions.vue'])('%s uses it', async (path) => {
-    expect(await inRepo(path)).toContain('PAGE_READ')
+  it.each([
+    ['app/pages/meetings/[id]/index.vue', 3],
+    ['app/pages/meetings/[id]/progress.vue', 3],
+    ['app/components/MeetingQuestions.vue', 2],
+  ])('%s has it on every read, which is %i', async (path, reads) => {
+    const source = await inRepo(path)
+    expect(source.match(/useFetch</g)).toHaveLength(reads)
+    expect(source.match(/PAGE_READ/g)).toHaveLength(reads)
   })
 })

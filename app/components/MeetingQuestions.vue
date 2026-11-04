@@ -8,7 +8,7 @@ const emit = defineEmits<{
   seek: [startMs: number, segmentIdx: number]
 }>()
 
-const { data: indexData, error: indexUnread, refresh: refreshIndex } = await useFetch<{ index: SearchIndexStatus }>(
+const { data: indexData, error: indexUnread, refresh: refreshIndex, status: indexStatus } = await useFetch<{ index: SearchIndexStatus }>(
   () => `/api/meetings/${props.meetingId}/search-index`,
   PAGE_READ,
 )
@@ -22,8 +22,14 @@ const indexNotFinished = computed(() => index.value?.state === 'none' || index.v
  */
 const { data: pipeline, refresh: refreshPipeline } = await useFetch<PipelineResponse>(
   () => `/api/meetings/${props.meetingId}/pipeline`,
-  { immediate: indexNotFinished.value },
+  { ...PAGE_READ, immediate: indexNotFinished.value },
 )
+
+async function readIndex() {
+  await refreshIndex()
+  if (indexNotFinished.value) await refreshPipeline()
+}
+useReadAgain(() => !!indexUnread.value, readIndex)
 
 /** Nothing on the pipeline page can move the public demo (ADR-0015), so nothing here sends anyone there. */
 const isDemo = computed(() => isDemoMeetingId(useRuntimeConfig().public.demoMeetingId, props.meetingId))
@@ -72,12 +78,17 @@ onBeforeUnmount(() => clearTimeout(retryTimer))
 
 /** A refusal that says when to try again is a wait, and nothing has gone wrong. */
 const failureWaits = ref(false)
+/** Said once when a wait ends, since the alert that gave the time goes with it. */
+const canAskAgain = ref(false)
 
 function holdUntil(at: Date) {
   clearTimeout(retryTimer)
   retryAt.value = at
   retryTimer = setTimeout(() => {
     retryAt.value = null
+    // The time it gave has passed, so it is no longer true.
+    if (failureWaits.value) failure.value = null
+    canAskAgain.value = true
   }, Math.max(0, at.getTime() - Date.now()))
 }
 
@@ -97,13 +108,17 @@ function retryAtOf(err: unknown): Date | null {
   return new Date(Date.now() + seconds * 1000)
 }
 
-const formatClock = (at: Date) => at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+/** With the day when it is not today: a day's cap can send someone to tomorrow morning. */
+const formatClock = (at: Date) => at.toDateString() === new Date().toDateString()
+  ? at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  : at.toLocaleString([], { weekday: 'long', hour: '2-digit', minute: '2-digit' })
 
 async function ask() {
   const text = question.value.trim()
   if (!text || asking.value || retryAt.value) return
   asking.value = true
   failure.value = null
+  canAskAgain.value = false
   try {
     const { answer } = await $fetch<{ answer: QuestionAnswer }>(`/api/meetings/${props.meetingId}/ask`, {
       method: 'POST',
@@ -129,8 +144,7 @@ async function ask() {
     // A 409 here means the index went stale under us (a replaced transcript);
     // re-read it so the card offers the right next step instead of a form that
     // will keep failing.
-    await refreshIndex()
-    if (indexNotFinished.value) await refreshPipeline()
+    await readIndex()
   }
   finally {
     asking.value = false
@@ -148,7 +162,9 @@ const status = computed(() => {
     // extraction (ADR-0007 decision 7), so one can wait its turn -- briefly.
     return 'Finding an answer. If the model took another request moments ago, this waits its turn for up to 20 seconds.'
   }
-  if (!result.value) return ''
+  if (canAskAgain.value) return 'You can ask again now.'
+  // An answer further down belongs to the last question, and this one has an alert of its own.
+  if (failure.value || !result.value) return ''
   return result.value.answer.found
     ? `Answer ready, citing ${result.value.answer.citations.length} line${result.value.answer.citations.length === 1 ? '' : 's'}.`
     : 'Nothing retrieved from this meeting supports an answer.'
@@ -168,7 +184,17 @@ const status = computed(() => {
       v-if="indexUnread"
       class="text-sm text-muted"
     >
-      Could not check whether this meeting can be asked questions. Reload the page to try again.
+      Could not check whether this meeting can be asked questions.
+      <UButton
+        class="ml-1"
+        size="xs"
+        color="neutral"
+        variant="subtle"
+        :loading="indexStatus === 'pending'"
+        @click="readIndex"
+      >
+        Try again
+      </UButton>
     </p>
 
     <p
@@ -245,7 +271,7 @@ const status = computed(() => {
       variant="subtle"
       icon="i-lucide-triangle-alert"
       class="mt-3"
-      :title="failureWaits ? 'Not answered yet' : 'Could not answer'"
+      :title="failureWaits ? 'Not answered' : 'Could not answer'"
       :description="failure"
     />
 

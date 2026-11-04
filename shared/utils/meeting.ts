@@ -27,6 +27,9 @@ export const AUDIO_MIME = 'audio/ogg'
  * seeks in the browser's Opus-in-Ogg about 4% early, so the one recording everyone hears is
  * served as AAC in MP4. No route writes this type: only the demo's row has it.
  */
+/** True of a paced slot and of a provider's long block alike, so it names neither a rate nor a cause. */
+export const ANSWER_SLOT_BUSY_MESSAGE = 'The answering model cannot take another question just yet.'
+
 export const DEMO_PLAYBACK_MIME = 'audio/mp4'
 
 export const MAX_TITLE_LENGTH = 200

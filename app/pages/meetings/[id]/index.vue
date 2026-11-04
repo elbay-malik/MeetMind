@@ -14,7 +14,7 @@ if (error.value) {
 }
 const meeting = computed(() => data.value!.meeting)
 
-const { data: transcriptData, error: transcriptError, refresh: refreshTranscript } = await useFetch<{ segments: TranscriptSegment[] }>(
+const { data: transcriptData, error: transcriptError, refresh: refreshTranscript, status: transcriptStatus } = await useFetch<{ segments: TranscriptSegment[] }>(
   `/api/meetings/${meetingId.value}/transcript`,
   PAGE_READ,
 )
@@ -22,12 +22,14 @@ const segments = computed(() => transcriptData.value?.segments ?? [])
 /** A failed read is not an empty transcript, which would say that nobody spoke. */
 const transcriptUnread = computed(() => !!transcriptError.value && !transcriptData.value)
 
-const { data: summaryData, error: summaryError, refresh: refreshSummary } = await useFetch<{ summary: MeetingSummary | null }>(
+const { data: summaryData, error: summaryError, refresh: refreshSummary, status: summaryStatus } = await useFetch<{ summary: MeetingSummary | null }>(
   `/api/meetings/${meetingId.value}/summary`,
   PAGE_READ,
 )
 const summary = computed(() => summaryData.value?.summary ?? null)
 const summaryUnread = computed(() => !!summaryError.value && !summaryData.value)
+useReadAgain(() => transcriptUnread.value, () => refreshTranscript())
+useReadAgain(() => summaryUnread.value, () => refreshSummary())
 
 useSeoMeta({ title: () => `MeetMind — ${meeting.value.title}` })
 
@@ -42,26 +44,33 @@ const followIndex = computed(() => findFollowSegment(segments.value, currentMs.v
 
 /** The element's own timeupdate fires about four times a second. */
 function onTimeUpdate() {
+  // A load starts the element from 0, which is not where the visitor is.
+  if (resumeAt) return
   currentMs.value = Math.round((player.value?.currentTime ?? 0) * 1000)
 }
 
-/** Past the rate rule's 10-second block, so the one retry that is made by itself can work. */
-const AUDIO_RETRY_MS = 11_000
+/** Few, and not reset by metadata: a recording whose head loads and whose middle fails loads again and again. */
+const AUDIO_MAX_RETRIES = 2
 let audioRetryTimer: ReturnType<typeof setTimeout> | undefined
-let audioRetried = false
+let audioRetries = 0
 let resumeAt: { sec: number, play: boolean } | null = null
 
 function onAudioError() {
   audioError.value = 'The audio could not be loaded, so seeking is unavailable.'
-  if (audioRetried) return
-  audioRetried = true
-  const sec = player.value?.currentTime ?? 0
-  audioRetryTimer = setTimeout(() => recoverAudio(sec, false), AUDIO_RETRY_MS)
+  if (audioRetryTimer || audioRetries >= AUDIO_MAX_RETRIES) return
+  const audio = player.value
+  // A load that failed has no position of its own, so what it was asked for still stands.
+  const { sec, play } = resumeAt ?? { sec: audio?.currentTime ?? 0, play: audio ? !audio.paused : false }
+  audioRetryTimer = setTimeout(() => {
+    audioRetries++
+    recoverAudio(sec, play)
+  }, PAGE_RETRY_MS)
 }
 
 /** An element that has failed stays failed until it is told to load again, which starts it from 0. */
 function recoverAudio(sec: number, play: boolean) {
   clearTimeout(audioRetryTimer)
+  audioRetryTimer = undefined
   resumeAt = { sec, play }
   player.value?.load()
 }
@@ -74,7 +83,12 @@ function explainNoAudio() {
 /** Clear a previous complaint once the element proves it can play. */
 function onAudioReady() {
   audioError.value = null
-  audioRetried = false
+}
+
+/** The only proof that the audio itself comes through, and not only the head of the file. */
+function onAudioPlaying() {
+  onAudioReady()
+  audioRetries = 0
 }
 
 function onAudioMetadata() {
@@ -385,7 +399,7 @@ onMounted(() => {
         @error="onAudioError"
         @loadedmetadata="onAudioMetadata"
         @canplay="onAudioReady"
-        @playing="onAudioReady"
+        @playing="onAudioPlaying"
       />
       <UAlert
         v-if="audioError"
@@ -509,7 +523,7 @@ onMounted(() => {
       variant="subtle"
       icon="i-lucide-triangle-alert"
       title="The summary could not be loaded"
-      :actions="[{ label: 'Try again', color: 'neutral', variant: 'subtle', onClick: () => refreshSummary() }]"
+      :actions="[{ label: 'Try again', color: 'neutral', variant: 'subtle', loading: summaryStatus === 'pending', onClick: () => refreshSummary() }]"
     />
 
     <MeetingQuestions
@@ -584,7 +598,7 @@ onMounted(() => {
       variant="subtle"
       icon="i-lucide-triangle-alert"
       title="The transcript could not be loaded"
-      :actions="[{ label: 'Try again', color: 'neutral', variant: 'subtle', onClick: () => refreshTranscript() }]"
+      :actions="[{ label: 'Try again', color: 'neutral', variant: 'subtle', loading: transcriptStatus === 'pending', onClick: () => refreshTranscript() }]"
     />
 
     <!-- Driven by status, not by the segment count alone: a silent recording

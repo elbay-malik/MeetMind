@@ -4,7 +4,7 @@ import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import MeetingQuestions from '~/components/MeetingQuestions.vue'
 import { DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE } from '../../shared/utils/meeting'
 import { AnswerSlotBusyError } from '../../server/utils/qa/answerer'
-import { fixedSentence } from '../../server/utils/public-errors'
+import { fixedSentence, publicMessage } from '../../server/utils/public-errors'
 
 const ID = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
 
@@ -67,10 +67,42 @@ describe('the question form, asked again too soon', () => {
   it('says why as a wait, and does not name an extraction that is not running', async () => {
     const wrapper = await askWith(REFUSED)
     const alert = wrapper.find('[role="alert"]').text()
-    expect(alert).toContain('Not answered yet')
+    expect(alert).toContain('Not answered')
     expect(alert).not.toContain('Could not answer')
-    expect(alert).toMatch(/one request a minute.* Try again at \d/)
+    expect(alert).toMatch(/cannot take another question just yet\. Try again at \d/)
     expect(alert).not.toMatch(/extraction/i)
+  })
+
+  it('reaches a visitor word for word, past the allow-list that replaces any sentence it does not know', () => {
+    const err = new AnswerSlotBusyError(new Date())
+    expect(publicMessage('answering', err)).toBe(err.message)
+  })
+
+  it('drops the alert when the time it gave has passed, and says so', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      const wrapper = await askWith(REFUSED)
+      expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+      await vi.advanceTimersByTimeAsync(45_000)
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+      expect(wrapper.find('[role="status"]').text()).toBe('You can ask again now.')
+      expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeUndefined()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives the day when the time is not today', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], now: new Date(2026, 10, 4, 22) })
+    try {
+      const wrapper = await askWith({ ...REFUSED, data: { ...REFUSED.data, retryAfterSec: 8 * 3_600 } })
+      const day = new Date(2026, 10, 5).toLocaleDateString([], { weekday: 'long' })
+      expect(wrapper.find('[role="alert"]').text()).toContain(`Try again at ${day}`)
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 })
 
