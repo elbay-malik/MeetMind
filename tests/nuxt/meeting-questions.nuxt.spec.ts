@@ -3,6 +3,7 @@ import { flushPromises } from '@vue/test-utils'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import MeetingQuestions from '~/components/MeetingQuestions.vue'
 import { DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE } from '../../shared/utils/meeting'
+import { AnswerSlotBusyError } from '../../server/utils/qa/answerer'
 import { fixedSentence } from '../../server/utils/public-errors'
 
 const ID = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
@@ -57,6 +58,19 @@ describe.each([
     const wrapper = await askWith(REFUSED)
     expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toMatch(/Questions can be asked again at/)
+  })
+})
+
+describe('the question form, asked again too soon', () => {
+  const REFUSED = { statusCode: 429, message: new AnswerSlotBusyError(new Date()).message, data: { retryAt: '2026-11-05T00:00:00.000Z', retryAfterSec: 45 } }
+
+  it('says why as a wait, and does not name an extraction that is not running', async () => {
+    const wrapper = await askWith(REFUSED)
+    const alert = wrapper.find('[role="alert"]').text()
+    expect(alert).toContain('Not answered yet')
+    expect(alert).not.toContain('Could not answer')
+    expect(alert).toMatch(/one request a minute.* Try again at \d/)
+    expect(alert).not.toMatch(/extraction/i)
   })
 })
 
