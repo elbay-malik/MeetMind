@@ -590,7 +590,7 @@ reject "reserve_slot refuses a negative interval rather than moving the next slo
 reject "reserve_slot refuses a NULL wait rather than writing a NULL slot" \
   "select * from public.reserve_slot('vm_c', 1000, null)" "must be non-negative"
 check "reserve_slot and note_rate_limit pin their search_path" \
-  "select bool_and('search_path=public' = any(proconfig)) and count(*) = 2
+  "select bool_and(coalesce('search_path=public' = any(proconfig), false)) and count(*) = 2
    from pg_proc where proname in ('reserve_slot', 'note_rate_limit')"
 psql -q -c "drop table vm_r; delete from public.provider_slots where provider like 'vm_%';"
 
@@ -1198,7 +1198,7 @@ for fn in 'public.transcript_hash(uuid)' 'public.read_index_state(uuid, text)' \
                          where p.oid = '$fn'::regprocedure and a.grantee = 0)"
 done
 check "step 8's functions pin their search_path" \
-  "select bool_and('search_path=public' = any(proconfig)) and count(*) = 4 from pg_proc
+  "select bool_and(coalesce('search_path=public' = any(proconfig), false)) and count(*) = 4 from pg_proc
    where proname in ('transcript_hash', 'read_index_state', 'upsert_windows', 'finish_index')"
 
 # What a batch and a last step write reaches this meeting's indexing run and no other
@@ -1258,7 +1258,7 @@ check "applying step 8's migration again keeps every marker, and the indexes sta
 psql -q -c "delete from public.meetings where id in ('$I2', '$I3', '$I4'); drop table vl_f; drop table vl_h; drop table vl_s;"
 
 check "the ledger functions pin their search_path" \
-  "select bool_and('search_path=public' = any(proconfig)) and count(*) = 8 from pg_proc
+  "select bool_and(coalesce('search_path=public' = any(proconfig), false)) and count(*) = 8 from pg_proc
    where proname in ('claim_step', 'release_step', 'locked_step_run', 'plan_chunks', 'record_chunk', 'finalize_summary',
                      'append_segments', 'finish_transcription')"
 psql -q -c "delete from public.meetings where id in ('$L1', '$L2', '$L3', '$L4');"
@@ -1477,7 +1477,7 @@ for fn in 'public.sweep_next_meeting(text, uuid, text)' 'public.sweep_can_move(u
                              where p.oid = '$fn'::regprocedure and a.grantee = 0)"
 done
 check "the sweeper's functions pin their search_path" \
-  "select bool_and('search_path=public' = any(proconfig)) and count(*) = 2 from pg_proc
+  "select bool_and(coalesce('search_path=public' = any(proconfig), false)) and count(*) = 2 from pg_proc
     where proname in ('sweep_next_meeting', 'sweep_can_move')"
 
 # Repeatable: a second apply fails on nothing and loses no rotation.
@@ -1686,7 +1686,7 @@ gone "$DEMO_ID"
 psql -q -c "delete from public.meetings where audio_key like 'cap_read_%';"
 
 check "the cap's functions pin their search_path" \
-  "select bool_and('search_path=public' = any(proconfig)) and count(*) = 2 from pg_proc
+  "select bool_and(coalesce('search_path=public' = any(proconfig), false)) and count(*) = 2 from pg_proc
     where proname in ('demo_question_gate', 'take_demo_question')"
 check_cap_posture() {
   for fn in 'public.demo_question_gate(integer, uuid)' 'public.take_demo_question(integer)'; do
