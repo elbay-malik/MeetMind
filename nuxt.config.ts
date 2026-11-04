@@ -137,7 +137,7 @@ export default defineNuxtConfig({
   },
   routeRules: {
     // A portfolio demo, not a site to be found by search. robots.txt asks crawlers
-    // to stay out; this covers a page reached through a link from elsewhere.
+    // to stay out, but for LinkedIn's preview of the home page; this covers a page reached through a link from elsewhere.
     //
     // Referrer-Policy: a meeting's URL is the capability to read it (ADR-0013),
     // so it must not reach a third party in a Referer header.
@@ -185,4 +185,6 @@ export default defineNuxtConfig({
       stylistic: true,
     },
   },
+  // In the bundle, so an icon costs no counted request, and a blocked one no call to Iconify.
+  icon: { clientBundle: { scan: true, sizeLimitKb: 0 }, fallbackToApi: false },
 })

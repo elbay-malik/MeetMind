@@ -1,2 +1,7 @@
+User-Agent: LinkedInBot
+Allow: /$
+Allow: /og.png
+Disallow: /
+
 User-Agent: *
 Disallow: /

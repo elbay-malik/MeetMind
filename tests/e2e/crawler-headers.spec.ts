@@ -38,9 +38,9 @@ describe('crawlers are kept out', () => {
     expect(response.headers.get('x-robots-tag')).toBe('noindex, nofollow')
   })
 
-  it('robots.txt disallows everything', async () => {
+  it('robots.txt disallows everything, but LinkedIn\'s preview of the home page, which holds no meeting', async () => {
     const response = await fetch('/robots.txt')
     expect(response.status).toBe(200)
-    expect(await response.text()).toMatch(/^User-Agent: \*\nDisallow: \/\n?$/)
+    expect(await response.text()).toBe('User-Agent: LinkedInBot\nAllow: /$\nAllow: /og.png\nDisallow: /\n\nUser-Agent: *\nDisallow: /\n')
   })
 })
