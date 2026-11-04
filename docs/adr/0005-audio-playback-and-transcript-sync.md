@@ -123,5 +123,5 @@ directly instead.
 - Peaks computed during extraction, then the waveform on top of them.
 - R2's range behaviour is still unverified against a real bucket, which is now
   the third record in a row to say so. `pnpm test:services` is where that lands.
-- Safari cannot play Opus-in-Ogg before 18.4, and none of this was tested there.
-  ADR-0002 already scopes the demo to Chromium.
+- Safari cannot play Opus-in-Ogg before 18.4, and from then on lands a seek in it about 4% early.
+  The demo's recording is served as MP4 for that reason (ADR-0015). An invited upload is not.

@@ -73,7 +73,7 @@ The names of what is missing go to the log once for each process or isolate, nev
 log it per request. `POST /api/invite-check` and `POST /api/meetings` ask right after the invite
 code, so a wrong code hears only that it is wrong, and a right one hears before minutes of extraction
 rather than after. ADR-0015's guards, and the admin route's, come first and are unchanged. Meeting pages
-show Nuxt's error page with `503` and "Could not load meeting". `/api/health` stays 200, which ADR-0009
+show the app's own error page with `503` and "This page could not be loaded". `/api/health` stays 200, which ADR-0009
 requires of it.
 
 ### 5. The stub flags do nothing without it.

@@ -345,7 +345,9 @@ spends real quota. `scripts/verify-worker-*.mjs` run it from a temporary copy, w
     the page's CPU, and audio seeks in Safari: select a line far into the recording and compare the words
     you hear with the highlighted line, because `currentTime` says the right number even when the audio is
     early. Click from the home page to the demo, to Pipeline and back, within ten seconds: the rate rule
-    may block that, and the page should recover by itself within about 11 seconds.
+    may block that, and the page should recover by itself within about 11 seconds. A full page load during
+    the block shows Cloudflare's own page, with none of the app on it, until it is reloaded. Paste the home
+    page's link into [LinkedIn's Post Inspector](https://www.linkedin.com/post-inspector/) and check the preview.
 
 **`pnpm test:services`, and a local server on `.env`, must not run during acceptance.** There is no
 staging. Both share the one real database with the live cron, so a tick can pick up the rows they
