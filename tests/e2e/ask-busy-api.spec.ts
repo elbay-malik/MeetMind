@@ -93,7 +93,7 @@ describe('POST /api/meetings/:id/ask while the answering slot is held', () => {
     const body = await refused.json() as { message: string, data: { retryAt: string, retryAfterSec: number } }
     expect(Date.parse(body.data.retryAt)).toBe(freeAt)
     expect(body.data.retryAfterSec).toBe(seconds)
-    expect(body.message).toMatch(/busy/)
+    expect(body.message).toMatch(/cannot take another question/)
 
     await sleepUntil(Date.parse(body.data.retryAt))
     const answered = await ask(meeting.id)

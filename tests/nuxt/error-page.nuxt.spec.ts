@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import ErrorPage from '~/error.vue'
 
@@ -43,8 +43,61 @@ describe('the error page', () => {
     expect(page.find('button').exists()).toBe(true)
   })
 
+  it('does not speak of a meeting when the path is not one', async () => {
+    const page = await shown(404, 'Page not found: /nope')
+    expect(page.text()).toContain('The link may be wrong.')
+    expect(page.text()).not.toContain('the meeting may have been deleted')
+    page.unmount()
+  })
+
+  it('goes home inside the app, as a full page load during the block would leave it', async () => {
+    const page = await shown(503, 'x')
+    const home = page.findAll('a').find(a => a.text() === 'Go to the home page')!
+    expect(home.attributes('href')).toBe('/')
+    expect(home.attributes('target')).toBeUndefined()
+    page.unmount()
+  })
+
+  describe('with time passing', () => {
+    let reload: ReturnType<typeof vi.spyOn>
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      reload = vi.spyOn(window.location, 'reload').mockImplementation(() => {})
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+      reload.mockRestore()
+    })
+    const tryAgain = (page: Awaited<ReturnType<typeof shown>>) => page.findAll('button').find(b => b.text() === 'Try again')!
+
+    it('reloads after the block, and its button waits for that, as a click during the block leaves the app', async () => {
+      const page = await shown(503, 'x')
+      expect(tryAgain(page).attributes('disabled')).toBeDefined()
+      await vi.advanceTimersByTimeAsync(10_999)
+      expect(reload).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(reload).toHaveBeenCalledOnce()
+      page.unmount()
+    })
+
+    it('offers the button at once when it will not reload by itself', async () => {
+      for (let i = 0; i < 3; i++) (await shown(503, 'x')).unmount()
+      const page = await shown(503, 'x')
+      expect(tryAgain(page).attributes('disabled')).toBeUndefined()
+      page.unmount()
+    })
+
+    it('forgets the count after a minute, as blocks minutes apart are not one outage', async () => {
+      for (let i = 0; i < 3; i++) (await shown(503, 'x')).unmount()
+      await vi.advanceTimersByTimeAsync(60_000)
+      const page = await shown(503, 'x')
+      expect(page.text()).toContain('Trying again in a few seconds.')
+      page.unmount()
+    })
+  })
+
   it('counts another page\'s failures separately', async () => {
-    sessionStorage.setItem('meetmind-error-reloads', JSON.stringify({ path: '/somewhere-else', count: 3 }))
+    sessionStorage.setItem('meetmind-error-reloads', JSON.stringify({ path: '/somewhere-else', count: 3, at: Date.now() }))
     const page = await shown(503, 'x')
     expect(page.text()).toContain('Trying again in a few seconds.')
     page.unmount()

@@ -180,7 +180,7 @@ await withWorker({ ...ALWAYS, ...OPT_IN_AND_FLAGS }, async (logs) => {
   check((await fetch(`${base}/`, { headers: { accept: 'text/html' } })).status === 200, 'the home page still renders')
   const page = await fetch(`${base}/meetings/${MEETING}`, { headers: { accept: 'text/html' } })
   const html = await page.text()
-  check(page.status === 503 && html.includes('Could not load meeting') && !/\.mjs|NUXT_GROQ/.test(html), `a meeting page shows a plain failure (got ${page.status})`)
+  check(page.status === 503 && html.replace(/<script[\s\S]*?<\/script>/g, '').includes('This page could not be loaded') && !/\.mjs|NUXT_GROQ/.test(html), `a meeting page shows a plain failure (got ${page.status})`)
 })
 
 console.log('\n# The opt-in, every stub flag, and every setting but Groq: the hazard itself')

@@ -87,15 +87,72 @@ describe('a meeting whose audio cannot be loaded', () => {
       expect(play).not.toHaveBeenCalled()
     })
 
-    it('does not keep trying by itself when the audio is really gone', async () => {
+    it('stops trying by itself after two, though the head of the file keeps loading, and shows it failed', async () => {
       vi.useFakeTimers()
       const { page, load } = await failedPage()
-      await page.find('audio').trigger('error')
-      vi.advanceTimersByTime(11_000)
+      for (let round = 0; round < 5; round++) {
+        await page.find('audio').trigger('error')
+        vi.advanceTimersByTime(11_000)
+        await page.find('audio').trigger('loadedmetadata')
+        await page.find('audio').trigger('canplay')
+      }
       await page.find('audio').trigger('error')
       vi.advanceTimersByTime(60_000)
-      expect(load).toHaveBeenCalledOnce()
+      expect(load).toHaveBeenCalledTimes(2)
       expect(page.findAll('[role="alert"]').map(a => a.text()).join(' ')).toContain(LOST)
+    })
+
+    it('tries by itself again once audio has really played', async () => {
+      vi.useFakeTimers()
+      const { page, load } = await failedPage()
+      for (let round = 0; round < 2; round++) {
+        await page.find('audio').trigger('error')
+        vi.advanceTimersByTime(11_000)
+      }
+      await page.find('audio').trigger('playing')
+      await page.find('audio').trigger('error')
+      vi.advanceTimersByTime(11_000)
+      expect(load).toHaveBeenCalledTimes(3)
+    })
+
+    it('still tries by itself when a click\'s own load fails during the block, and keeps the click\'s line and its wish to play', async () => {
+      vi.useFakeTimers()
+      const { page, audio, load, play } = await failedPage()
+      Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 0 })
+      await page.find('audio').trigger('error')
+      await page.find('[data-idx="0"]').trigger('click')
+      expect(load).toHaveBeenCalledOnce()
+      await page.find('audio').trigger('error')
+      vi.advanceTimersByTime(11_000)
+      expect(load).toHaveBeenCalledTimes(2)
+      await page.find('audio').trigger('loadedmetadata')
+      expect(play).toHaveBeenCalledOnce()
+    })
+
+    it('resumes playing after the block when the failed seek had asked to play', async () => {
+      vi.useFakeTimers()
+      const { page, audio, play } = await failedPage()
+      Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 900 })
+      Object.defineProperty(audio, 'paused', { configurable: true, value: false })
+      await page.find('audio').trigger('error')
+      vi.advanceTimersByTime(11_000)
+      await page.find('audio').trigger('loadedmetadata')
+      expect(audio.currentTime).toBe(900)
+      expect(play).toHaveBeenCalledOnce()
+    })
+
+    it('keeps the highlight where it was while the element is back at 0 loading', async () => {
+      vi.useFakeTimers()
+      const { page, audio } = await failedPage()
+      Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 900 })
+      await page.find('audio').trigger('error')
+      vi.advanceTimersByTime(11_000)
+      audio.currentTime = 0
+      await page.find('audio').trigger('timeupdate')
+      await page.find('audio').trigger('error')
+      vi.advanceTimersByTime(11_000)
+      await page.find('audio').trigger('loadedmetadata')
+      expect(audio.currentTime).toBe(900)
     })
   })
 })
