@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   AUDIO_MIME,
+  DEMO_PLAYBACK_MIME,
   MAX_AUDIO_BYTES,
   MAX_DURATION_SEC,
   MAX_FILE_NAME_LENGTH,
@@ -46,7 +47,7 @@ export const meetingSchema = z.object({
   durationSec: z.number().nullable(),
   audioKey: z.string(),
   audioBytes: z.int().positive(),
-  audioMime: z.literal(AUDIO_MIME),
+  audioMime: z.enum([AUDIO_MIME, DEMO_PLAYBACK_MIME]),
   uploadedAt: z.iso.datetime({ offset: true }).nullable(),
   errorMessage: z.string().nullable(),
   failedStage: z.enum(['transcription', 'summarization', 'upload']).nullable(),

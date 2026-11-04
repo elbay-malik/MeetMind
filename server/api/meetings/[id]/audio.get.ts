@@ -1,5 +1,5 @@
 import { contentRangeHeader, parseByteRange, rangeLength } from '#shared/utils/byte-range'
-import { AUDIO_MIME } from '#shared/utils/meeting'
+import { AUDIO_MIME, DEMO_PLAYBACK_MIME } from '#shared/utils/meeting'
 import { useAudioStore } from '../../../utils/storage'
 import { RangeNotSatisfiableError } from '../../../utils/storage/audio-store'
 import type { OpenedAudio } from '../../../utils/storage/audio-store'
@@ -87,8 +87,9 @@ export default defineEventHandler(async (event) => {
     // Pinned, never reflected from the store. On R2 the browser's PUT sets the
     // object's type and the presigned signature covers only the host, so an
     // object could carry text/html; echoing that would turn this same-origin
-    // route into a way to serve attacker-chosen markup from our own origin.
-    'content-type': AUDIO_MIME,
+    // route into a way to serve attacker-chosen markup from our own origin. The row is
+    // ours, and only these two types come out of it whatever it holds.
+    'content-type': meeting.audioMime === DEMO_PLAYBACK_MIME ? DEMO_PLAYBACK_MIME : AUDIO_MIME,
     'x-content-type-options': 'nosniff',
     'content-length': String(rangeLength(opened.window)),
     // Advertised even on a 200: Chromium will not treat a resource as seekable

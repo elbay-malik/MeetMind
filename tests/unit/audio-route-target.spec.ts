@@ -12,7 +12,7 @@ const MEETING = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
 const CHUNK = new Uint8Array(64 * 1024).fill(7)
 const CHUNKS = 200
 
-const source = vi.hoisted(() => ({ pulled: 0, cancelled: false }))
+const source = vi.hoisted(() => ({ pulled: 0, cancelled: false, mime: 'audio/ogg' as string }))
 
 function opened(chunks: number) {
   return {
@@ -38,7 +38,7 @@ vi.mock('../../server/utils/storage', () => ({
 }))
 vi.mock('../../server/utils/db', () => ({
   useMeetingRepository: () => ({
-    get: async () => ({ id: MEETING, status: 'ready', audioBytes: CHUNKS * CHUNK.byteLength, audioKey: `meetings/${MEETING}/audio.ogg` }),
+    get: async () => ({ id: MEETING, status: 'ready', audioBytes: CHUNKS * CHUNK.byteLength, audioKey: `meetings/${MEETING}/audio.ogg`, audioMime: source.mime }),
   }),
 }))
 
@@ -55,6 +55,7 @@ beforeAll(async () => {
 beforeEach(() => {
   source.pulled = 0
   source.cancelled = false
+  source.mime = 'audio/ogg'
 })
 afterAll(() => vi.unstubAllGlobals())
 
@@ -68,6 +69,16 @@ describe('the audio route, on a response with no socket', () => {
     expect(answer.status).toBe(200)
     expect(answer.headers.get('content-type')).toBe('audio/ogg')
     expect(answer.headers.get('content-length')).toBe(String(CHUNKS * CHUNK.byteLength))
+  })
+
+  it.each([
+    ['the demo\'s MP4', 'audio/mp4', 'audio/mp4'],
+    ['anything else the row holds, which goes out as the one other type', 'text/html', 'audio/ogg'],
+  ])('answers %s', async (_name, mime, type) => {
+    source.mime = mime
+    const answer = await handler({ node: { req: { headers: {} }, res: { socket: null, writeHead: vi.fn() } } }) as Response
+    expect(answer.headers.get('content-type')).toBe(type)
+    await answer.body!.cancel()
   })
 
   it('reads nothing of the object until the runtime does', async () => {
