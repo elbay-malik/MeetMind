@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { access, chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -126,6 +126,33 @@ describe('pnpm deploy:worker', () => {
     return { calls, lines, problem, go: () => deployWorker({ run, problem, log: (line: string) => lines.push(line) }) }
   }
 
+  it('says so when wrangler deploy fails, and answers its code', async () => {
+    const { lines, go } = world({ deploy: 4 })
+    expect(await go()).toBe(4)
+    expect(lines).toContain('FAIL: wrangler deploy exited with 4.')
+  })
+
+  it('deploys nothing and answers the signal\'s code when one arrives while the build is checked', async () => {
+    let signalled = false
+    const calls: string[] = []
+    const lines: string[] = []
+    const code = await deployWorker({
+      run: (_command: string, args: string[], env: Record<string, string | undefined>) => {
+        calls.push(args[0] === 'build' ? (env.NITRO_PRESET ? 'worker build' : 'node build') : 'deploy')
+        return 0
+      },
+      problem: async () => {
+        signalled = true
+        return null
+      },
+      log: (line: string) => lines.push(line),
+      interrupted: () => (signalled ? 130 : null),
+    })
+    expect(code).toBe(130)
+    expect(calls).toEqual(['worker build', 'node build'])
+    expect(lines).toContain('FAIL: interrupted before the deploy, so nothing was deployed.')
+  })
+
   it('builds for Workers, checks, deploys, and then puts the Node build back', async () => {
     const { calls, problem, go } = world()
     expect(await go()).toBe(0)
@@ -201,6 +228,7 @@ if [ -n "$NITRO_PRESET" ]; then
   [ -z "$FAKE_SLOW_WORKER_BUILD" ] || { : > worker-building; sleep 1; }
   mkdir -p .output/public/ffmpeg
   rm -f .output/public/ffmpeg/ffmpeg-core.wasm
+  [ -z "$FAKE_WASM_LEFT" ] || : > .output/public/ffmpeg/ffmpeg-core.wasm
   printf '{"preset":"cloudflare-module"}' > .output/nitro.json
 else
   echo node-build >> node-builds
@@ -267,6 +295,25 @@ fi
     await nodeBuildIsBack()
   })
 
+  it('refuses a build that still has the wasm among its assets, as the script itself and not only its library', async () => {
+    const { exited, output } = start({ FAKE_WASM_LEFT: '1' })
+    expect(await exited).toBe(1)
+    expect(output()).toContain('is among the assets')
+    expect(output()).toContain('Nothing was deployed.')
+    await expect(access(join(root, 'deploying'))).rejects.toThrow()
+    await nodeBuildIsBack()
+  })
+
+  it('answers the first signal and not a later one', async () => {
+    const { child, exited } = start({ FAKE_SLOW_NODE_BUILD: '1' })
+    await reached('deploying')
+    process.kill(child.pid!, 'SIGINT')
+    await reached('node-building')
+    process.kill(child.pid!, 'SIGTERM')
+    expect(await exited).toBe(130)
+    await nodeBuildIsBack()
+  })
+
   it('deploys nothing when a signal arrives during the Worker build, even if that build finishes', async () => {
     const { child, exited, output } = start({ FAKE_SLOW_WORKER_BUILD: '1', FAKE_STUBBORN_WORKER_BUILD: '1' })
     await reached('worker-building')
@@ -317,6 +364,11 @@ describe('pnpm secrets:worker', () => {
 
   it('never lists the demo id', () => {
     expect(WORKER_SECRET_NAMES).not.toContain('NUXT_PUBLIC_DEMO_MEETING_ID')
+  })
+
+  it('refuses a quoted value of nothing but spaces, the one way dotenv keeps them', () => {
+    const file = envFile({ ...VALUES, NUXT_ADMIN_TOKEN: '"   "' })
+    expect(() => workerSecretsPayload(file)).toThrow('.env has no value for NUXT_ADMIN_TOKEN, so nothing was sent.')
   })
 
   it('sends those keys and no others, whatever else .env has', () => {
@@ -416,5 +468,54 @@ describe('pnpm secrets:worker', () => {
     expect(script).toContain('readFileSync(join(rootDir, \'.env\')')
     expect(script).toContain('input,')
     expect(script).not.toMatch(/secret', 'bulk', /)
+  })
+
+  describe('the script itself, with a stand-in for pnpm', () => {
+    const FAKE_PNPM = `#!/bin/sh
+printf '%s' "$*" > args
+printf '%s|%s' "\${WRANGLER_LOG-unset}" "\${WRANGLER_LOG_SANITIZE-unset}" > logging
+cat > sent
+[ -z "$FAKE_KILLED" ] || kill -TERM $$
+`
+    let root = ''
+    beforeEach(async () => {
+      root = await mkdtemp(join(tmpdir(), 'meetmind-secrets-'))
+      await mkdir(join(root, 'bin'))
+      await writeFile(join(root, 'bin/pnpm'), FAKE_PNPM)
+      await chmod(join(root, 'bin/pnpm'), 0o755)
+      for (const path of ['scripts/push-worker-secrets.mjs', 'scripts/lib/worker-secrets.mjs']) {
+        await cp(fileURLToPath(new URL(`../../${path}`, import.meta.url)), join(root, path), { recursive: true })
+      }
+      await symlink(fileURLToPath(new URL('../../node_modules', import.meta.url)), join(root, 'node_modules'))
+      await writeFile(join(root, '.env'), envFile({ ...NOT_TO_SEND, ...VALUES }))
+    })
+    afterEach(() => rm(root, { recursive: true, force: true }))
+
+    function script(env: Record<string, string> = {}) {
+      const child = spawn(process.execPath, ['scripts/push-worker-secrets.mjs'], {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, ...env },
+      })
+      let output = ''
+      child.stdout.on('data', chunk => (output += chunk))
+      child.stderr.on('data', chunk => (output += chunk))
+      return new Promise<{ status: number | null, output: string }>((resolve) => {
+        child.once('close', status => resolve({ status, output }))
+      })
+    }
+
+    it('gives wrangler the twelve on stdin, with its debug logging and unsanitised output turned off', async () => {
+      const { status, output } = await script({ WRANGLER_LOG: 'debug', WRANGLER_LOG_SANITIZE: 'false' })
+      expect(status).toBe(0)
+      expect(await readFile(join(root, 'args'), 'utf8')).toBe('exec wrangler secret bulk')
+      expect(await readFile(join(root, 'logging'), 'utf8')).toBe('unset|unset')
+      expect(JSON.parse(await readFile(join(root, 'sent'), 'utf8'))).toEqual(VALUES)
+      expect(output).not.toContain('value-of-')
+    })
+
+    it('does not answer success when wrangler is killed by a signal', async () => {
+      expect((await script({ FAKE_KILLED: '1' })).status).toBe(1)
+    })
   })
 })

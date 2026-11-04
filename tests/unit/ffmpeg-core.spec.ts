@@ -1,6 +1,9 @@
-import { readdir, readFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { access, chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FFMPEG_CORE_LICENSE, FFMPEG_CORE_SOURCE_URL, FFMPEG_CORE_VERSION, FFMPEG_CORE_WASM_KEY, FFMPEG_CORE_WASM_PATH, FFMPEG_CORE_WASM_URL } from '../../shared/utils/ffmpeg-core'
 import { audioObjectKey } from '../../shared/utils/meeting'
 
@@ -53,6 +56,51 @@ describe('the upload script', () => {
     expect(script).toContain('\'--remote\'')
     expect(script).toContain('const BUCKET = \'meet-mind\'')
     expect((JSON.parse(await inRepo('package.json')) as { scripts: Record<string, string> }).scripts['upload:ffmpeg-wasm']).toBe('node scripts/upload-ffmpeg-wasm.mjs')
+  })
+})
+
+describe('the upload script itself, with a stand-in for pnpm', () => {
+  let root = ''
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'meetmind-wasm-upload-'))
+    await mkdir(join(root, 'bin'))
+    await writeFile(join(root, 'bin/pnpm'), '#!/bin/sh\nprintf \'%s\' "$*" > called\n')
+    await chmod(join(root, 'bin/pnpm'), 0o755)
+    for (const path of ['scripts/upload-ffmpeg-wasm.mjs', 'shared/utils/ffmpeg-core.ts']) {
+      await cp(fileURLToPath(new URL(`../../${path}`, import.meta.url)), join(root, path), { recursive: true })
+    }
+    await mkdir(join(root, 'node_modules/@ffmpeg/core/dist/esm'), { recursive: true })
+    await writeFile(join(root, 'node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.wasm'), 'wasm')
+  })
+  afterEach(() => rm(root, { recursive: true, force: true }))
+
+  async function upload(installed: string) {
+    await writeFile(join(root, 'node_modules/@ffmpeg/core/package.json'), JSON.stringify({ version: installed }))
+    const child = spawn(process.execPath, ['scripts/upload-ffmpeg-wasm.mjs'], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}` },
+    })
+    let output = ''
+    child.stdout.on('data', chunk => (output += chunk))
+    child.stderr.on('data', chunk => (output += chunk))
+    return new Promise<{ status: number | null, output: string }>((resolve) => {
+      child.once('close', status => resolve({ status, output }))
+    })
+  }
+
+  it('reads the constant from the real file, and uploads when it is what is installed', async () => {
+    expect((await upload(FFMPEG_CORE_VERSION)).status).toBe(0)
+    const called = await readFile(join(root, 'called'), 'utf8')
+    expect(called).toContain(`exec wrangler r2 object put meet-mind/assets/ffmpeg/${FFMPEG_CORE_VERSION}/ffmpeg-core.wasm --file `)
+    expect(called).toContain('--content-type application/wasm --remote')
+  })
+
+  it('uploads nothing when another version is installed', async () => {
+    const { status, output } = await upload('0.0.0')
+    expect(status).toBe(1)
+    expect(output).toContain(`says ${FFMPEG_CORE_VERSION}, and @ffmpeg/core 0.0.0 is installed`)
+    await expect(access(join(root, 'called'))).rejects.toThrow()
   })
 })
 
