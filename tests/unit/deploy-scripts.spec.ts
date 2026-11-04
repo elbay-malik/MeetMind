@@ -305,12 +305,13 @@ fi
   })
 
   it('answers the first signal and not a later one', async () => {
-    const { child, exited } = start({ FAKE_SLOW_NODE_BUILD: '1' })
-    await reached('deploying')
+    // During a Worker build that outlasts both, as that is when the code comes from the signal and not from a command it killed.
+    const { child, exited } = start({ FAKE_SLOW_WORKER_BUILD: '1', FAKE_STUBBORN_WORKER_BUILD: '1' })
+    await reached('worker-building')
     process.kill(child.pid!, 'SIGINT')
-    await reached('node-building')
     process.kill(child.pid!, 'SIGTERM')
     expect(await exited).toBe(130)
+    await expect(access(join(root, 'deploying'))).rejects.toThrow()
     await nodeBuildIsBack()
   })
 
