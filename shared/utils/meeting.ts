@@ -22,6 +22,13 @@ export const MAX_AUDIO_LABEL = '25 MB'
 /** The only media type the upload path accepts — the browser-encoded Opus-in-Ogg. */
 export const AUDIO_MIME = 'audio/ogg'
 
+/**
+ * What the demo meeting's object holds once it has been replaced by hand (ADR-0015). WebKit lands
+ * seeks in the browser's Opus-in-Ogg about 4% early, so the one recording everyone hears is
+ * served as AAC in MP4. No route writes this type: only the demo's row has it.
+ */
+export const DEMO_PLAYBACK_MIME = 'audio/mp4'
+
 export const MAX_TITLE_LENGTH = 200
 export const MAX_FILE_NAME_LENGTH = 255
 /** Upper bound on a meeting's duration (24 h) — guards against garbage metadata. */

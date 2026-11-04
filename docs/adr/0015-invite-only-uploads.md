@@ -129,6 +129,21 @@ health check also answers 503 when [ADR-0016](0016-real-services-or-nothing.md) 
 3. Open the home page, enter the code and extract the audio. Use **Download audio** to keep a copy
    before uploading (see below), then upload. The progress page carries it through by itself: keep
    it open until it says the meeting can be read and asked questions.
+   Once it is `ready`, replace its audio with the file Safari can seek. WebKit lands a seek in the
+   browser's Opus-in-Ogg about 4% early, while the highlight follows the requested time, and
+   Safari below 18.4 cannot play that format at all. The same recording as AAC in MP4 seeks
+   accurately. The key keeps its name, so the lifecycle rule and the admin delete still find it, and
+   no route but the audio route reads the object from here on, as the demo's pipeline refuses:
+
+   ```bash
+   ffmpeg -i meeting-audio.ogg -vn -map_metadata -1 -c:a aac -b:a 48k -movflags +faststart meeting-audio.m4a
+   wc -c meeting-audio.m4a
+   wrangler r2 object put <bucket>/meetings/<id>/audio.ogg --file meeting-audio.m4a --content-type audio/mp4 --remote
+   psql "$SUPABASE_DB_URL" -c "update public.meetings set audio_mime = 'audio/mp4', audio_bytes = <bytes from wc> where id = '<id>'"
+   ```
+
+   At 48 kbps a recording over about 69 minutes is past the 25 MB the row allows, so the demo is
+   shorter than that. To transcribe it again, put the Ogg back and undo the update first.
 4. Take the id from the meeting's link and set it with `wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID`,
    as for the code in step 2, and not as a dashboard variable. `wrangler deploy` deletes a plain
    variable that `wrangler.jsonc` does not list, and with it would go the home page's link and the
@@ -140,7 +155,7 @@ of `meetings/`, a rule goes by prefix so it cannot leave out one key, and nothin
 upload to an existing meeting again. The transcript, summary and questions live in Postgres and
 carry on, but the player and citation seeks stop working 30 days after upload. Before then, and
 again every time, put the same file back, which restarts the object's age:
-`wrangler r2 object put <bucket>/meetings/<id>/audio.ogg --file meeting-audio.ogg --content-type audio/ogg --remote`.
+`wrangler r2 object put <bucket>/meetings/<id>/audio.ogg --file meeting-audio.m4a --content-type audio/mp4 --remote`.
 The bytes must be the ones uploaded, because the row holds their length. `wrangler r2 object get --remote`
 fetches a copy while the object still exists. This has not yet been run against a real bucket. The
 alternative is to create a new demo and change the id. The storage budget's estimate stops counting
