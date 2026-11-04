@@ -342,7 +342,10 @@ spends real quota. `scripts/verify-worker-*.mjs` run it from a temporary copy, w
 10. **Create the demo.** See "Creating the demo meeting" in
     [ADR-0015](docs/adr/0015-invite-only-uploads.md). Only once it is finished,
     `wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID`. Then check it in a private window, including
-    audio seeks and the page's CPU.
+    the page's CPU, and audio seeks in Safari: select a line far into the recording and compare the words
+    you hear with the highlighted line, because `currentTime` says the right number even when the audio is
+    early. Click from the home page to the demo, to Pipeline and back, within ten seconds: the rate rule
+    may block that, and the page should recover by itself within about 11 seconds.
 
 **`pnpm test:services`, and a local server on `.env`, must not run during acceptance.** There is no
 staging. Both share the one real database with the live cron, so a tick can pick up the rows they

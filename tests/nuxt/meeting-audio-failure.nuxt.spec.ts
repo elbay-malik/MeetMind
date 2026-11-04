@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import MeetingPage from '~/pages/meetings/[id]/index.vue'
@@ -44,5 +44,58 @@ describe('a meeting whose audio cannot be loaded', () => {
     await page.find('[data-idx="0"]').trigger('click')
     await flushPromises()
     expect(page.findAll('[role="alert"]').map(a => a.text()).join(' ')).toContain(NOT_READY)
+  })
+
+  describe('once the element has really failed', () => {
+    afterEach(() => vi.useRealTimers())
+
+    async function failedPage() {
+      const page = await mountSuspended(MeetingPage)
+      const audio = page.find('audio').element as HTMLAudioElement
+      Object.defineProperty(audio, 'error', { configurable: true, value: { code: 2 } })
+      const load = vi.spyOn(audio, 'load').mockImplementation(() => {})
+      const play = vi.spyOn(audio, 'play').mockResolvedValue()
+      return { page, audio, load, play }
+    }
+
+    // A range the rate rule blocked leaves it failed after the block has ended.
+    it('loads it again when a line is selected, then goes to that line and plays', async () => {
+      const { page, audio, load, play } = await failedPage()
+      await page.find('audio').trigger('error')
+      await page.find('[data-idx="0"]').trigger('click')
+      expect(load).toHaveBeenCalledOnce()
+      expect(play).not.toHaveBeenCalled()
+      Object.defineProperty(audio, 'error', { configurable: true, value: null })
+      await page.find('audio').trigger('loadedmetadata')
+      await flushPromises()
+      expect(play).toHaveBeenCalledOnce()
+      expect(page.findAll('[role="alert"]').map(a => a.text()).join(' ')).not.toContain(LOST)
+    })
+
+    it('tries once by itself after the block, keeps its place and does not start playing', async () => {
+      vi.useFakeTimers()
+      const { page, audio, load, play } = await failedPage()
+      Object.defineProperty(audio, 'currentTime', { configurable: true, writable: true, value: 42 })
+      await page.find('audio').trigger('error')
+      vi.advanceTimersByTime(10_999)
+      expect(load).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(1)
+      expect(load).toHaveBeenCalledOnce()
+      audio.currentTime = 0
+      await page.find('audio').trigger('loadedmetadata')
+      expect(audio.currentTime).toBe(42)
+      expect(play).not.toHaveBeenCalled()
+    })
+
+    it('does not keep trying by itself when the audio is really gone', async () => {
+      vi.useFakeTimers()
+      const { page, load } = await failedPage()
+      await page.find('audio').trigger('error')
+      vi.advanceTimersByTime(11_000)
+      await page.find('audio').trigger('error')
+      vi.advanceTimersByTime(60_000)
+      expect(load).toHaveBeenCalledOnce()
+      expect(page.findAll('[role="alert"]').map(a => a.text()).join(' ')).toContain(LOST)
+    })
   })
 })

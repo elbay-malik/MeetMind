@@ -10,6 +10,7 @@ const emit = defineEmits<{
 
 const { data: indexData, error: indexUnread, refresh: refreshIndex } = await useFetch<{ index: SearchIndexStatus }>(
   () => `/api/meetings/${props.meetingId}/search-index`,
+  PAGE_READ,
 )
 const index = computed(() => indexData.value?.index ?? null)
 const indexNotFinished = computed(() => index.value?.state === 'none' || index.value?.state === 'incomplete')
@@ -69,6 +70,9 @@ const retryAt = ref<Date | null>(null)
 let retryTimer: ReturnType<typeof setTimeout> | undefined
 onBeforeUnmount(() => clearTimeout(retryTimer))
 
+/** A refusal that says when to try again is a wait, and nothing has gone wrong. */
+const failureWaits = ref(false)
+
 function holdUntil(at: Date) {
   clearTimeout(retryTimer)
   retryAt.value = at
@@ -114,6 +118,7 @@ async function ask() {
   }
   catch (err) {
     const at = retryAtOf(err)
+    failureWaits.value = !!at
     if (at) {
       holdUntil(at)
       failure.value = `${describeError(err)} Try again at ${formatClock(at)}.`
@@ -141,7 +146,7 @@ const status = computed(() => {
   if (asking.value) {
     // Questions share the answering model's per-account allowance with
     // extraction (ADR-0007 decision 7), so one can wait its turn -- briefly.
-    return 'Finding an answer. If an extraction is running, this waits its turn for up to 20 seconds.'
+    return 'Finding an answer. If the model took another request moments ago, this waits its turn for up to 20 seconds.'
   }
   if (!result.value) return ''
   return result.value.answer.found
@@ -236,11 +241,11 @@ const status = computed(() => {
     <UAlert
       v-if="failure"
       role="alert"
-      color="error"
+      :color="failureWaits ? 'warning' : 'error'"
       variant="subtle"
       icon="i-lucide-triangle-alert"
       class="mt-3"
-      title="Could not answer"
+      :title="failureWaits ? 'Not answered yet' : 'Could not answer'"
       :description="failure"
     />
 
