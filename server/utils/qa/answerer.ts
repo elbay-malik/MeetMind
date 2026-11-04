@@ -50,7 +50,7 @@ export class AnswerError extends Error {
 /** No request slot starts within the question's wait. */
 export class AnswerSlotBusyError extends AnswerError {
   constructor(retryAt: Date) {
-    super('The answering model is busy with other requests, such as a running extraction.', 429, false, retryAt)
+    super('The answering model takes one request a minute, and the last one was moments ago.', 429, false, retryAt)
     this.name = 'AnswerSlotBusyError'
   }
 }
