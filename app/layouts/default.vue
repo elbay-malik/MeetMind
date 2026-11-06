@@ -20,5 +20,12 @@
     <main>
       <slot />
     </main>
+    <footer>
+      <UContainer class="py-6">
+        <p class="text-xs text-muted">
+          Safari or iPhone not strongly supported.
+        </p>
+      </UContainer>
+    </footer>
   </div>
 </template>
