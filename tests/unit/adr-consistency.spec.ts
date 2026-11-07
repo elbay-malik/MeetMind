@@ -315,10 +315,12 @@ describe('the first deploy\'s steps', () => {
   const inRepo = (path: string) => readFile(fileURLToPath(new URL(`../../${path}`, import.meta.url)), 'utf8')
   const steps = async () => (await inRepo('README.md')).split('### Deploying the Worker')[1]!.split('\n## ')[0]!.replace(/\s+/g, ' ')
 
-  it('says nothing has been deployed, and nothing claims it has', async () => {
+  it('says the Worker is live, and on its custom domain only', async () => {
     const text = await steps()
-    expect(text).toContain('Nothing has been deployed yet.')
-    expect(text).not.toMatch(/is live at|has been deployed to|now deployed/i)
+    expect(text).not.toContain('Nothing has been deployed yet.')
+    expect(text).toContain('The Worker has served <https://meetmind.elbaymalik.com> since 2026-11-06')
+    expect(text).toContain('`workers.dev` and preview URLs are off')
+    expect((await inRepo('README.md')).replace(/\s+/g, ' ')).not.toMatch(/since nothing has been deployed|Not yet deployed/)
   })
 
   it('come in the order that works', async () => {
@@ -367,11 +369,12 @@ describe('the first deploy\'s steps', () => {
     expect(await adr('0019')).toContain('**A rollback can drop the cap.**')
   })
 
-  it('claim the rate rule\'s bound only with what makes it true, and say what the fallback gives up', async () => {
+  it('claim the rate rule\'s bound only with what makes it true, and give the live expression that counts every request the Worker runs', async () => {
     const text = await steps()
     expect(text).toContain('so `run_worker_first` in `wrangler.jsonc` keeps everything under `/_nuxt/` away from the Worker, found or not')
-    expect(text).toContain('use `/api/`, `/meetings` and `/ffmpeg/`, which gives up that bound')
-    expect(text).toContain('`/%5Fnuxt/no-such-file`')
+    expect(text).toContain('(http.host eq "meetmind.elbaymalik.com" and not (starts_with(raw.http.request.uri.path, "/_nuxt/") and starts_with(http.request.uri.path, "/_nuxt/")))')
+    expect(text).toContain('so every request that runs the Worker is counted')
+    expect(text).toContain('`/%5Fnuxt/no-such-file`, and a path with a dot segment such as `/_nuxt/../api/health`, are counted by the rule')
     expect(await adr('0019')).toContain('hold one address to about 86,000 requests a day at the edge')
   })
 
