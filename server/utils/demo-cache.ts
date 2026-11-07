@@ -65,7 +65,12 @@ export async function readThroughDemoCache<T>(
 
   const key = demoCacheKey(meeting, resource)
   const hit = await cache.match(key).catch(() => undefined)
-  if (hit?.ok) return JSON.parse(await hit.text()) as T
+  // Says which way the read went, so the cache can be seen working on the live site.
+  if (hit?.ok) {
+    setResponseHeader(event, 'x-demo-cache', 'hit')
+    return JSON.parse(await hit.text()) as T
+  }
+  setResponseHeader(event, 'x-demo-cache', 'miss')
 
   const value = await load()
   if (options.cacheable && !options.cacheable(value)) return value
