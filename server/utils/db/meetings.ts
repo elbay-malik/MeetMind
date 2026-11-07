@@ -70,7 +70,11 @@ export interface MeetingRepository {
 export interface StorageUsageWindow {
   /** Days the bucket's lifecycle rule keeps an object. 0 or less means no rule. */
   retentionDays: number
-  /** Seconds a presigned upload URL stays valid. */
+  /**
+   * Seconds a registration that has not completed keeps its bytes reserved:
+   * the upload URL's lifetime plus the grace for a PUT begun just before it
+   * expired (`UPLOAD_RESERVATION_SEC`).
+   */
   reservationSeconds: number
 }
 

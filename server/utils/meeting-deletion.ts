@@ -5,16 +5,7 @@ import { usePipelineRepository, useSummaryRepository, useTranscriptIndexReposito
 import type { MeetingRepository } from './db/meetings'
 import { liveStepLease, type PipelineRepository, type PipelineRun } from './db/pipeline'
 import { useAudioStore } from './storage'
-import { UPLOAD_URL_TTL_SEC } from './storage-budget'
-
-/**
- * How long past its expiry an upload URL is still treated as live.
- *
- * R2 checks a presigned URL's expiry when the PUT starts, not when it finishes,
- * so an upload begun a second before expiry can still be landing well after it.
- * A 25 MB cap on a slow connection takes minutes; this is comfortably more.
- */
-export const UPLOAD_GRACE_SEC = 15 * 60
+import { UPLOAD_RESERVATION_SEC } from './storage-budget'
 
 /** Retry-After for the one refusal with no deadline to count down to: a row that changed between the check and the delete. */
 export const CHANGED_RETRY_AFTER_SEC = 1
@@ -48,7 +39,7 @@ export function deletionBlocker(
   now: number = Date.now(),
   runs: readonly Pick<PipelineRun, 'stepLeaseUntil'>[] = [],
 ): DeletionBlocker | null {
-  const uploadWindowEnds = Date.parse(meeting.createdAt) + (UPLOAD_URL_TTL_SEC + UPLOAD_GRACE_SEC) * 1000
+  const uploadWindowEnds = Date.parse(meeting.createdAt) + UPLOAD_RESERVATION_SEC * 1000
   if (now < uploadWindowEnds) {
     return {
       reason: 'Its upload URL may still be in use, and audio uploaded after the delete would be stored untracked',

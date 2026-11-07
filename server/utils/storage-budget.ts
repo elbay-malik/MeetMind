@@ -38,7 +38,7 @@ export async function assertStorageBudget(event: H3Event, incomingBytes: number)
 
   const stored = await useMeetingRepository(event).storedAudioBytes({
     retentionDays: Number(config.r2RetentionDays),
-    reservationSeconds: UPLOAD_URL_TTL_SEC,
+    reservationSeconds: UPLOAD_RESERVATION_SEC,
   })
 
   if (stored + incomingBytes > ceiling) {
@@ -64,8 +64,30 @@ export async function assertStorageBudget(event: H3Event, incomingBytes: number)
  * and the store checks the expiry when an upload STARTS, not when it finishes: a
  * large recording on a slow link only has to begin inside the window, and may
  * go on landing after it (meeting-deletion.ts's grace covers that). A shorter
- * life means a registered URL can be replayed for less time, and an abandoned
- * registration stops reserving budget sooner. The local driver's grant lives
- * exactly as long.
+ * life means a registered URL can be replayed for less time. The local driver's
+ * grant lives exactly as long.
  */
 export const UPLOAD_URL_TTL_SEC = 5 * 60
+
+/**
+ * How long past its expiry an upload URL is still treated as live.
+ *
+ * R2 checks a presigned URL's expiry when the PUT starts, not when it finishes,
+ * so an upload begun a second before expiry can still be landing well after it.
+ * A 25 MB cap on a slow connection takes minutes; this is comfortably more.
+ *
+ * Lives beside the TTL because both the budget and meeting-deletion.ts add it
+ * to the TTL, and meeting-deletion.ts already imports from here (the other way
+ * round would be a circular import).
+ */
+export const UPLOAD_GRACE_SEC = 15 * 60
+
+/**
+ * How long a registration that has not completed keeps its bytes reserved: the
+ * URL's lifetime plus the grace for a PUT still landing after it. The same
+ * window the delete route waits out, so the budget stops counting a pending
+ * upload no earlier than the point where its bytes can no longer arrive. Until
+ * `complete` sets `uploaded_at`, this reservation is the only place those bytes
+ * are counted.
+ */
+export const UPLOAD_RESERVATION_SEC = UPLOAD_URL_TTL_SEC + UPLOAD_GRACE_SEC
