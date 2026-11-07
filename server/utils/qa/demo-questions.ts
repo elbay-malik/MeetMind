@@ -55,7 +55,8 @@ function closed(step: string, cause: unknown): AnswerError {
 /**
  * The public demo's cap (ADR-0019): over the count, or while another meeting's extraction is
  * pending, a question is refused before it reserves a slot, and the count is taken only once it
- * has its slot. Without a working gate and take it fails closed, for the demo alone.
+ * has its slot. Without a working gate and take it fails closed, as every other meeting's count
+ * does (ADR-0020).
  */
 export function demoQuestionAllowance(deps: {
   repo: DemoQuestionRepository
