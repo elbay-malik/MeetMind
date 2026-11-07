@@ -303,6 +303,8 @@ vi.mock('../../server/utils/db', () => ({
 /** The route, with `askMeeting` real. Only a demo reaches the two functions. */
 describe('POST /api/meetings/:id/ask', () => {
   const headers = new Map<string, unknown>()
+  const JSON_REQUEST = { 'content-length': '30', 'content-type': 'application/json' }
+  let request: Record<string, string> = JSON_REQUEST
   type Handler = (event: unknown) => Promise<unknown>
   let handler: Handler
   let warn: MockInstance<typeof console.warn>
@@ -311,7 +313,7 @@ describe('POST /api/meetings/:id/ask', () => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.stubGlobal('defineEventHandler', (fn: Handler) => fn)
     vi.stubGlobal('getRouterParam', () => DEMO)
-    vi.stubGlobal('getRequestHeader', () => '30')
+    vi.stubGlobal('getRequestHeader', (_event: unknown, name: string) => request[name])
     vi.stubGlobal('readBody', async () => ({ question: QUESTION }))
     vi.stubGlobal('setResponseHeader', (_event: unknown, name: string, value: unknown) => headers.set(name, value))
     vi.stubGlobal('createError', (input: { statusCode: number, message: string }) => Object.assign(new Error(input.message), input))
@@ -323,6 +325,7 @@ describe('POST /api/meetings/:id/ask', () => {
     route.gate.mockReset()
     route.take.mockReset()
     route.demoId = DEMO
+    request = JSON_REQUEST
   })
   afterAll(() => {
     vi.unstubAllGlobals()
@@ -379,5 +382,44 @@ describe('POST /api/meetings/:id/ask', () => {
     expect(refused.data).toBeUndefined()
     expect(warn).toHaveBeenCalledOnce()
     expect(String((warn.mock.lastCall![1] as Error).message)).toContain('PGRST202')
+  })
+  it.each([
+    ['a form', 'application/x-www-form-urlencoded', 415],
+    ['a multipart form', 'multipart/form-data; boundary=x', 415],
+    ['plain text', 'text/plain', 415],
+    ['plain text that names JSON in a parameter', 'text/plain; type=application/json', 415],
+    ['no type at all', undefined, 415],
+  ])('refuses %s before reading it, and calls neither function', async (_name, type, statusCode) => {
+    request = { 'content-length': '30', ...(type === undefined ? {} : { 'content-type': type }) }
+    const readBody = vi.fn(async () => ({ question: QUESTION }))
+    vi.stubGlobal('readBody', readBody)
+    try {
+      await expect(handler({})).rejects.toMatchObject({ statusCode })
+    }
+    finally {
+      vi.stubGlobal('readBody', async () => ({ question: QUESTION }))
+    }
+    expect(readBody).not.toHaveBeenCalled()
+    expect(route.gate).not.toHaveBeenCalled()
+    expect(route.take).not.toHaveBeenCalled()
+  })
+
+  it('refuses a request its browser says another site started, before anything else', async () => {
+    request = { ...JSON_REQUEST, 'sec-fetch-site': 'cross-site' }
+    await expect(handler({})).rejects.toMatchObject({ statusCode: 403 })
+    expect(route.gate).not.toHaveBeenCalled()
+    expect(route.take).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['its own page', 'same-origin'],
+    ['a sibling subdomain', 'same-site'],
+    ['an address typed in', 'none'],
+    ['no such header, as from curl', undefined],
+  ])('goes on from %s, with JSON in any spelling', async (_name, site) => {
+    request = { 'content-length': '30', 'content-type': 'Application/JSON; charset=utf-8', ...(site === undefined ? {} : { 'sec-fetch-site': site }) }
+    route.gate.mockResolvedValue({ overCount: true, extractionPending: false })
+    await expect(handler({})).rejects.toMatchObject({ statusCode: 429, message: DEMO_QUESTIONS_USED_MESSAGE })
+    expect(route.gate).toHaveBeenCalledOnce()
   })
 })

@@ -191,6 +191,34 @@ describe('POST /api/meetings/:id/ask', () => {
     expect(res.status).toBe(413)
   })
 
+  it('takes a question only as JSON, whatever the body says', async () => {
+    const meeting = await indexedMeeting()
+    const question = 'What did we decide about the marketing budget?'
+    for (const [type, body] of [
+      ['application/x-www-form-urlencoded', new URLSearchParams({ question }).toString()],
+      ['text/plain', JSON.stringify({ question })],
+      ['multipart/form-data; boundary=x', `--x\r\nContent-Disposition: form-data; name="question"\r\n\r\n${question}\r\n--x--`],
+    ]) {
+      const res = await fetch(`/api/meetings/${meeting.id}/ask`, { method: 'POST', headers: { 'content-type': type! }, body })
+      expect(res.status, type).toBe(415)
+    }
+    const spelled = await fetch(`/api/meetings/${meeting.id}/ask`, {
+      method: 'POST', headers: { 'content-type': 'Application/JSON; charset=UTF-8' }, body: JSON.stringify({ question }),
+    })
+    expect(spelled.status).toBe(200)
+  })
+
+  it('refuses a request its browser marks as started by another site, and takes one from its own', async () => {
+    const meeting = await indexedMeeting()
+    const send = (site: string) => fetch(`/api/meetings/${meeting.id}/ask`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'sec-fetch-site': site },
+      body: JSON.stringify({ question: 'What did we decide about the marketing budget?' }),
+    })
+    expect((await send('cross-site')).status).toBe(403)
+    for (const site of ['same-origin', 'same-site', 'none']) expect((await send(site)).status, site).toBe(200)
+  })
+
   it('404s for unknown and malformed ids', async () => {
     expect((await ask('9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d', 'q?')).status).toBe(404)
     expect((await ask('not-a-uuid', 'q?')).status).toBe(404)
