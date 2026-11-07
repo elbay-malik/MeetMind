@@ -1,6 +1,6 @@
 # ADR-0015: Visitors get the demo meeting, and uploading takes an invite code
 
-- **Status:** Accepted, amended by [ADR-0016](0016-real-services-or-nothing.md) and [ADR-0019](0019-demo-question-cap.md)
+- **Status:** Accepted, amended by [ADR-0016](0016-real-services-or-nothing.md), [ADR-0019](0019-demo-question-cap.md) and [ADR-0020](0020-daily-limits.md)
 - **Date:** 2026-11-02
 - **Supersedes:** Nothing whole. Amends ADR-0010 (open registration is no longer what is left for rate limiting to cover), ADR-0012 (a question takes its request slot before it is embedded) and ADR-0013 (registration is closed, and its decision 5's demo meeting can now only be read and asked).
 
@@ -145,7 +145,7 @@ health check also answers 503 when [ADR-0016](0016-real-services-or-nothing.md) 
 | `POST /api/meetings/:id/summarize` | Meeting id, a finished transcript, a claim per step | Groq quota, the chunk ledger, the summary, the row | **Refused, 403** |
 | `POST /api/meetings/:id/search-index` | Meeting id, a finished transcript | Workers AI quota; writes windows, deletes stale ones | **Refused, 403** |
 | `POST /api/meetings/:id/advance` | Meeting id, whatever the step it takes needs, a claim per step. Never replaces an index holding another model's or transcript's work, and never repairs a `ready` meeting with no summary | Whatever its one step spends: Whisper, Groq or Workers AI quota, or nothing | **Refused, 403** |
-| `POST /api/meetings/:id/ask` | Meeting id, a finished transcript, a complete index, a 4 KB body | Workers AI and Groq quota, and the shared Groq slot. Nothing about the meeting | **Open, on purpose**, and on the demo within a daily count and not while an extraction is pending ([ADR-0019](0019-demo-question-cap.md)) |
+| `POST /api/meetings/:id/ask` | Meeting id, a finished transcript, a complete index, a 4 KB body, and a daily count per meeting ([ADR-0020](0020-daily-limits.md)) | Workers AI and Groq quota, and the shared Groq slot. Nothing about the meeting but its count | **Open, on purpose**, and on the demo within its own daily count and not while an extraction is pending ([ADR-0019](0019-demo-question-cap.md)) |
 | `DELETE /api/meetings/:id` | `NUXT_ADMIN_TOKEN` (ADR-0011) | Removes everything stored for the meeting | Same. This is how an operator removes it |
 
 ## Creating the demo meeting

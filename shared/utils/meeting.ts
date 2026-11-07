@@ -162,6 +162,13 @@ export const DEMO_QUESTIONS_USED_MESSAGE = 'The demo has used its questions for 
 export const DEMO_QUESTIONS_PAUSED_MESSAGE = 'The demo pauses its questions while a meeting is being processed.'
 
 /**
+ * What a refused question on any other meeting is told, over its own daily count (ADR-0020). The
+ * question form adds "Try again at <time>." as for the demo's, and it goes out through
+ * server/utils/public-errors.ts.
+ */
+export const MEETING_QUESTIONS_USED_MESSAGE = 'This meeting has used its questions for today.'
+
+/**
  * Whether this id is the public demo's (ADR-0015), for the guard on the server and for a page
  * deciding not to drive. Compared in lower case: `requireMeetingId` accepts a UUID in capitals,
  * which is the same row to Postgres, and the configured id may be written either way. Trimmed,

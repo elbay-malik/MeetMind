@@ -1,5 +1,5 @@
 import type { Meeting, PublicMeeting } from '#shared/types/meeting'
-import { ANSWER_SLOT_BUSY_MESSAGE, AUDIO_MIME, DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE } from '#shared/utils/meeting'
+import { ANSWER_SLOT_BUSY_MESSAGE, AUDIO_MIME, DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE, MEETING_QUESTIONS_USED_MESSAGE } from '#shared/utils/meeting'
 import { DAILY_LIMIT_MESSAGE } from './qa/embedder'
 
 /**
@@ -113,6 +113,7 @@ export const PUBLIC_RULES: Record<PublicStage, readonly PublicRule[]> = {
     'The answering service rejected our credentials.',
     DEMO_QUESTIONS_USED_MESSAGE,
     DEMO_QUESTIONS_PAUSED_MESSAGE,
+    MEETING_QUESTIONS_USED_MESSAGE,
   ],
 }
 

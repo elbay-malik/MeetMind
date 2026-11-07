@@ -1763,5 +1763,87 @@ expect_gate "and the gate is still the bounded one" 5 "f f"
 gone "$SW1"
 psql -q -c "delete from public.demo_question_days;"
 
+echo "checking every other meeting's question count (ADR-0020) ..."
+MQ_MIGRATION=supabase/migrations/20261107130000_meeting_question_cap.sql
+psql -q -c "delete from public.meetings; delete from public.meeting_question_days;"
+mq_take() { psql -q -At -c "select public.take_meeting_question($1, '$2');"; }
+mq_over() { psql -q -At -c "select public.meeting_question_gate($1, '$2');"; }
+expect_mq() { # expect_mq <description> <got> <wanted>
+  [ "$2" = "$3" ] || fail "$1 (got '$2', wanted '$3')"
+  echo "  ok: $1"
+}
+mk "$SW1" ready
+mk "$SW2" ready
+check "meeting_question_days has RLS on and no policies" \
+  "select c.relrowsecurity and not exists (select 1 from pg_policy where polrelid = c.oid)
+   from pg_class c where c.oid = 'public.meeting_question_days'::regclass"
+expect_mq "a meeting's first question of a day is under its limit" "$(mq_over 2 "$SW1")" f
+check "and reading it writes no row" "select count(*) = 0 from public.meeting_question_days"
+expect_mq "a take within the limit is granted" "$(mq_take 2 "$SW1")" t
+expect_mq "and the next" "$(mq_take 2 "$SW1")" t
+expect_mq "the gate reads the count reached" "$(mq_over 2 "$SW1")" t
+expect_mq "a take past the limit is refused" "$(mq_take 2 "$SW1")" f
+expect_mq "another meeting has its own count" "$(mq_over 2 "$SW2")" f
+expect_mq "and takes from it alone" "$(mq_take 2 "$SW2")" t
+check "so each meeting's count is its own" \
+  "select count(*) = 2 and sum(taken) = 3 from public.meeting_question_days where day = $TODAY"
+expect_mq "a limit of zero is over from the first question" "$(mq_over 0 "$SW2")" t
+expect_mq "and takes nothing" "$(mq_take 0 "$SW2")" f
+expect_mq "and nor does a negative one" "$(mq_take -1 "$SW2")" f
+reject "the gate has no safe reading of no limit" "select public.meeting_question_gate(null, '$SW1');" "the limit must be given"
+reject "nor of no meeting" "select public.meeting_question_gate(5, null);" "the meeting must be named"
+reject "a take has no safe reading of no limit" "select public.take_meeting_question(null, '$SW1');" "the limit must be given"
+reject "nor of no meeting" "select public.take_meeting_question(5, null);" "the meeting must be named"
+reject "a count below nothing is refused" "insert into public.meeting_question_days (day, meeting_id, taken) values ('2000-01-01', '$SW1', -1);" "meeting_question_days_taken_check"
+reject "a count of a meeting that does not exist is refused" "select public.take_meeting_question(5, '$SW3');" "meeting_question_days_meeting_id_fkey"
+
+psql -q -c "insert into public.meeting_question_days (day, meeting_id, taken) values ($TODAY - 1, '$SW1', 99), ($TODAY - 40, '$SW2', 7);"
+check "reading deletes nothing of earlier days" \
+  "select public.meeting_question_gate(3, '$SW1') = false and (select count(*) = 4 from public.meeting_question_days)"
+expect_mq "a take still counts today" "$(mq_take 3 "$SW1")" t
+check "and deletes the earlier days of every meeting, so the table never grows" \
+  "select count(*) = 2 and bool_and(day = $TODAY) from public.meeting_question_days"
+gone "$SW2"
+check "a meeting's count goes with it" \
+  "select count(*) = 1 and bool_and(meeting_id = '$SW1') from public.meeting_question_days"
+psql -q -c "delete from public.meeting_question_days;"
+
+for i in $(seq 1 20); do mq_take 5 "$SW1" > "$TMPDIR_SWEEP/mq_take_$i" & done
+wait
+granted=$(cat "$TMPDIR_SWEEP"/mq_take_* | grep -c '^t$' || true)
+[ "$granted" = "5" ] || fail "20 takes at once on one meeting with a limit of 5 granted $granted"
+echo "  ok: 20 takes at once on one meeting with a limit of 5 grant exactly 5"
+psql -q -c "delete from public.meeting_question_days;"
+
+check "the gate writes nothing" \
+  "select provolatile = 's' from pg_proc where proname = 'meeting_question_gate'"
+reject "and a read-only transaction cannot take one" \
+  "begin read only; select public.take_meeting_question(5, '$SW1'); commit;" "read-only transaction"
+check "the count's functions pin their search_path" \
+  "select bool_and(coalesce('search_path=public' = any(proconfig), false)) and count(*) = 2 from pg_proc
+    where proname in ('meeting_question_gate', 'take_meeting_question')"
+check_mq_posture() {
+  for fn in 'public.meeting_question_gate(integer, uuid)' 'public.take_meeting_question(integer, uuid)'; do
+    check "$1: $fn is executable by service_role and not by PUBLIC, anon or authenticated" \
+      "select has_function_privilege('service_role', '$fn', 'execute')
+              and not has_function_privilege('anon', '$fn', 'execute')
+              and not has_function_privilege('authenticated', '$fn', 'execute')
+              and not exists (select 1 from pg_proc p, aclexplode(p.proacl) a
+                               where p.oid = '$fn'::regprocedure and a.grantee = 0)"
+  done
+  check "$1: meeting_question_days is for service_role and neither API role" \
+    "select has_table_privilege('service_role', 'public.meeting_question_days', 'select, insert, update, delete')
+            and not has_table_privilege('anon', 'public.meeting_question_days', 'select, insert, update, delete')
+            and not has_table_privilege('authenticated', 'public.meeting_question_days', 'select, insert, update, delete')"
+}
+check_mq_posture "as applied"
+expect_mq "a question counted before applying again" "$(mq_take 5 "$SW1")" t
+psql -q < "$MQ_MIGRATION"
+check "applying the count's migration again keeps the count" \
+  "select count(*) = 1 and bool_and(taken = 1) from public.meeting_question_days"
+check_mq_posture "after a second apply"
+gone "$SW1"
+psql -q -c "delete from public.meeting_question_days;"
+
 echo
 echo "RESULT: PASS — $(ls supabase/migrations/*.sql | wc -l | tr -d ' ') migrations applied, all invariants hold"

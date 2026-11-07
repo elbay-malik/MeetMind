@@ -66,13 +66,16 @@ export interface AskInput {
   embedder: Embedder
   repo: Pick<TranscriptIndexRepository, 'readState' | 'search'>
   answerer: Answerer
-  /** What this meeting allows beyond the provider's own limits. Only the public demo has one. */
+  /**
+   * What this meeting allows beyond the provider's own limits: the public demo's count and pause
+   * (ADR-0019), or every other meeting's own daily count (ADR-0020).
+   */
   allowance?: QuestionAllowance
 }
 
 /**
- * Whether a question may go on, for a meeting that limits them (ADR-0019). Each refuses by
- * throwing. Two steps, in this order around the provider's slot, each for its own reason.
+ * Whether a question may go on, for a meeting that limits them (ADR-0019, ADR-0020). Each refuses
+ * by throwing. Two steps, in this order around the provider's slot, each for its own reason.
  */
 export interface QuestionAllowance {
   /**

@@ -1,6 +1,6 @@
 # ADR-0019: A daily count on the demo's questions, and none while an extraction is pending
 
-- **Status:** Accepted, **deployed on 2026-11-06**, and in force since 2026-11-07, when the demo's id was set
+- **Status:** Accepted, **deployed on 2026-11-06**, and in force since 2026-11-07, when the demo's id was set. Amended by [ADR-0020](0020-daily-limits.md), which gives every other meeting a daily count of its own
 - **Date:** 2026-11-04
 - **Supersedes:** Nothing whole. Amends ADR-0015 (questions on the demo stay open, within a count) and ADR-0012 (what a question does around its slot). Addresses SEC-04 and the demo's side of SEC-05 in the security audit.
 
@@ -13,7 +13,7 @@ The demo's id is on the home page, and asking it a question is the one thing a s
 
 ## Decision
 
-**On the public demo only, `POST .../ask` is refused over a daily count, and while any other meeting's extraction is in progress.** Other meetings' questions are unchanged, and never call any of this.
+**On the public demo only, `POST .../ask` is refused over a daily count, and while any other meeting's extraction is in progress.** Other meetings' questions never call any of this, and since [ADR-0020](0020-daily-limits.md) have a daily count of their own, in the same design.
 
 **The order matters both ways.**
 

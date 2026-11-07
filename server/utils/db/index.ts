@@ -21,6 +21,9 @@ import type { PipelineRepository } from './pipeline'
 import { createLocalDemoQuestionRepository } from './demo-questions-local'
 import { createSupabaseDemoQuestionRepository } from './demo-questions-supabase'
 import type { DemoQuestionRepository } from './demo-questions'
+import { createLocalMeetingQuestionRepository } from './meeting-questions-local'
+import { createSupabaseMeetingQuestionRepository } from './meeting-questions-supabase'
+import type { MeetingQuestionRepository } from './meeting-questions'
 
 /**
  * Pick the meeting repository: Supabase Postgres when the URL and service-role key
@@ -78,5 +81,13 @@ export function useDemoQuestionRepository(event: H3Event): DemoQuestionRepositor
   return selectDriver<DemoQuestionRepository>(event, 'supabase', {
     real: config => createSupabaseDemoQuestionRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey }),
     local: config => createLocalDemoQuestionRepository({ dataDir: config.dataDir }),
+  })
+}
+
+/** Every other meeting's daily count of questions (ADR-0020), chosen the same way as the other repositories. */
+export function useMeetingQuestionRepository(event: H3Event): MeetingQuestionRepository {
+  return selectDriver<MeetingQuestionRepository>(event, 'supabase', {
+    real: config => createSupabaseMeetingQuestionRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey }),
+    local: config => createLocalMeetingQuestionRepository({ dataDir: config.dataDir }),
   })
 }
