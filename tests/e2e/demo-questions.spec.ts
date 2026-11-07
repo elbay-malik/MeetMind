@@ -191,6 +191,21 @@ describe('questions on the public demo', () => {
     expect(await countToday()).toBe(1)
   })
 
+  it('spends nothing of the day\'s count on a body that is not JSON, or on a request from another site', async () => {
+    const body = JSON.stringify({ question: 'What did we decide about the marketing budget?' })
+    for (const headers of [
+      { 'content-type': 'application/x-www-form-urlencoded' },
+      { 'content-type': 'text/plain' },
+      { 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' },
+    ]) {
+      const res = await fetch(`/api/meetings/${demoId}/ask`, { method: 'POST', headers, body })
+      expect(res.status, JSON.stringify(headers)).toBe(headers['sec-fetch-site'] ? 403 : 415)
+    }
+    expect(await countToday()).toBe(0)
+    expect((await ask(demoId)).status).toBe(200)
+    expect(await countToday()).toBe(1)
+  })
+
   it.each<[string, Pick<Meeting, 'status' | 'failedStage'>]>([
     ['summarizing', { status: 'summarizing', failedStage: null }],
     ['indexing', { status: 'indexing', failedStage: null }],
