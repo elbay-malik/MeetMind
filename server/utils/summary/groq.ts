@@ -106,6 +106,28 @@ const INSTRUCTIONS = [
   'number, then state the item. Quote verbatim: the quote is checked against the',
   'transcript and anything that does not appear there is discarded.',
   '',
+  // Definitions, because without them the model's own sense of the words
+  // decides, and it varies by chunk: on a 23-minute review it left out a
+  // line that made someone responsible for another team's change landing
+  // (never announced as "an action"), listed a fallback that applied only
+  // if another step failed, and had no rule for a speaker who takes a task
+  // on themselves. Worded for meetings in general, not for that one; a
+  // transcript has no speaker labels, so a self-assigned task has a name
+  // only when the line itself says who is speaking.
+  'A decision is something the meeting agreed: a rule, a choice, or rejecting an option.',
+  'An action item is work someone is to do or own after the meeting, including making',
+  'sure someone else\'s work happens, whether or not it is called an action. Not a',
+  'fallback that applies only if something else fails. The assignee is the person given',
+  'it, including a speaker who takes it ("I\'ll take that one") when the line names them.',
+  'Quote the line that assigns it.',
+  '',
+  // Merging (mergeReconciled in reconcile.ts) drops a repeat only when it
+  // cites the same line in the same words, so an item reported from its
+  // proposal and again from its confirmation is stored twice. Asking for the
+  // line where it was settled gives one, cited at the moment that counts.
+  'Report each decision and action item once. When it is proposed and then confirmed or',
+  'restated, quote the line where it was agreed or assigned.',
+  '',
   'Report only what was actually said. Most meetings contain few decisions and some',
   'contain none; empty lists are the correct answer in that case. Do not infer an',
   'assignee who was not named, and do not convert a spoken due date into a calendar',

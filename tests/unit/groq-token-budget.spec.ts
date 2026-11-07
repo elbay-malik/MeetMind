@@ -20,6 +20,11 @@ import {
  * schema, message framing) is taken from the request the code really sends,
  * priced at three characters a token: English runs near four, so this
  * overstates it, which is the safe direction for a ceiling.
+ *
+ * The summary request leaves 1,000 tokens for that fixed part. Measured this
+ * way on 2026-11-07 it is about 910 (2,722 characters), up from about 630
+ * before the extraction definitions and field descriptions (ADR-0006, its
+ * 2026-11-07 addendum), so there is little room left for more prompt.
  */
 const CHARS_PER_TOKEN = 3
 

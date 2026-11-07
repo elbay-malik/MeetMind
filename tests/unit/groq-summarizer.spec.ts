@@ -137,6 +137,39 @@ describe('request', () => {
     expect(JSON.stringify(schema)).not.toContain('format')
   })
 
+  // The overview is the chunks' summaries joined (mergeReconciled), so one
+  // chunk's "no decisions were made" contradicts the lists the moment another
+  // chunk has one. The field's description is where the model reads that, and
+  // it has to survive the strict-mode normaliser alongside the shape above.
+  it('describes the summary field so a chunk never says what was or was not decided', async () => {
+    const calls = stubFetch([reply(goodPayload)])
+    await summarizer.summarize({ segments })
+    const schema = (await calls[0]!.json() as GroqRequest).response_format.json_schema.schema
+    const properties = schema.properties as Record<string, { description?: string, items?: { properties: Record<string, { description?: string }> } }>
+
+    expect(properties.summary!.description).toMatch(/^Two or three sentences on what this part of the meeting discussed\./)
+    expect(properties.summary!.description).toMatch(/Never state what was or was not decided or assigned/)
+    expect(properties.actionItems!.items!.properties.assignee!.description).toMatch(/person given responsibility/)
+    // A description is an annotation, not a constraint: the shape is unchanged.
+    expect(schema.required).toEqual(['summary', 'decisions', 'actionItems'])
+    expect(schema.additionalProperties).toBe(false)
+  })
+
+  it('defines a decision and an action item, and asks for each once where it was settled', async () => {
+    const calls = stubFetch([reply(goodPayload)])
+    await summarizer.summarize({ segments })
+    const system = (await calls[0]!.json() as GroqRequest).messages
+      .find(m => m.role === 'system')!.content.replace(/\s+/g, ' ')
+
+    expect(system).toContain('A decision is something the meeting agreed: a rule, a choice, or rejecting an option.')
+    expect(system).toContain('An action item is work someone is to do or own after the meeting')
+    expect(system).toContain('making sure someone else\'s work happens, whether or not it is called an action')
+    expect(system).toContain('Not a fallback that applies only if something else fails.')
+    expect(system).toContain('including a speaker who takes it ("I\'ll take that one") when the line names them')
+    expect(system).toContain('Report each decision and action item once.')
+    expect(system).toContain('quote the line where it was agreed or assigned')
+  })
+
   // Without both, a dense one-hour meeting could never be summarised: the
   // provider's default 3,072-token cap was spent on reasoning (up to 4,413
   // tokens measured at the default effort) and every reply was cut off. At low
