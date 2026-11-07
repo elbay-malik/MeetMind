@@ -1,5 +1,5 @@
 import type { MeetingStatus, PublicMeeting } from '#shared/types/meeting'
-import { PROVIDER_BLOCKED_ERROR, transcriptionFinished } from '#shared/utils/meeting'
+import { DEMO_PLAYBACK_MIME, PROVIDER_BLOCKED_ERROR, transcriptionFinished } from '#shared/utils/meeting'
 import { LONG_WAIT_MS, type DriverState, type TroubleCause } from './pipeline-driver'
 
 /**
@@ -76,6 +76,12 @@ export interface PipelineFacts {
   /** Null until the transcript has been read for the status shown. */
   segmentCount: number | null
   audioLabel: string
+  /**
+   * The stored audio's type, which names its format in the upload stage. Every upload is the
+   * browser's Opus-in-Ogg; only the demo's hand-replaced object is AAC in M4A (ADR-0015). The row
+   * holds its type and not how it was encoded, so that sentence claims no bitrate or sample rate.
+   */
+  audioMime: PublicMeeting['audioMime']
 }
 
 function plural(count: number, name: string): string {
@@ -171,7 +177,8 @@ export function stagesOf(state: DriverState, facts: PipelineFacts): StageView[] 
   const upload = (): Pick<StageView, 'state' | 'detail'> => {
     if (status === 'pending_upload') return { state: 'waiting', detail: 'The upload has not been confirmed yet.' }
     if (failed === 'upload') return { state: 'failed', detail: 'The uploaded audio was rejected and removed.' }
-    return { state: 'done', detail: `Compressed audio stored; the video stayed on your machine. ${facts.audioLabel} of 16\u00A0kHz mono Opus.` }
+    const format = facts.audioMime === DEMO_PLAYBACK_MIME ? 'mono AAC in M4A' : '16\u00A0kHz mono Opus'
+    return { state: 'done', detail: `Compressed audio stored; the video stayed on your machine. ${facts.audioLabel} of ${format}.` }
   }
 
   const transcribe = (): Pick<StageView, 'state' | 'detail'> => {
