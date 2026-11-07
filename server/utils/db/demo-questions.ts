@@ -6,7 +6,10 @@
 export interface DemoQuestionGate {
   /** Today's count has reached the limit. */
   overCount: boolean
-  /** A meeting other than the demo has an extraction going on or stopped: `extractionInProgress`. */
+  /**
+   * A meeting other than the demo is summarizing or indexing, or failed at extraction within the
+   * last hour: `pausesDemoQuestions`.
+   */
   extractionPending: boolean
 }
 

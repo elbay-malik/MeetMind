@@ -1572,6 +1572,7 @@ check "applying the purge's migration again keeps its posture" \
 
 echo "checking the demo's question cap (ADR-0019) ..."
 CAP_MIGRATION=supabase/migrations/20261104120000_demo_question_cap.sql
+PAUSE_MIGRATION=supabase/migrations/20261107120000_demo_question_pause_bound.sql
 psql -q -c "delete from public.meetings; delete from public.demo_question_days;"
 TODAY="(clock_timestamp() at time zone 'utc')::date"
 take() { psql -q -At -c "select public.take_demo_question($1);"; }
@@ -1628,8 +1629,9 @@ echo "  ok: 20 takes at once with a limit of 5 grant exactly 5"
 check "and the count says 5" "select taken = 5 from public.demo_question_days where day = $TODAY"
 psql -q -c "delete from public.demo_question_days;"
 
-# What counts as pending, each state its own row, and the same three states as extractionInProgress
-# in shared/utils/meeting.ts, whose cases over real SQL are in tests/postgrest/demo-questions.spec.ts.
+# What counts as pending, each state its own row just touched, and the same three states as
+# extractionInProgress in shared/utils/meeting.ts. pausesDemoQuestions there bounds the failed one,
+# below, and its cases over real SQL are in tests/postgrest/demo-questions.spec.ts.
 pending_state() { # pending_state <description> <status> <failed_stage or null> <t or f>
   mk "$SW1" "$2" "$3"
   expect_gate "$1" 5 "f $4"
@@ -1652,6 +1654,34 @@ mk "$SW1" indexing
 expect_gate "another meeting beside it does" 5 "f t"
 gone "$SW1"
 gone "$DEMO_ID"
+
+# The hour after a failed extraction's last change, and no bound at all on one in progress.
+aged() { # aged <id> <seconds ago>: as if the row last changed then, which the trigger would undo
+  psql -q -c "alter table public.meetings disable trigger meetings_set_updated_at;
+    update public.meetings set updated_at = now() - make_interval(secs => $2) where id = '$1';
+    alter table public.meetings enable trigger meetings_set_updated_at;"
+}
+aged_state() { # aged_state <description> <status> <failed_stage or null> <seconds ago> <t or f>
+  mk "$SW1" "$2" "$3"
+  aged "$SW1" "$4"
+  expect_gate "$1" 5 "f $5"
+  gone "$SW1"
+}
+aged_state "a failed extraction a minute short of the hour is pending" failed "'summarization'" 3540 t
+aged_state "a failed extraction a minute past the hour is not" failed "'summarization'" 3660 f
+aged_state "nor one failed a month ago" failed "'summarization'" 2592000 f
+aged_state "a meeting summarizing is pending however long ago it last moved" summarizing null 86400 t
+aged_state "and so is one indexing" indexing null 2592000 t
+mk "$SW1" failed "'summarization'"
+aged "$SW1" 3660
+mk "$SW2" failed "'summarization'"
+expect_gate "a failure inside the hour is found beside an older one" 5 "f t"
+gone "$SW1"
+gone "$SW2"
+check "the one index on all three states is gone, for one on each kind" \
+  "select not exists (select 1 from pg_indexes where indexname = 'meetings_extraction_pending_idx')
+          and exists (select 1 from pg_indexes where indexname = 'meetings_extraction_running_idx')
+          and exists (select 1 from pg_indexes where indexname = 'meetings_extraction_failed_idx')"
 
 check "the gate writes nothing, so a read-only caller could not make it take a question" \
   "select provolatile = 's' from pg_proc where proname = 'demo_question_gate'"
@@ -1684,6 +1714,18 @@ echo "  ok: the gate reads at most the demo and one other row, however many meet
 gone "$SW1"
 gone "$DEMO_ID"
 psql -q -c "delete from public.meetings where audio_key like 'cap_read_%';"
+# Failures past the hour stay in the table until someone acts, so they must not cost a read each.
+psql -q -c "insert into public.meetings (id,title,status,failed_stage,source_file_name,source_bytes,audio_key,audio_bytes,updated_at)
+              select gen_random_uuid(), 'x', 'failed', 'summarization', 'a.mp4', 1, 'cap_old_' || g, 10, now() - interval '2 hours' - make_interval(secs => g)
+                from generate_series(1, 20000) g;
+            analyze public.meetings;"
+read_old=$(gate_reads)
+echo "  (rows of meetings read to answer, then scans of a whole table, with 20,000 failed over an hour ago: $read_old)"
+[ "${read_old%% *}" -le 2 ] || fail "the gate read the old failures: $read_old"
+[ "${read_old##* }" = "0" ] || fail "the gate scanned the whole table: $read_old"
+expect_gate "and finds none of them pending" 5 "f f"
+echo "  ok: the gate reads none of the failures past the hour, however many there are"
+psql -q -c "delete from public.meetings where audio_key like 'cap_old_%';"
 
 check "the cap's functions pin their search_path" \
   "select bool_and(coalesce('search_path=public' = any(proconfig), false)) and count(*) = 2 from pg_proc
@@ -1710,6 +1752,15 @@ psql -q < "$CAP_MIGRATION"
 check "applying the cap's migration again keeps the count" \
   "select count(*) = 1 and bool_and(taken = 1) from public.demo_question_days"
 check_cap_posture "after a second apply"
+psql -q < "$PAUSE_MIGRATION"
+psql -q < "$PAUSE_MIGRATION"
+check "applying the bound on the pause again keeps the count" \
+  "select count(*) = 1 and bool_and(taken = 1) from public.demo_question_days"
+check_cap_posture "after the bound on the pause, applied twice more"
+mk "$SW1" failed "'summarization'"
+aged "$SW1" 3660
+expect_gate "and the gate is still the bounded one" 5 "f f"
+gone "$SW1"
 psql -q -c "delete from public.demo_question_days;"
 
 echo

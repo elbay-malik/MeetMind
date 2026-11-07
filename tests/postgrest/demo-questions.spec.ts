@@ -15,7 +15,7 @@ afterAll(async () => {
 
 const driver = (): DemoQuestionDriver => ({
   repo: createSupabaseDemoQuestionRepository(standIn.options),
-  seed: (id, meeting) => standIn.driver().seed(id, { status: meeting.status, failedStage: meeting.failedStage ?? undefined }),
+  seed: (id, meeting) => standIn.driver().seed(id, { status: meeting.status, failedStage: meeting.failedStage ?? undefined, updatedAgoMs: meeting.updatedAgoMs }),
   setCount: async (day, taken) => {
     await standIn.sql(`insert into public.demo_question_days (day, taken) values ('${day}', ${taken});`)
   },
