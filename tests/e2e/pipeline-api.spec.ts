@@ -331,9 +331,9 @@ describe('the page that drives it, as the server renders it', () => {
 
     // The browser cannot work these out, and a page reached by a link never asks the server
     // again, so whichever page a visit lands on has to bring them along for the next.
-    it.each(['/', '/meetings', 'summary'])('hands the page the facts from %s, whichever page a visit lands on', async (path) => {
+    it.each(['/', '/meetings', 'progress'])('hands the page the facts from %s, whichever page a visit lands on', async (path) => {
       const meeting = await uploadedMeeting()
-      const target = path === 'summary' ? `/meetings/${meeting.id}/summary` : path
+      const target = path === 'progress' ? `/meetings/${meeting.id}/progress` : path
       const html = await (await fetch(target, { headers: { accept: 'text/html' } })).text()
       expect(html).toContain('deployment-facts')
     })

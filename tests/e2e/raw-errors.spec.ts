@@ -88,12 +88,8 @@ const ROUTES: Route[] = [
   { name: 'DELETE /', url: id => `/api/meetings/${id}`, init: { method: 'DELETE', headers: { authorization: `Bearer ${ADMIN_TOKEN}` } } },
 ]
 
-/** `readsRow`: the page has the meeting in it, which the summary's placeholder does not yet. */
-const PAGES = (id: string) => [
-  { path: `/meetings/${id}`, readsRow: true },
-  { path: `/meetings/${id}/progress`, readsRow: true },
-  { path: `/meetings/${id}/summary`, readsRow: false },
-]
+/** Every page that reads the meeting, so each has the row in it to leak. */
+const PAGES = (id: string) => [`/meetings/${id}`, `/meetings/${id}/progress`]
 
 const TITLE = 'Raw errors'
 
@@ -102,20 +98,20 @@ const TITLE = 'Raw errors'
  * `__NUXT_DATA__`, which an error page has too, nor by the status alone: a row that cannot be
  * read can still render a 200 with nothing of the meeting in it.
  */
-function expectRendered(where: string, page: { readsRow: boolean }, status: number, html: string): void {
+function expectRendered(where: string, status: number, html: string): void {
   expect(status, where).toBe(200)
   // The server's payload travels in the page, so what is read here is both.
   expect(html, where).toContain('__NUXT_DATA__')
-  if (page.readsRow) expect(html, where).toContain(TITLE)
+  expect(html, where).toContain(TITLE)
 }
 
 /** Every page and every route, each with its headers and body held to {@link FORBIDDEN}. What each answered, by route. */
 async function sweep(id: string, where: string): Promise<Record<string, number>> {
-  for (const page of PAGES(id)) {
-    const res = await fetch(page.path, { headers: { accept: 'text/html' } })
+  for (const path of PAGES(id)) {
+    const res = await fetch(path, { headers: { accept: 'text/html' } })
     const html = await res.text()
-    expectRendered(`${where}: ${page.path}`, page, res.status, html)
-    expectClean(`${where}: ${page.path}`, html)
+    expectRendered(`${where}: ${path}`, res.status, html)
+    expectClean(`${where}: ${path}`, html)
   }
   const answered: Record<string, number> = {}
   for (const route of ROUTES) {
@@ -200,27 +196,27 @@ describe('the test itself', () => {
       return { status: res.status, html: await res.text() }
     }
 
-    it.each(PAGES('00000000-0000-4000-8000-000000000000').filter(page => page.readsRow))('not the error page of $path, which has the payload too', async (page) => {
-      const { status, html } = await read(page.path)
+    it.each(PAGES('00000000-0000-4000-8000-000000000000'))('not the error page of %s, which has the payload too', async (path) => {
+      const { status, html } = await read(path)
       expect(status).toBe(404)
       expect(html).toContain('__NUXT_DATA__')
-      expect(() => expectRendered(page.path, page, status, html)).toThrow()
+      expect(() => expectRendered(path, status, html)).toThrow()
     })
 
     it('not a page whose row could not be read', async () => {
       const { meeting } = await register(audio)
       await db.setItem(`meetings/${meeting.id}`, 'not a row')
-      for (const page of PAGES(meeting.id).filter(page => page.readsRow)) {
-        const { status, html } = await read(page.path)
-        expect(() => expectRendered(page.path, page, status, html)).toThrow()
+      for (const path of PAGES(meeting.id)) {
+        const { status, html } = await read(path)
+        expect(() => expectRendered(path, status, html)).toThrow()
       }
     })
 
     it('and one that did', async () => {
       const { meeting } = await register(audio)
-      for (const page of PAGES(meeting.id)) {
-        const { status, html } = await read(page.path)
-        expectRendered(page.path, page, status, html)
+      for (const path of PAGES(meeting.id)) {
+        const { status, html } = await read(path)
+        expectRendered(path, status, html)
       }
     })
   })
