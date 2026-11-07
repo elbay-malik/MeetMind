@@ -24,13 +24,11 @@ as $$
   select coalesce(sum(m.audio_bytes), 0)::bigint
   from public.meetings m
   where
-    -- Registered but not yet confirmed. The presigned PUT may still be live or
-    -- still landing, so these bytes can arrive at any moment and have to be
-    -- reserved -- otherwise a burst of registrations all pass the check and
-    -- then all upload. The caller passes the URL's lifetime plus the grace for
-    -- a PUT begun just before expiry; past that they cannot land, so an
-    -- abandoned registration stops counting instead of inflating the total for
-    -- ever.
+    -- Registered but not yet confirmed. The presigned PUT is still live, so
+    -- these bytes can land at any moment and have to be reserved -- otherwise a
+    -- burst of registrations all pass the check and then all upload. Past the
+    -- URL's lifetime they cannot land, so an abandoned registration stops
+    -- counting instead of inflating the total for ever.
     (
       m.status = 'pending_upload'
       and m.created_at > now() - make_interval(secs => p_reservation_seconds)
