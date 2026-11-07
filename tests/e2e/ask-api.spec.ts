@@ -8,6 +8,8 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { MAX_QUESTION_CHARS } from '../../shared/schemas/qa'
 import type { CreateMeetingResponse, Meeting, PublicMeeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
+import { MEETING_QUESTIONS_USED_MESSAGE } from '../../shared/utils/meeting'
+import { MEETING_QUESTIONS_PER_DAY } from '../../server/utils/qa/meeting-questions'
 import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
@@ -217,6 +219,36 @@ describe('POST /api/meetings/:id/ask', () => {
     })
     expect((await send('cross-site')).status).toBe(403)
     for (const site of ['same-origin', 'same-site', 'none']) expect((await send(site)).status, site).toBe(200)
+  })
+
+  it('answers a meeting\'s questions up to its day\'s count, and then refuses until the next 00:00 UTC', async () => {
+    const meeting = await indexedMeeting()
+    const storage = createStorage({ driver: fsDriver({ base: join(dataDir, 'db') }) })
+    const day = new Date().toISOString().slice(0, 10)
+    const key = `meeting-questions/${day}/${meeting.id}`
+    const question = 'What did we decide about the marketing budget?'
+
+    expect((await ask(meeting.id, question)).status).toBe(200)
+    expect(await storage.getItem<number>(key)).toBe(1)
+
+    await storage.setItem(key, MEETING_QUESTIONS_PER_DAY - 1)
+    expect((await ask(meeting.id, question)).status).toBe(200)
+    expect(await storage.getItem<number>(key)).toBe(MEETING_QUESTIONS_PER_DAY)
+
+    for (const id of [meeting.id, meeting.id.toUpperCase()]) {
+      const res = await ask(id, question)
+      expect(res.status).toBe(429)
+      const body = await res.json() as { message: string, data: { retryAt: string, retryAfterSec: number } }
+      expect(body.message).toBe(MEETING_QUESTIONS_USED_MESSAGE)
+      const now = new Date()
+      expect(Date.parse(body.data.retryAt)).toBe(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+      expect(Number(res.headers.get('retry-after'))).toBe(body.data.retryAfterSec)
+    }
+    expect(await storage.getItem<number>(key)).toBe(MEETING_QUESTIONS_PER_DAY)
+
+    // Another meeting has its own count.
+    const other = await indexedMeeting()
+    expect((await ask(other.id, question)).status).toBe(200)
   })
 
   it('404s for unknown and malformed ids', async () => {

@@ -24,6 +24,7 @@ vi.mock('../../server/utils/db', () => ({
   useMeetingRepository: () => ({ get: async () => ({ status: 'ready' }) }),
   useTranscriptIndexRepository: () => ({}),
   useTranscriptRepository: () => ({ listForMeeting: async () => [] }),
+  useMeetingQuestionRepository: () => ({}),
 }))
 
 // No demo here: tests/unit/demo-question-cap.spec.ts has the route with one.

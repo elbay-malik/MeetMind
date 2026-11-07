@@ -2,7 +2,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import type { Meeting } from '../../shared/types/meeting'
-import { DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE } from '../../shared/utils/meeting'
+import { DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE, MEETING_QUESTIONS_USED_MESSAGE } from '../../shared/utils/meeting'
 import { fixedSentence, PUBLIC_RULES, publicMessage, toPublicMeeting, withoutLastError } from '../../server/utils/public-errors'
 import type { PublicRule, PublicStage } from '../../server/utils/public-errors'
 import { AnswerSlotBusyError } from '../../server/utils/qa/answerer'
@@ -86,6 +86,7 @@ const AUTHORED: Record<PublicStage, string[]> = {
     'Answering quota is exhausted for now.',
     'The answering service rejected our credentials.',
     DEMO_QUESTIONS_USED_MESSAGE,
+    MEETING_QUESTIONS_USED_MESSAGE,
     DEMO_QUESTIONS_PAUSED_MESSAGE,
   ],
 }

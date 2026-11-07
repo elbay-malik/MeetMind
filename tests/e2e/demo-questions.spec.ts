@@ -154,10 +154,20 @@ describe('questions on the public demo', () => {
     await expectUsed(await ask(demoId.toUpperCase()))
   })
 
-  it('leaves every other meeting\'s questions as they were, over the count, and writes it nothing', async () => {
+  it('leaves every other meeting\'s questions to their own count, over the demo\'s, and writes the demo\'s nothing', async () => {
     await db.setItem(`demo-questions/${today()}`, LIMIT)
+    const before = (await db.getItem<number>(`meeting-questions/${today()}/${otherId}`)) ?? 0
     for (let i = 0; i < LIMIT + 2; i++) expect((await ask(otherId)).status).toBe(200)
     expect(await countToday()).toBe(LIMIT)
+    expect(await db.getItem<number>(`meeting-questions/${today()}/${otherId}`)).toBe(before + LIMIT + 2)
+  })
+
+  // Its questions before it was named the demo were an ordinary meeting's, and counted as one.
+  it('takes nothing of a meeting\'s own count for a question on the demo', async () => {
+    const before = await db.getItem<number>(`meeting-questions/${today()}/${demoId}`)
+    expect((await ask(demoId)).status).toBe(200)
+    expect(await countToday()).toBe(1)
+    expect(await db.getItem<number>(`meeting-questions/${today()}/${demoId}`)).toBe(before)
   })
 
   it('refuses over the count without reserving a slot', async () => {

@@ -71,7 +71,8 @@ read that meeting and ask it questions, which spends the shared quotas, and nobo
 it through its link. Its questions are capped by `NUXT_DEMO_QUESTIONS_PER_DAY` (default 25, by UTC
 day) and refused while another meeting is summarizing or indexing, or for an hour after one failed
 at extraction ([ADR-0019](docs/adr/0019-demo-question-cap.md)). No tick retries a failed one and
-nothing logs the pause, but a retry starts it again. Its audio expires with the bucket's lifecycle rule (below) like any other,
+nothing logs the pause, but a retry starts it again. Every other meeting answers at most 100
+questions a UTC day ([ADR-0020](docs/adr/0020-daily-limits.md)). Its audio expires with the bucket's lifecycle rule (below) like any other,
 so it has to be put back every 30 days or the player stops working. To create it, see "Creating
 the demo meeting" in [ADR-0015](docs/adr/0015-invite-only-uploads.md), which also records what guards every route
 that can write, and what this does not do.
@@ -99,6 +100,7 @@ that can write, and what this does not do.
 | [0017](docs/adr/0017-retention-purge.md) | An optional purge deletes a meeting past its retention days, one per cron tick, never the demo or anything a step is live on. Off until someone turns it on |
 | [0018](docs/adr/0018-ffmpeg-wasm-from-private-r2.md) | A Worker serves ffmpeg's wasm from the private bucket at the same path, one hardcoded key by version, since it is over the asset limit. Live since 2026-11-06 |
 | [0019](docs/adr/0019-demo-question-cap.md) | Questions on the public demo have a daily count and stop while an extraction is pending: a read before the provider slot, the count taken after it. Deployed 2026-11-06, in force since 2026-11-07 when the demo's id was set |
+| [0020](docs/adr/0020-daily-limits.md) | Every other meeting has a daily count of questions of its own, in the demo's design. Not yet deployed |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 

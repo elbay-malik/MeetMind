@@ -261,6 +261,7 @@ describe('ADRs changed by ADR-0015', () => {
 describe.each([
   ['0018', '0018-ffmpeg-wasm-from-private-r2.md', ['0009', '0010']],
   ['0019', '0019-demo-question-cap.md', ['0012', '0015']],
+  ['0020', '0020-daily-limits.md', ['0015', '0019']],
 ])('ADRs changed by ADR-%s', (number, file, amended) => {
   it('every ADR it names in its header says so in its own status', async () => {
     const header = /^- \*\*Supersedes:\*\* (.*)$/m.exec(await adr(number))?.[1]

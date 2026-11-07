@@ -36,6 +36,12 @@ export interface Database {
         Update: Partial<{ day: string, taken: number }>
         Relationships: []
       }
+      meeting_question_days: {
+        Row: { day: string, meeting_id: string, taken: number }
+        Insert: { day: string, meeting_id: string, taken?: number }
+        Update: Partial<{ day: string, meeting_id: string, taken: number }>
+        Relationships: []
+      }
       sweep_state: {
         Row: { id: boolean, last_tick_at: string, last_created_at: string | null, last_meeting_id: string | null }
         Insert: { id?: boolean, last_tick_at?: string, last_created_at?: string | null, last_meeting_id?: string | null }
@@ -115,6 +121,14 @@ export interface Database {
       }
       take_demo_question: {
         Args: { p_limit: number }
+        Returns: boolean
+      }
+      meeting_question_gate: {
+        Args: { p_limit: number, p_meeting: string }
+        Returns: boolean
+      }
+      take_meeting_question: {
+        Args: { p_limit: number, p_meeting: string }
         Returns: boolean
       }
       reserve_slot: {

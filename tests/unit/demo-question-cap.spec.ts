@@ -298,9 +298,11 @@ vi.mock('../../server/utils/db', () => ({
     search: async () => [],
   }),
   useTranscriptRepository: () => ({ listRange: async () => [] }),
+  // Every other meeting's count (ADR-0020), never the demo's: tests/unit/meeting-question-cap.spec.ts has it.
+  useMeetingQuestionRepository: () => ({ kind: 'local', overCount: async () => false, take: async () => true }),
 }))
 
-/** The route, with `askMeeting` real. Only a demo reaches the two functions. */
+/** The route, with `askMeeting` real. Only a demo reaches the demo's two functions. */
 describe('POST /api/meetings/:id/ask', () => {
   const headers = new Map<string, unknown>()
   const JSON_REQUEST = { 'content-length': '30', 'content-type': 'application/json' }
