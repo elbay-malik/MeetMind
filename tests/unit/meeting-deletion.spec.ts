@@ -14,7 +14,7 @@ import { UPLOAD_URL_TTL_SEC } from '../../server/utils/storage-budget'
 
 const MIN = 60_000
 const createdAt = Date.parse('2026-01-01T12:00:00.000Z')
-const uploadWindowEnds = createdAt + 30 * MIN
+const uploadWindowEnds = createdAt + 20 * MIN
 
 const meeting = (
   status: Meeting['status'],
@@ -26,12 +26,15 @@ const meeting = (
 })
 
 describe('deletionBlocker', () => {
-  // The window is spelled out as 30 minutes in the tests below rather than
+  // The window is spelled out as 20 minutes in the tests below rather than
   // derived from the constants, so that shortening either constant (and with
   // it the protection against a late PUT landing after the delete) fails here
   // instead of quietly moving every expectation along with it.
-  it('treats an upload URL as live for its TTL plus the grace period, 30 minutes', () => {
-    expect((UPLOAD_URL_TTL_SEC + UPLOAD_GRACE_SEC) * 1000).toBe(30 * MIN)
+  // Five minutes of URL and fifteen of grace for an upload begun just before
+  // the URL expired.
+  it('treats an upload URL as live for its TTL plus the grace period, 20 minutes', () => {
+    expect(UPLOAD_URL_TTL_SEC * 1000).toBe(5 * MIN)
+    expect((UPLOAD_URL_TTL_SEC + UPLOAD_GRACE_SEC) * 1000).toBe(20 * MIN)
   })
 
   describe('upload window', () => {
@@ -44,7 +47,7 @@ describe('deletionBlocker', () => {
       (status) => {
         const blocker = deletionBlocker(meeting(status), createdAt + 5 * MIN)
         expect(blocker).not.toBeNull()
-        expect(blocker!.retryAfterSec).toBe(25 * 60)
+        expect(blocker!.retryAfterSec).toBe(15 * 60)
       },
     )
 
@@ -228,7 +231,7 @@ describe('deleteMeeting', () => {
     const now = createdAt + 5 * MIN
     const h = harness({ now })
     const outcome = await deleteMeeting(id, h.deps)
-    expect(outcome).toMatchObject({ kind: 'blocked', retryAfterSec: 25 * 60 })
+    expect(outcome).toMatchObject({ kind: 'blocked', retryAfterSec: 15 * 60 })
     expect(outcome).toMatchObject({ retryAfterSec: deletionBlocker(row(), now)!.retryAfterSec })
     expect(h.deleteCalls).toHaveLength(0)
     expect(h.removeCalls).toHaveLength(0)

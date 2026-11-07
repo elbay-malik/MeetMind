@@ -110,8 +110,8 @@ health check also answers 503 when [ADR-0016](0016-real-services-or-nothing.md) 
 | --- | --- | --- | --- |
 | `POST /api/meetings` | Invite code, first | A `pending_upload` row and an upload grant | Same. The id is minted here, and a body naming one is refused |
 | `POST /api/invite-check` | Invite code, then ADR-0016's check, which reads only settings | Nothing | Same |
-| `PUT /api/uploads/:token` | Signed grant for one key, type and byte count, 15 minutes. Local store only: 404 with R2 | The grant's audio object | Same. Only whoever registered a meeting ever holds its grant |
-| R2's presigned `PUT` (not our route) | Signed URL, 15 minutes, handed only to whoever registered. Signs the host alone, so size and type are checked at `complete` | The audio object | Same |
+| `PUT /api/uploads/:token` | Signed grant for one key, type and byte count, 5 minutes. Local store only: 404 with R2 | The grant's audio object | Same. Only whoever registered a meeting ever holds its grant |
+| R2's presigned `PUT` (not our route) | Signed URL for one key, type and byte count, 5 minutes, handed only to whoever registered. Size and type are checked again at `complete` | The audio object | Same |
 | `POST /api/meetings/:id/complete` | Meeting id, and the row must be `pending_upload` | The row's status; deletes an object that fails verification | **Refused, 403** |
 | `POST /api/meetings/:id/transcribe` | Meeting id, a transcribable status, a claim per step | Whisper quota, the raw reply, the transcript, the row | **Refused, 403** |
 | `POST /api/meetings/:id/summarize` | Meeting id, a finished transcript, a claim per step | Groq quota, the chunk ledger, the summary, the row | **Refused, 403** |
@@ -183,7 +183,7 @@ Honest limits, all accepted for a demo:
   registered before this change can still be driven by whoever holds its link, and spends quota.
 - **Whoever holds the code has what any visitor used to have.** SEC-02, SEC-03 and SEC-05 are
   closed to strangers and remain for them, including overwriting their own object with its grant
-  for 15 minutes. They are trusted, and the storage budget still applies.
+  for 5 minutes, with bytes of the same length and type. They are trusted, and the storage budget still applies.
 - **Questions on the demo still spend quota.** [ADR-0019](0019-demo-question-cap.md) now limits
   how many, and refuses them while an extraction is pending, which is what closes SEC-04 and the
   demo's side of SEC-05. A question takes its slot before it is embedded, so a refused one spends

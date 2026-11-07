@@ -219,7 +219,7 @@ upload through it writes real data and spends quota. An opt-in in that `.env` op
 
    That removes the audio, transcript, summary and search index, and the bytes
    stop counting against the ceiling at once. Without the token the route
-   answers 404. It answers 409 for 30 minutes after a meeting is registered, and
+   answers 404. It answers 409 for 20 minutes after a meeting is registered, and
    while transcription or summarisation is running. See
    [ADR-0011](docs/adr/0011-admin-meeting-delete.md). No API lists meetings, so the
    id comes from the meeting's link or from the Supabase table.

@@ -59,5 +59,13 @@ export async function assertStorageBudget(event: H3Event, incomingBytes: number)
  * Lives here rather than in the route because the budget needs it too: a
  * registration whose upload URL is still valid has reserved its bytes, and the
  * two numbers going out of step would either double-count or under-count them.
+ *
+ * Five minutes is enough because the browser PUTs straight after registering,
+ * and the store checks the expiry when an upload STARTS, not when it finishes: a
+ * large recording on a slow link only has to begin inside the window, and may
+ * go on landing after it (meeting-deletion.ts's grace covers that). A shorter
+ * life means a registered URL can be replayed for less time, and an abandoned
+ * registration stops reserving budget sooner. The local driver's grant lives
+ * exactly as long.
  */
-export const UPLOAD_URL_TTL_SEC = 15 * 60
+export const UPLOAD_URL_TTL_SEC = 5 * 60

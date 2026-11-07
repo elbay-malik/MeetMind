@@ -14,10 +14,9 @@ filesystem, per-request env). Two practical constraints shaped the design:
 
 - The development machine and CI have **no cloud credentials**. The upload flow
   still has to be runnable and testable end to end without them.
-- A presigned URL cannot cap an object's size: aws4fetch deliberately leaves
-  `content-length`/`content-type` out of the signature, and R2 has no POST-policy
-  equivalent (`content-length-range`). Whatever the browser PUTs within the URL's
-  lifetime lands in the bucket.
+- A presigned URL cannot cap an object's size with a range: R2 has no POST-policy
+  equivalent (`content-length-range`). It can only pin an exact length and media
+  type, by signing those headers, which aws4fetch leaves out unless asked.
 
 ## Decision
 
@@ -26,7 +25,11 @@ filesystem, per-request env). Two practical constraints shaped the design:
    [aws4fetch](https://github.com/mhart/aws4fetch) (SigV4 on Web Crypto — runs
    unchanged on Node and Workers; it is Cloudflare's own recommended client).
    Path-style endpoint `https://<account>.r2.cloudflarestorage.com/<bucket>/<key>`,
-   region `auto`, host-only signature, `X-Amz-Expires` = 15 minutes. The server never
+   region `auto`, `X-Amz-Expires` = 5 minutes. The signature covers `content-length`,
+   `content-type` and `host`, so R2 refuses a PUT whose length is not the byte count
+   the meeting registered or whose type is not `audio/ogg`. The browser sets the type
+   from the headers it is handed and the length from the Blob it sends, whose size is
+   the byte count it registered. The server never
    proxies audio bytes in production; it only HEADs and DELETEs objects.
 
 2. **Three-step protocol with server-side verification.** The client registers the
@@ -34,7 +37,9 @@ filesystem, per-request env). Two practical constraints shaped the design:
    `POST /api/meetings/:id/complete`. The URL is time-limited, not single-use: like any
    presigned URL it can be replayed until it expires, so the object can still be
    replaced within that window, including after verification. Overwriting only ever
-   affects the uploader's own meeting, and the 15-minute lifetime bounds it. The server HEADs the object and accepts it only
+   affects the uploader's own meeting, only with bytes of the same length and type,
+   and the 5-minute lifetime bounds it. R2 checks the expiry when a PUT starts, so a
+   large upload on a slow link only has to begin inside it. The server HEADs the object and accepts it only
    if its size equals the declared size (which the schema already bounds to 25 MiB);
    otherwise it deletes the object and marks the row `failed`. Completion is
    idempotent. Object keys are always `meetings/<uuid>/audio.ogg` with a server-minted
@@ -59,9 +64,9 @@ filesystem, per-request env). Two practical constraints shaped the design:
    server route ever receives video: the only bodies the server takes are a small JSON
    payload and, on the local driver, a PUT whose media type must be `audio/ogg` and
    whose length must match the grant. On R2 the browser uploads to the bucket directly,
-   and the host-only signature means it could store any bytes under the granted key, so
-   the completion step verifies the object's size and reported media type and deletes
-   anything that fails. What it does **not** do is inspect the bytes: a client that
+   under a signature that pins the same length and media type, and the completion step
+   still verifies the object's size and reported media type and deletes anything that
+   fails. What it does **not** do is inspect the bytes: a client that
    deliberately sent video labelled `audio/ogg` at exactly the declared length would
    pass. That is a self-inflicted leak by the uploader rather than something the product
    does behind the user's back, and transcoding would be the only real defence.
@@ -83,7 +88,8 @@ filesystem, per-request env). Two practical constraints shaped the design:
 - R2 returns expired-URL errors without CORS headers, so the browser cannot read the
   status and the request surfaces as a network failure rather than an HTTP error. The
   UI reports "Network error while uploading audio" and lets the user retry. The
-  15-minute lifetime is generous for a < 25 MB upload, so this should be rare.
+  browser starts the PUT as soon as registration answers, and only the start has to
+  fall inside the 5-minute lifetime, so this should be rare.
 - The local drivers import `node:fs` lazily (dynamic `import()` of unstorage's fs
   driver) so the Cloudflare bundle never evaluates it; confirm in Phase 13.
 - A half-configured service is rejected at request time rather than falling back to the
@@ -102,10 +108,13 @@ filesystem, per-request env). Two practical constraints shaped the design:
 - **`@aws-sdk/client-s3` + `s3-request-presigner`** — works, but hundreds of KB of
   Node-oriented code; aws4fetch is a dependency-free 10 KB and the client Cloudflare
   documents for R2 on Workers.
-- **Signing `content-type`/`content-length` into the URL (`allHeaders: true`)** — a
-  signed length can only pin an exact value, never a maximum, and R2's validation of
-  it on presigned PUTs is undocumented. Post-upload HEAD verification is the documented
-  pattern and covers both.
+- **A host-only signature, with size and type checked only after the upload** — what
+  this ADR first chose, because a signed length pins an exact value rather than a
+  maximum and R2's handling of it on presigned PUTs is not documented. But the exact
+  value is known before the URL is minted, as the byte count the meeting registers, so
+  pinning it costs nothing, and the URL then cannot store anything but bytes of that
+  length and type while it lives. The post-upload HEAD stays, so the check does not
+  rest on R2 honouring the signature, and `pnpm test:services` checks that it does.
 - **Resumable/multipart uploads (tus)** — unnecessary below 25 MB.
 - **Nitro `useStorage()` mounts for the local drivers** — bakes the fs driver into
   every preset's config; explicit drivers keep the Cloudflare build clean and let tests
