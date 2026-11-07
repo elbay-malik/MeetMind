@@ -1,6 +1,6 @@
 # ADR-0019: A daily count on the demo's questions, and none while an extraction is pending
 
-- **Status:** Accepted, and **not yet deployed**
+- **Status:** Accepted, **deployed on 2026-11-06**, and in force since 2026-11-07, when the demo's id was set
 - **Date:** 2026-11-04
 - **Supersedes:** Nothing whole. Amends ADR-0015 (questions on the demo stay open, within a count) and ADR-0012 (what a question does around its slot). Addresses SEC-04 and the demo's side of SEC-05 in the security audit.
 
@@ -58,12 +58,12 @@ Both sentences go through `server/utils/public-errors.ts`, and the question form
 - **A rollback can drop the cap.** Secrets belong to a version, so rolling back past `wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID` leaves a version with no demo id, and so no count, no pause and no read-only guard. README's rollback steps say to name a version created after it. This comes from wrangler's code and Cloudflare's docs, and has not been run.
 - Two more subrequests on a demo question, out of about 11 of 50.
 
-## What stays unproven until deployed
+## What stays unproven
 
 - Real tokens per question, so whether 25 is the right number. Read Groq's dashboard after the first days.
-- The SQL and both drivers have run against a throwaway Postgres behind PostgREST and the local driver, not against Supabase. `pnpm db:migrate` has not applied this migration.
+- The SQL and both drivers have run against a throwaway Postgres behind PostgREST and the local driver. `pnpm db:migrate` applied this migration to Supabase before the deploy (README's step 2), and no check in `pnpm test:services` calls the gate or the take there.
 - That a real extraction and a real question loop do what the order above says on a deployed Worker, as this has run only with a staged slot ledger.
-- That the rate rule and `run_worker_first` hold one address to about 86,000 requests a day at the edge. Nothing under `/_nuxt/` ran the Worker under local `wrangler dev`, and an encoded `/%5Fnuxt/` path does run the Worker there. On the live site since 2026-11-06, the rule's expression reads the path both as sent and after normalisation, and `/`, `/%5Fnuxt/x` and a path with dot segments answered 429 after 10 requests (README's steps 7 and 8). That the whole day stays under the allowance is the arithmetic of that rate, not something measured.
+- That the rate rule and `run_worker_first` hold one address to about 86,000 requests a day at the edge. Nothing under `/_nuxt/` ran the Worker under local `wrangler dev`, and an encoded `/%5Fnuxt/` path does run the Worker there. Since 2026-11-07 the live rule's expression reads the path both as sent and after normalisation, and on the live site `/`, `/%5Fnuxt/x` and a path with dot segments answered 429 after 10 requests (README's steps 7 and 8). That the whole day stays under the allowance is the arithmetic of that rate, not something measured.
 
 ## Alternatives considered
 

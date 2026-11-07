@@ -280,10 +280,12 @@ describe.each([
     expect(readme.split('\n').some(line => line.startsWith(`| [${number}](docs/adr/${file})`))).toBe(true)
   })
 
-  it('says what stays unproven, and claims nothing of a deployed Worker', async () => {
+  it('says it is deployed, and what stays unproven on the live Worker', async () => {
     const text = (await adr(number)).replace(/\s+/g, ' ')
-    expect(text).toContain('## What stays unproven until deployed')
-    expect(text).toContain('**not yet deployed**')
+    expect(text).toContain('## What stays unproven')
+    expect(text).not.toContain('until deployed')
+    expect(text).not.toContain('not yet deployed')
+    expect(text).toContain('**deployed on 2026-11-06**')
   })
 })
 
@@ -376,6 +378,8 @@ describe('the first deploy\'s steps', () => {
     expect(text).toContain('so every request that runs the Worker is counted')
     expect(text).toContain('`/%5Fnuxt/no-such-file`, and a path with a dot segment such as `/_nuxt/../api/health`, are counted by the rule')
     expect(await adr('0019')).toContain('hold one address to about 86,000 requests a day at the edge')
+    expect(await adr('0019')).toContain('Since 2026-11-07 the live rule\'s expression reads the path both as sent and after normalisation')
+    expect(await adr('0019')).toContain('in force since 2026-11-07, when the demo\'s id was set')
   })
 
   it('leave no database backups to configure, and the playbook says why', async () => {

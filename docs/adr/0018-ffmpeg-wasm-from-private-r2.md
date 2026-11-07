@@ -1,6 +1,6 @@
 # ADR-0018: A Worker serves ffmpeg's wasm from the private bucket, at the same path
 
-- **Status:** Accepted, and **not yet deployed**
+- **Status:** Accepted, and **deployed on 2026-11-06**
 - **Date:** 2026-11-04
 - **Supersedes:** Nothing whole. Settles what ADR-0009's finding 3 left open (where the wasm goes). Amends ADR-0010 (the bucket now holds one object the lifecycle rule and the budget are not about).
 
@@ -33,9 +33,9 @@ The bucket `meet-mind` holds every meeting's audio and raw Whisper reply, reache
 - A deploy of a new version with no upload before it answers 404 at the new key, and uploads stop working, plainly. `/ffmpeg/ffmpeg-core.js` is an ordinary asset and is deployed with the Worker.
 - Each job makes a fresh ffmpeg instance, so without `immutable` every upload would download 30.7 MiB again.
 
-## What stays unproven until deployed
+## What stays unproven
 
-Everything here has run only under local workerd, against a fake R2, with no limit enforced. `scripts/verify-worker-streams.mjs` shows the bytes streaming before the fake R2 has finished.
+On the live site since 2026-11-06, `/ffmpeg/ffmpeg-core.wasm` answers 200 with `application/wasm` (README's step 8). Nothing else here was measured there: the points below have run only under local workerd, against a fake R2, with no limit enforced. `scripts/verify-worker-streams.mjs` shows the bytes streaming before the fake R2 has finished.
 
 - Cold-isolate CPU against the free plan's 10 ms, and whether Cloudflare counts piping 31 MB as CPU. Locally it is `ps` on a Mac, at about 0.02 s uncompressed.
 - That a Worker on the free plan can stream the whole object from `*.r2.cloudflarestorage.com` without being cut off.
