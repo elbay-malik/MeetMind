@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Answerer, AnswerInput } from '../../server/utils/qa/answerer'
-import { askMeeting, TOP_K } from '../../server/utils/qa/ask'
+import { askMeeting, capAnswer, MAX_ANSWER_CHARS, TOP_K } from '../../server/utils/qa/ask'
 import { createStubAnswerer } from '../../server/utils/qa/stub-answerer'
 import { createStubEmbedder } from '../../server/utils/qa/stub'
 import { ProviderBusyError, type RequestPacer } from '../../server/utils/summary/groq'
@@ -173,6 +173,31 @@ describe('askMeeting', () => {
     expect((await ask('a6', 'What about the marketing budget?', answerer)).found).toBe(false)
   })
 
+  it('returns an over-long answer cut to the cap, at a sentence end, with an ellipsis', async () => {
+    await indexed('a14')
+    const sentence = 'The budget was cut by twenty percent for the next quarter. '
+    const { answerer } = scriptedAnswerer({
+      citations: [{ quote: 'We agreed to cut the marketing budget by twenty percent next quarter.', segmentIdx: 10 }],
+      answer: sentence.repeat(60),
+    })
+    const answer = await ask('a14', 'What about the marketing budget?', answerer)
+    expect(answer.found).toBe(true)
+    if (!answer.found) return
+    expect(answer.answer.length).toBeLessThanOrEqual(MAX_ANSWER_CHARS)
+    expect(answer.answer).toMatch(/quarter\. …$/)
+    expect(answer.citations).toHaveLength(1)
+  })
+
+  it('returns an answer within the cap unchanged', async () => {
+    await indexed('a15')
+    const text = 'The marketing budget was cut by twenty percent next quarter.'
+    const { answerer } = scriptedAnswerer({
+      citations: [{ quote: 'We agreed to cut the marketing budget by twenty percent next quarter.', segmentIdx: 10 }],
+      answer: text,
+    })
+    expect(await ask('a15', 'What about the marketing budget?', answerer)).toMatchObject({ found: true, answer: text })
+  })
+
   it('refuses to answer before the meeting is indexed, without spending any call', async () => {
     await transcripts().replaceForMeeting('a7', meeting())
     const { answerer, seen } = scriptedAnswerer({ citations: [], answer: '' })
@@ -274,5 +299,43 @@ describe('a question\'s request slot', () => {
     await expect(ask('s3-not-indexed', QUESTION, createStubAnswerer({ pacer: paced })))
       .rejects.toMatchObject({ statusCode: 409 })
     expect(paced.waits).toBe(0)
+  })
+})
+
+describe('the answer\'s length cap', () => {
+  it('returns text within the cap unchanged, the cap itself included', () => {
+    expect(capAnswer('It was cut.')).toBe('It was cut.')
+    const exact = 'a'.repeat(MAX_ANSWER_CHARS)
+    expect(capAnswer(exact)).toBe(exact)
+  })
+
+  it('cuts at the last sentence end before the cap', () => {
+    const text = `${'word '.repeat(150)}end here. ${'more '.repeat(200)}`
+    const capped = capAnswer(text)
+    expect(capped.length).toBeLessThanOrEqual(MAX_ANSWER_CHARS)
+    expect(capped).toBe(`${'word '.repeat(150)}end here. …`)
+  })
+
+  it('does not take a decimal point for a sentence end', () => {
+    const text = `${'word '.repeat(150)}then 3.5 ${'more '.repeat(200)}`
+    const capped = capAnswer(text, 760)
+    expect(capped.length).toBeLessThanOrEqual(760)
+    expect(capped).not.toMatch(/3\. …$/)
+    expect(capped).toMatch(/\w…$/)
+  })
+
+  it('cuts at the last space when no sentence ends late enough', () => {
+    const capped = capAnswer('word '.repeat(400))
+    expect(capped.length).toBeLessThanOrEqual(MAX_ANSWER_CHARS)
+    expect(capped).toMatch(/^(word )+word…$/)
+  })
+
+  it('cuts text with no spaces at the cap, without splitting a character', () => {
+    const capped = capAnswer('😀'.repeat(MAX_ANSWER_CHARS))
+    expect(capped.length).toBeLessThanOrEqual(MAX_ANSWER_CHARS)
+    expect(capped.endsWith('😀…')).toBe(true)
+    const cjk = capAnswer('会议决定削减预算'.repeat(300))
+    expect(cjk.length).toBeLessThanOrEqual(MAX_ANSWER_CHARS)
+    expect(cjk.endsWith('…')).toBe(true)
   })
 })
