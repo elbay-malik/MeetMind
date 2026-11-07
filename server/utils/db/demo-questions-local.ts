@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { createStorage, type Storage } from 'unstorage'
 import type { Meeting } from '#shared/types/meeting'
-import { extractionInProgress } from '#shared/utils/meeting'
+import { pausesDemoQuestions } from '#shared/utils/meeting'
 import { utcDay, type DemoQuestionRepository } from './demo-questions'
 import { serialize } from './local'
 
@@ -36,12 +36,13 @@ export function createLocalDemoQuestionRepository(options: { dataDir: string }):
       const s = await storageFor(base)
       const taken = await serialize(QUEUE, async () => (await s.getItem<number>(dayKey(utcDay(Date.now())))) ?? 0)
       const demo = demoMeetingId.toLowerCase()
+      const now = Date.now()
       let extractionPending = false
       for (const key of await s.getKeys('meetings')) {
         const id = key.split(':').at(-1)!
         if (id.toLowerCase() === demo) continue
-        const row = await serialize(id, () => s.getItem<Pick<Meeting, 'status' | 'failedStage'>>(`meetings/${id}`))
-        if (row && extractionInProgress(row)) {
+        const row = await serialize(id, () => s.getItem<Pick<Meeting, 'status' | 'failedStage' | 'updatedAt'>>(`meetings/${id}`))
+        if (row && pausesDemoQuestions(row, now)) {
           extractionPending = true
           break
         }

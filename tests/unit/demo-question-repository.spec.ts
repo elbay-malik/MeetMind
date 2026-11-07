@@ -24,7 +24,12 @@ const clearTable = async (table: string) => {
 
 const driver = (): DemoQuestionDriver => ({
   repo: createLocalDemoQuestionRepository({ dataDir }),
-  seed: (id, meeting) => db.setItem(`meetings/${id}`, { id, ...meeting, failedStage: meeting.failedStage ?? null }),
+  seed: (id, { updatedAgoMs, ...meeting }) => db.setItem(`meetings/${id}`, {
+    id,
+    ...meeting,
+    failedStage: meeting.failedStage ?? null,
+    updatedAt: new Date(Date.now() - (updatedAgoMs ?? 0)).toISOString(),
+  }),
   setCount: (day, taken) => db.setItem(`demo-questions/${day}`, taken),
   async counts() {
     const keys = await db.getKeys('demo-questions')

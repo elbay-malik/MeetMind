@@ -8,7 +8,7 @@ import fsDriver from 'unstorage/drivers/fs'
 import { $fetch, fetch, setup, startServer } from '@nuxt/test-utils/e2e'
 import type { SlotState } from '../../server/utils/db/slots'
 import type { CreateMeetingResponse, Meeting, QuestionAnswer, TranscriptSegment } from '../../shared/types/meeting'
-import { DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE } from '../../shared/utils/meeting'
+import { DEMO_QUESTIONS_PAUSED_MESSAGE, DEMO_QUESTIONS_USED_MESSAGE, FAILED_EXTRACTION_PAUSE_MS } from '../../shared/utils/meeting'
 import { tooManyChunksMessage } from '../../server/utils/summary/steps'
 import { driveIndexing } from './helpers/indexing'
 import { driveTranscription } from './helpers/transcribe'
@@ -105,7 +105,7 @@ async function expectPaused(res: Response) {
 }
 
 /** A meeting left in this state, and put back afterwards. */
-async function withMeetingIn(id: string, state: Pick<Meeting, 'status' | 'failedStage'> & Partial<Pick<Meeting, 'errorMessage'>>, work: () => Promise<void>) {
+async function withMeetingIn(id: string, state: Pick<Meeting, 'status' | 'failedStage'> & Partial<Pick<Meeting, 'errorMessage' | 'updatedAt'>>, work: () => Promise<void>) {
   const row = await db.getItem<Meeting>(`meetings/${id}`)
   await db.setItem(`meetings/${id}`, { ...row!, ...state })
   try {
@@ -230,13 +230,28 @@ describe('questions on the public demo', () => {
     })
   })
 
-  // The limit ADR-0019 writes down: no retry gets this row anywhere, and it pauses the demo all the same.
-  it('refuses for a meeting refused as too long as well, and goes on refusing however old it is', async () => {
-    const stopped = { status: 'failed', failedStage: 'summarization', errorMessage: tooManyChunksMessage(41), updatedAt: new Date(Date.now() - 30 * 86_400_000).toISOString() } as Parameters<typeof withMeetingIn>[1]
-    await withMeetingIn(otherId, stopped, async () => {
+  // ADR-0019's bound: a failure nobody acts on stops pausing the demo an hour after its last change.
+  const touched = (agoMs: number) => new Date(Date.now() - agoMs).toISOString()
+  it.each<[string, Partial<Pick<Meeting, 'errorMessage'>>]>([
+    ['an ordinary failure', {}],
+    ['one refused as too long, which no retry gets past', { errorMessage: tooManyChunksMessage(41) }],
+  ])('refuses for %s at extraction inside the hour, and answers once it is older', async (_name, extra) => {
+    const failed = { status: 'failed' as const, failedStage: 'summarization' as const, ...extra }
+    await withMeetingIn(otherId, { ...failed, updatedAt: touched(FAILED_EXTRACTION_PAUSE_MS - 60_000) }, async () => {
       await expectPaused(await ask(demoId))
     })
-    expect((await ask(demoId)).status).toBe(200)
+    await withMeetingIn(otherId, { ...failed, updatedAt: touched(FAILED_EXTRACTION_PAUSE_MS + 60_000) }, async () => {
+      expect((await ask(demoId)).status).toBe(200)
+    })
+  })
+
+  it.each<[string, Pick<Meeting, 'status' | 'failedStage'>]>([
+    ['summarizing', { status: 'summarizing', failedStage: null }],
+    ['indexing', { status: 'indexing', failedStage: null }],
+  ])('goes on refusing while another meeting is %s, however long ago it last moved', async (_name, state) => {
+    await withMeetingIn(otherId, { ...state, updatedAt: touched(30 * 86_400_000) }, async () => {
+      await expectPaused(await ask(demoId))
+    })
   })
 
   it('still asks another meeting while an extraction is pending on a third', async () => {

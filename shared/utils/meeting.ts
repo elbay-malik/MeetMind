@@ -82,14 +82,35 @@ export function transcribedButEmpty(
 /**
  * Extraction is going on or stopped: it has a plan worth counting, and until it is finished
  * or the meeting deleted, it can still want Groq's slots, unless it was refused as too long,
- * which no retry gets past (ADR-0019 says what that costs the demo). A deliberate mirror of the partial
- * index and `demo_question_gate` in supabase/migrations/20261104120000_demo_question_cap.sql,
- * which the same cases in tests/unit/helpers/demo-question-cases.ts hold together.
+ * which no retry gets past. The demo's pause reads it with a bound on the stopped case,
+ * `pausesDemoQuestions` below.
  */
 export function extractionInProgress(meeting: Pick<Meeting, 'status' | 'failedStage'>): boolean {
   return meeting.status === 'summarizing'
     || meeting.status === 'indexing'
     || (meeting.status === 'failed' && meeting.failedStage === 'summarization')
+}
+
+/**
+ * How long a meeting whose extraction failed goes on pausing the demo's questions after its row
+ * last changed (ADR-0019). A retry moves the row to `summarizing`, which pauses them again, so
+ * this ends a pause only for a failure nobody is acting on. An hour is well past the minute a
+ * failed extraction waits before it may be retried.
+ */
+export const FAILED_EXTRACTION_PAUSE_MS = 60 * 60_000
+
+/**
+ * Whether this meeting pauses the public demo's questions (ADR-0019): summarizing or indexing
+ * for as long as it is, and failed at extraction for `FAILED_EXTRACTION_PAUSE_MS` after its last
+ * change. A deliberate mirror of `demo_question_gate` and its two partial indexes in
+ * supabase/migrations/20261107120000_demo_question_pause_bound.sql, which the same cases in
+ * tests/unit/helpers/demo-question-cases.ts hold together. A row with no readable time has
+ * nothing to bound, and pauses nothing once it has failed.
+ */
+export function pausesDemoQuestions(meeting: Pick<Meeting, 'status' | 'failedStage' | 'updatedAt'>, now: number): boolean {
+  if (meeting.status === 'summarizing' || meeting.status === 'indexing') return true
+  if (meeting.status !== 'failed' || meeting.failedStage !== 'summarization') return false
+  return Date.parse(meeting.updatedAt) > now - FAILED_EXTRACTION_PAUSE_MS
 }
 
 /**

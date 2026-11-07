@@ -290,26 +290,36 @@ describe.each([
 })
 
 describe('what ADR-0019 tells a reader about a stopped extraction', () => {
-  it('says a failed one holds the demo\'s questions, in the ADR and the README', async () => {
+  it('says a failed one holds the demo\'s questions for an hour, in the ADR and the README', async () => {
     const flat = (text: string) => text.replace(/\s+/g, ' ')
-    expect(flat(await adr('0019'))).toContain('A meeting that failed at extraction holds the demo\'s questions')
+    const { FAILED_EXTRACTION_PAUSE_MS } = await import('../../shared/utils/meeting')
+    expect(FAILED_EXTRACTION_PAUSE_MS).toBe(3_600_000)
+    expect(flat(await adr('0019'))).toContain('A meeting that failed at extraction holds the demo\'s questions for an hour after its last change, with nothing logged.')
     const readme = await readFile(fileURLToPath(new URL('../../README.md', import.meta.url)), 'utf8')
-    expect(flat(readme)).toContain('including one that failed and has not been retried or deleted')
+    expect(flat(readme)).toContain('or for an hour after one failed at extraction')
+    expect(flat(readme)).not.toContain('including one that failed and has not been retried or deleted')
   })
 
-  it('does not claim a stopped row always wants its slots, or that a retry always ends the pause', async () => {
+  it('does not claim a stopped row always wants its slots, or that it holds the demo with no end', async () => {
     const flat = (text: string) => text.replace(/\s+/g, ' ')
     const text = flat(await adr('0019'))
     expect(text).not.toMatch(/still wanting its slots/)
     expect(text).not.toContain('then retry or delete it')
+    expect(text).not.toContain('holds the demo\'s questions, with no end')
     const { tooManyChunksMessage } = await import('../../server/utils/summary/steps')
     expect(tooManyChunksMessage(41)).toContain('This transcript would need')
     expect(text).toContain('`This transcript would need N sequential requests`, `refusedAsTooLong`) cannot be retried')
-    expect(text).toContain('only the admin delete ends that pause')
+    expect(text).toContain('It holds the demo for its hour like any other failure')
     expect(text).toContain('a tick retries no failed stage')
-    expect(text).toContain('with no end and nothing logged')
+    expect(text).toContain('a retry that fails again starts a new hour')
     const readme = flat(await readFile(fileURLToPath(new URL('../../README.md', import.meta.url)), 'utf8'))
-    expect(readme).toContain('No tick retries that one, nothing logs the pause, and a meeting refused as too long can only be deleted.')
+    expect(readme).toContain('No tick retries a failed one and nothing logs the pause, but a retry starts it again.')
+  })
+
+  it('names the hour where the gate\'s SQL has it', async () => {
+    const sql = await readFile(fileURLToPath(new URL('../../supabase/migrations/20261107120000_demo_question_pause_bound.sql', import.meta.url)), 'utf8')
+    expect(sql).toContain('m.updated_at > now() - interval \'1 hour\'')
+    expect((await adr('0019')).replace(/\s+/g, ' ')).toContain('in the gate\'s SQL as `interval \'1 hour\'`')
   })
 })
 

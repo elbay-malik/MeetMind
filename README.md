@@ -69,9 +69,9 @@ existing links keep working.
 Set `NUXT_PUBLIC_DEMO_MEETING_ID` to link one finished meeting from the home page. Anyone can
 read that meeting and ask it questions, which spends the shared quotas, and nobody can change
 it through its link. Its questions are capped by `NUXT_DEMO_QUESTIONS_PER_DAY` (default 25, by UTC
-day) and refused while another meeting's extraction is in progress, including one that failed and
-has not been retried or deleted ([ADR-0019](docs/adr/0019-demo-question-cap.md)). No tick retries
-that one, nothing logs the pause, and a meeting refused as too long can only be deleted. Its audio expires with the bucket's lifecycle rule (below) like any other,
+day) and refused while another meeting is summarizing or indexing, or for an hour after one failed
+at extraction ([ADR-0019](docs/adr/0019-demo-question-cap.md)). No tick retries a failed one and
+nothing logs the pause, but a retry starts it again. Its audio expires with the bucket's lifecycle rule (below) like any other,
 so it has to be put back every 30 days or the player stops working. To create it, see "Creating
 the demo meeting" in [ADR-0015](docs/adr/0015-invite-only-uploads.md), which also records what guards every route
 that can write, and what this does not do.
