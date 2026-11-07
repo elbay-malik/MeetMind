@@ -42,7 +42,7 @@ Both sentences go through `server/utils/public-errors.ts`, and the question form
 
 **Before any of this, the route takes only JSON from its own site,** on every meeting. A body declared as anything but `application/json` is a 415, and a request the browser marks `Sec-Fetch-Site: cross-site` is a 403, both from the headers before the body is read, so neither reaches the gate, a slot or the count. A page on another origin can make a browser send a form or plain text without asking, but JSON only after a CORS preflight, which this app never grants. A client that sends no `Sec-Fetch-Site`, such as curl, is judged by its type alone.
 
-**A failure fails closed, for the demo alone.** So does the migration not being applied yet: the call fails, and demo questions are refused. An answer the driver cannot read also counts as a failure, never as "go ahead".
+**A failure fails closed.** So does the migration not being applied yet: the call fails, and demo questions are refused. An answer the driver cannot read also counts as a failure, never as "go ahead". Since ADR-0020 every other meeting's count fails closed in the same way, with its own migration.
 
 ## Consequences
 
