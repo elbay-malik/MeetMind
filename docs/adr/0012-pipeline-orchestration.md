@@ -642,7 +642,7 @@ A watching tab backs off the same way and never stops for trouble, since it spen
 
 ## Addendum: the cron sweeper as built (step 11, 2026-11-03)
 
-Every 5 minutes a Cron Trigger takes one step of one meeting, with no tab open, on the same step code `/advance` runs. **The acceptance is not met, and cannot be here: a meeting with no open tab reaching `ready` on the deployed Worker waits for Phase 13.** Nothing has been deployed. What is proven is everything short of it, under local workerd and on real SQL, listed below with what it did not prove.
+Every 5 minutes a Cron Trigger takes one step of one meeting, with no tab open, on the same step code `/advance` runs. **The acceptance is not met, and cannot be here: a meeting with no open tab reaching `ready` on the deployed Worker waits for Phase 13.** Nothing had been deployed when this was written. What is proven is everything short of it, under local workerd and on real SQL, listed below with what it did not prove.
 
 **How a cron reaches the app.** Read from the installed Nitro 2.13.5, not recalled. `cloudflare_module`'s `scheduled` handler sets `globalThis.__env__` and runs the `cloudflare:scheduled` hook inside `context.waitUntil`. `server/plugins/sweeper.ts` is the one thing on that hook.
 - **Not `scheduledTasks`.** `node-server`'s entry calls `startScheduleRunner()`, so the same setting would run sweeps in-process on a Node server, which must have no cron, and the dev server adds `/_nitro/tasks/:name`, an HTTP route that runs a task.
@@ -708,7 +708,7 @@ That counts the slot, and no tokens: nothing in a tick counts them. Groq's 200K 
 **The retention purge** ([ADR-0017](0017-retention-purge.md)) takes a tick that has no step, if someone has turned it on, which nobody has.
 
 **Not done, or unproven until Phase 13:**
-- **The acceptance itself.**
+- **The acceptance itself.** Met since: see the Phase 13 addendum at the end.
 - **That a real Cron Trigger fires this,** with values from `wrangler secret put` reaching `useRuntimeConfig(event)`. Cloudflare says a change can take up to 15 minutes to reach its network, and a new Worker up to 30 to show in Past Cron Events.
 - **How long a tick may run.** Nitro's handler returns at once and runs the hook in `waitUntil`. Cloudflare gives a scheduled Worker 15 minutes of wall time, and `waitUntil` 30 s "after the response is sent or the client disconnects", and does not say which binds a scheduled handler that has returned. A Whisper call was measured at about 11 s for an hour of audio. If 30 s binds, a longer one is killed, its lease runs out, and it counts as an attempt: at most two calls, then `failed`, then nothing.
 - **CPU.** Nobody can measure it yet, and no figure is claimed. Free is 10 ms a tick, as for any request. Each tick now holds a read of the choice, a read of the state and a step.
@@ -744,3 +744,7 @@ Stored and thrown error text can hold a provider's reply, a database's codes and
 - **A delete that fails on `POST .../complete` is held in a unit spec with a fake store,** `tests/unit/complete-route.spec.ts`, not over HTTP: the local store's driver swallows every error of a removal. The same goes for `DELETE /api/meetings/:id`'s 500, which has a fixed sentence and hands its `cause` to `createError`. Nuxt's error handler answers from the message, status and data alone, read from its code and not driven here.
 - **`audioKey` still reaches the browser,** as part of the meeting, and no client reads it. It is built from the meeting's id, which the caller already holds. Out of scope here.
 - **An unhandled error is Nuxt's to hide:** it answers with a status and none of the error's text. One from `POST .../ask` is held by the e2e spec, and the rest rely on the same handler.
+
+## Addendum: the acceptance on the deployed Worker (Phase 13, 2026-11-07)
+
+The Worker has been live at `meetmind.elbaymalik.com` since 2026-11-06, and the step 11 acceptance is met there. A 73-second recording uploaded through the live site, with its tab closed, reached `ready` in about 30 minutes from the 5-minute cron alone, in 6 ticks with no errors. A cron tick measured 15 to 70 ms of CPU, and no error 1102 was seen. `/__scheduled` and `/cdn-cgi/local/scheduled` answer 404 on the live site, so no request reaches a tick there. The README's "Deploying the Worker" records the other checks. What the list above leaves open apart from these, such as how the free plan's cron treats `exceededCpu` and whether Supabase counts a tick as activity, stays open.

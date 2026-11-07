@@ -63,7 +63,7 @@ Both sentences go through `server/utils/public-errors.ts`, and the question form
 - Real tokens per question, so whether 25 is the right number. Read Groq's dashboard after the first days.
 - The SQL and both drivers have run against a throwaway Postgres behind PostgREST and the local driver, not against Supabase. `pnpm db:migrate` has not applied this migration.
 - That a real extraction and a real question loop do what the order above says on a deployed Worker, as this has run only with a staged slot ledger.
-- That the rate rule and `run_worker_first` hold one address to about 86,000 requests a day at the edge. Nothing under `/_nuxt/` ran the Worker under local `wrangler dev`, and the rule has never run. An encoded `/%5Fnuxt/` path does run the Worker there, and README's step 8 says how to check it at the edge.
+- That the rate rule and `run_worker_first` hold one address to about 86,000 requests a day at the edge. Nothing under `/_nuxt/` ran the Worker under local `wrangler dev`, and an encoded `/%5Fnuxt/` path does run the Worker there. On the live site since 2026-11-06, the rule's expression reads the path both as sent and after normalisation, and `/`, `/%5Fnuxt/x` and a path with dot segments answered 429 after 10 requests (README's steps 7 and 8). That the whole day stays under the allowance is the arithmetic of that rate, not something measured.
 
 ## Alternatives considered
 

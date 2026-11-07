@@ -15,6 +15,7 @@ uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
 > from the browser to Cloudflare R2 via a presigned URL, the meeting row to Supabase
 > Postgres — and transcription ([ADR-0004](docs/adr/0004-transcription.md)) via Groq
 > Whisper, with local drivers and a stub transcriber so dev and CI need no credentials.
+> Live at <https://meetmind.elbaymalik.com> since 2026-11-06, with a public demo meeting.
 
 ## Architecture
 
@@ -96,8 +97,8 @@ that can write, and what this does not do.
 | [0015](docs/adr/0015-invite-only-uploads.md) | Visitors get the demo meeting, which can only be read and asked; uploading takes an invite code, and a missing code closes it. A guard for every route that can write |
 | [0016](docs/adr/0016-real-services-or-nothing.md) | A deployment runs on the real services or answers 503: stubs and local stores need an explicit opt-in, and are refused beside real stored data and on a Worker |
 | [0017](docs/adr/0017-retention-purge.md) | An optional purge deletes a meeting past its retention days, one per cron tick, never the demo or anything a step is live on. Off until someone turns it on |
-| [0018](docs/adr/0018-ffmpeg-wasm-from-private-r2.md) | A Worker serves ffmpeg's wasm from the private bucket at the same path, one hardcoded key by version, since it is over the asset limit. Not yet deployed |
-| [0019](docs/adr/0019-demo-question-cap.md) | Questions on the public demo have a daily count and stop while an extraction is pending: a read before the provider slot, the count taken after it. Not yet deployed |
+| [0018](docs/adr/0018-ffmpeg-wasm-from-private-r2.md) | A Worker serves ffmpeg's wasm from the private bucket at the same path, one hardcoded key by version, since it is over the asset limit. Live since 2026-11-06 |
+| [0019](docs/adr/0019-demo-question-cap.md) | Questions on the public demo have a daily count and stop while an extraction is pending: a read before the provider slot, the count taken after it. Live since 2026-11-06 |
 
 New decisions follow the [ADR template](docs/adr/0000-template.md).
 
@@ -219,7 +220,8 @@ upload through it writes real data and spends quota. An opt-in in that `.env` op
 
    That removes the audio, transcript, summary and search index, and the bytes
    stop counting against the ceiling at once. Without the token the route
-   answers 404. It answers 409 for 20 minutes after a meeting is registered, and
+   answers 404. It answers 409 for 20 minutes after a meeting is registered (the
+   5-minute upload link plus 15 minutes' grace), and
    while transcription or summarisation is running. See
    [ADR-0011](docs/adr/0011-admin-meeting-delete.md). No API lists meetings, so the
    id comes from the meeting's link or from the Supabase table.
@@ -264,8 +266,10 @@ indexing resumes from where it stopped. See
 
 ### Deploying the Worker (Phase 13)
 
-Nothing has been deployed yet. These are the steps for the first time, in order, on the Workers free
-plan, at `meetmind.elbaymalik.com`. Every step past the first changes something real.
+The Worker has served <https://meetmind.elbaymalik.com> since 2026-11-06, on the Workers free plan and
+on that custom domain only: `workers.dev` and preview URLs are off. These are the steps it was deployed
+by, in order, kept for deploying it again from nothing, and what steps 7 to 10 measured on 2026-11-06
+and 07 is noted under each. Every step past the first changes something real.
 
 Wrangler reads `CLOUDFLARE_API_TOKEN` from `.env` when run here. A token cannot read its own rights,
 so check in the dashboard that it can edit Workers scripts, routes and custom domains on the zone, and write R2 objects.
@@ -297,7 +301,7 @@ spends real quota. `scripts/verify-worker-*.mjs` run it from a temporary copy, w
 
    This replaces the whole policy, which is why the file keeps localhost.
    `VERIFY_ORIGIN=https://meetmind.elbaymalik.com pnpm test:services` checks the preflight.
-   Do it now: nothing is live yet, and it must not run from step 6 on (see below).
+   Do it before step 6: once the Worker is live it must not run (see below).
 5. **Send the secrets.** Put a new `NUXT_ADMIN_TOKEN` in `.env` (`openssl rand -base64 32`), so someone
    holds it. Then `pnpm secrets:worker`, which sends these twelve and nothing else, refuses if one is
    missing, and prints names only: `NUXT_GROQ_API_KEY`, `NUXT_WORKERS_AI_ACCOUNT_ID`,
@@ -314,31 +318,46 @@ spends real quota. `scripts/verify-worker-*.mjs` run it from a temporary copy, w
    minutes, of the 5 crons the free plan allows. It can take up to 15 minutes to reach Cloudflare's
    network, and a new Worker up to 30 to show in Past Cron Events. The database is empty at first, so
    a tick spends nothing.
-7. **Add the rate rule, straight after.** The free plan's 100,000 requests a day are per account, so a
-   flood from one address, at about 1.2 requests a second, takes down every Worker on it until 00:00 UTC.
-   In the dashboard: `elbaymalik.com`, Security, WAF, Rate limiting rules. The one free rule: by IP,
-   10 requests in 10 seconds, block for 10 seconds, on any path not starting with `/_nuxt/`, so a
-   page's static assets do not count towards it. That leaves out a path with no asset too, which would
-   run the Worker uncounted, so `run_worker_first` in `wrangler.jsonc` keeps everything under `/_nuxt/`
-   away from the Worker, found or not. A blocked request never reaches the Worker, so one
-   address gets at most 10 every 10 seconds, about 86,000 a day, which stays under the allowance.
-   The routing is measured under local `wrangler dev` only, and the rule is untested. If the dashboard
-   refuses that path match, use `/api/`, `/meetings` and `/ffmpeg/`, which gives up that bound: `/` and
-   every other path then run the Worker with nothing counting them.
-   If real audio seeks trip it, raising it gives up that bound too. It stops one address and not many,
-   and a stranger's questions are capped separately
+7. **Add the rate rule, straight after.** The free plan's 100,000 requests a day are per account, shared
+   by every Worker on it, so one address is held to a steady rate at the edge. In the dashboard:
+   `elbaymalik.com`, Security, WAF, Rate limiting rules. The one rule the free plan allows: 10 requests
+   in 10 seconds, counted per IP and data centre (characteristics `ip.src` and `cf.colo.id`), block for
+   10 seconds, on any path not starting with `/_nuxt/`, so a page's static assets do not count towards it.
+   The live expression is:
+
+   ```text
+   (http.host eq "meetmind.elbaymalik.com" and not (starts_with(raw.http.request.uri.path, "/_nuxt/") and starts_with(http.request.uri.path, "/_nuxt/")))
+   ```
+
+   A path is left out only if it starts with `/_nuxt/` both as sent (`raw.http.request.uri.path`) and
+   after Cloudflare normalises it (`http.request.uri.path`), so every request that runs the Worker is
+   counted. That leaves out a path with no asset too, which would run the Worker uncounted, so
+   `run_worker_first` in `wrangler.jsonc` keeps everything under `/_nuxt/` away from the Worker, found or
+   not. A blocked request never reaches the Worker. Measured on the live site: `/`, `/%5Fnuxt/x` and a
+   path with dot segments answered 429 after 10 requests, and `/_nuxt/` paths of real assets were never
+   blocked. If real audio seeks trip it, raising the count loosens that hold. It stops one address and not
+   many, and a stranger's questions are capped separately
    ([ADR-0019](docs/adr/0019-demo-question-cap.md)).
-8. **Look at it before telling anyone.** Load `/` from cold and read its CPU in the Worker's logs, and any
-   1102. Check `curl -sS -o /dev/null -D - https://meetmind.elbaymalik.com/ffmpeg/ffmpeg-core.wasm` says 200 and
-   `application/wasm`, and not with `curl -I`, as the route answers only a GET. Read one invocation's log for the invite header. Ask for `/__scheduled` and
-   `/cdn-cgi/local/scheduled`, which should run no tick. `workers.dev` should not answer. Ask for
-   `/_nuxt/no-such-file` and `/%5Fnuxt/no-such-file`, which should both answer 404 with no invocation in
-   `wrangler tail`. The second does run the Worker under `wrangler dev`, which normalises nothing, and
-   Cloudflare's docs say a URL is normalised before the rule and a Worker see it. If it runs the Worker
-   here, that path gets past the rule uncounted, and the bound in step 7 is false until it is dealt with.
+8. **Look at it before telling anyone.** These are the checks, with what they found on the live site:
+   - Load `/` from cold and read its CPU in the Worker's logs, and any 1102. It was about 96 ms cold and
+     13 to 19 ms warm, a cron tick 15 to 70 ms, and no 1102 was seen.
+   - `curl -sS -o /dev/null -D - https://meetmind.elbaymalik.com/ffmpeg/ffmpeg-core.wasm` says 200 and
+     `application/wasm`. Not with `curl -I`, as the route answers only a GET.
+   - Read one invocation's log for the invite header (step 9 says what it showed).
+   - `/__scheduled` and `/cdn-cgi/local/scheduled` run no tick. Both answer 404 on the live site.
+   - `workers.dev` does not answer.
+   - `/_nuxt/no-such-file` answers 404 with no invocation in `wrangler tail`: a missing asset does not
+     run the Worker.
+   - `/%5Fnuxt/no-such-file`, and a path with a dot segment such as `/_nuxt/../api/health`, are counted
+     by the rule: each answers 429 after 10 requests in 10 seconds. Under `wrangler dev`, which
+     normalises nothing, the first does run the Worker, which is why step 7's expression reads both
+     fields.
 9. **Run the acceptance.** Upload a short real meeting, close the tab, and watch it reach `ready`. A
    line in `wrangler tail` says a step ran, and a tick with nothing to do logs nothing.
-   Delete it afterwards with the admin token. Read Whisper's CPU while you are there.
+   Delete it afterwards with the admin token. Read Whisper's CPU while you are there. On the live site a
+   73-second recording reached `ready` in about 30 minutes from the 5-minute cron alone, in 6 ticks with
+   no errors. The invite code never appeared in the tail's output, and the admin delete answered 204
+   and removed the object from R2.
 10. **Create the demo.** See "Creating the demo meeting" in
     [ADR-0015](docs/adr/0015-invite-only-uploads.md). Only once it is finished,
     `wrangler secret put NUXT_PUBLIC_DEMO_MEETING_ID`. Then check it in a private window, including
@@ -349,6 +368,11 @@ spends real quota. `scripts/verify-worker-*.mjs` run it from a temporary copy, w
     the block shows Cloudflare's own page, with none of the app on it, until it is reloaded: a custom block
     response needs the Pro plan. Paste the home
     page's link into [LinkedIn's Post Inspector](https://www.linkedin.com/post-inspector/) and check the preview.
+    The live demo is a 23-minute engineering incident review (23:09 of audio, 314 transcript lines),
+    read from a written script in four voices by the Kokoro-82M text-to-speech model (Apache 2.0) and
+    uploaded through the app itself. Only its audio was then swapped for AAC in M4A, by ADR-0015's
+    recipe. Its finished transcript and summary come from the Worker's edge cache, for an hour in each
+    data centre, and the responses say which with `x-demo-cache: hit` or `miss` (ADR-0015's decision 5).
 
 **`pnpm test:services`, and a local server on `.env`, must not run during acceptance.** There is no
 staging. Both share the one real database with the live cron, so a tick can pick up the rows they
@@ -359,7 +383,8 @@ insert, and spend real quota on them. **Past Cron Events is the proof that the c
 `pnpm exec wrangler rollback <version-id>`. Leave any older wasm in the bucket, as that version asks
 for its own.
 
-**Once step 10 is done, roll back only to a version created after it.** Secrets belong to a version, and
+**Once step 10 is done, roll back only to a version created after it.** The live Worker has the demo's
+id set, so this holds now. Secrets belong to a version, and
 `wrangler secret put` makes one, so a plain `wrangler rollback` straight after step 10 goes back to a
 version with no `NUXT_PUBLIC_DEMO_MEETING_ID`. There the demo has no question count, no pause for
 extraction and no read-only guard, and its id is already known. Wrangler's prompt names that secret as
@@ -435,8 +460,8 @@ Several playbook instructions were changed after re-checking their premises — 
 browser driver and its cron sweeper: the progress page takes a meeting through every stage by
 itself for as long as a tab has it open, and on a deployed Worker the server carries on with it closed, at
 most one step every 5 minutes ([ADR-0012](docs/adr/0012-pipeline-orchestration.md)). A Node server
-has no cron, and there a meeting waits for its page. That has run only under local workerd, since nothing
-has been deployed. Next: the first deploy, whose steps are under "Deploying the Worker".
+has no cron, and there a meeting waits for its page. The Worker has been live since 2026-11-06, and a
+meeting with its tab closed reached `ready` there on the cron alone ("Deploying the Worker", step 9).
 
 ## Acknowledgements
 
