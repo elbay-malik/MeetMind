@@ -79,6 +79,7 @@ const facts = computed(() => ({
   failedStage: meeting.value.failedStage,
   segmentCount: transcriptReadAt.value === status.value ? segments.value.length : null,
   audioLabel: formatMegabytes(meeting.value.audioBytes),
+  audioMime: meeting.value.audioMime,
 }))
 
 const stages = computed(() => stagesOf(state.value, facts.value))

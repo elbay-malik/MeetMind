@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { PipelineResponse } from '../../shared/types/meeting'
-import { PROVIDER_BLOCKED_ERROR } from '../../shared/utils/meeting'
+import { AUDIO_MIME, DEMO_PLAYBACK_MIME, PROVIDER_BLOCKED_ERROR } from '../../shared/utils/meeting'
 import { LONG_WAIT_MS, initialDriverState, type DriverState } from '../../app/utils/pipeline-driver'
 import {
   STAGE_STATE_TEXT,
@@ -40,7 +40,7 @@ function answer(patch: Partial<PipelineResponse> = {}): PipelineResponse {
 const state = (patch: Partial<DriverState> = {}, a: PipelineResponse | null = answer()): DriverState =>
   ({ ...initialDriverState(a), role: 'driving', ...patch })
 const facts = (patch: Partial<PipelineFacts> = {}): PipelineFacts =>
-  ({ status: 'transcribing', failedStage: null, segmentCount: 3, audioLabel: '1.2 MB', ...patch })
+  ({ status: 'transcribing', failedStage: null, segmentCount: 3, audioLabel: '1.2 MB', audioMime: AUDIO_MIME, ...patch })
 const stage = (s: DriverState, key: string, f = facts()) => stagesOf(s, f).find(entry => entry.key === key)!
 
 const READY: Partial<PipelineResponse> = { status: 'ready', progress: { stage: 'search_index', done: 8, total: 8, etaSeconds: null }, index: { state: 'complete', done: 8, total: 8, retryAt: null }, next: 'done' }
@@ -97,6 +97,11 @@ describe('the stepper', () => {
     [{ status: 'pending_upload', progress: { stage: 'upload', done: 0, total: null, etaSeconds: null }, next: 'wait' }, ['waiting', 'pending', 'pending', 'pending']],
   ])('%j', (patch, expected) => {
     expect(stagesOf(state({}, answer(patch)), facts()).map(entry => entry.state)).toEqual(expected)
+  })
+
+  it('names the stored audio\'s own format, and claims no rate for the demo\'s M4A', () => {
+    expect(stage(state(), 'upload').detail).toBe('Compressed audio stored; the video stayed on your machine. 1.2 MB of 16\u00A0kHz mono Opus.')
+    expect(stage(state(), 'upload', facts({ audioMime: DEMO_PLAYBACK_MIME })).detail).toBe('Compressed audio stored; the video stayed on your machine. 1.2 MB of mono AAC in M4A.')
   })
 
   it('marks the first stage with something going on as the current step, and only that', () => {
