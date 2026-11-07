@@ -78,8 +78,12 @@ is read only when a meeting is registered, which is rare.
 **Pending registrations reserve their bytes.** Counting only confirmed uploads
 would let any number of concurrent registrations each see an empty store, pass
 the check, and then all upload. A registration counts while its presigned PUT is
-still live and stops counting once it expires, so an abandoned one cannot inflate
-the total for ever and close the budget permanently.
+still live, and for the same grace past expiry that the admin delete waits out
+(ADR-0011): R2 checks the expiry when a PUT starts, so a large upload begun just
+before it can go on landing afterwards, and until `complete` records it the
+reservation is the only place its bytes are counted. It stops counting once that
+window ends (20 minutes from registration, `UPLOAD_RESERVATION_SEC`), so an
+abandoned one cannot inflate the total for ever and close the budget permanently.
 
 The rule exists twice — `public.stored_audio_bytes` for Supabase,
 `audioIsStored()` for the local tier — because the two tiers cannot share an
