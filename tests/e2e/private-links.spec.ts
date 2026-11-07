@@ -68,6 +68,16 @@ describe('nothing hands out meeting ids', () => {
     expect(found.id).toBe(meeting.id)
     expect((await fetch(`/meetings/${meeting.id}`)).status).toBe(200)
   })
+
+  // A meeting has its own page and its progress page, and no other: an address under it that
+  // names nothing is the ordinary not-found page, which repeats nothing from the address.
+  it('answers an address under a meeting that names no page with the ordinary 404 page', async () => {
+    const res = await fetch(`/meetings/${meeting.id}/summary`, { headers: { accept: 'text/html' } })
+    expect(res.status).toBe(404)
+    const text = words(await res.text())
+    expect(text).toContain('Page not found')
+    expect(text).not.toContain('Summary')
+  })
 })
 
 describe('a meeting URL does not reach a third party through Referer', () => {
