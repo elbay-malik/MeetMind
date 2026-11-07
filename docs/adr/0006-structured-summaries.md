@@ -898,3 +898,51 @@ is never loaded in a request again. Reconciliation is split to match:
 `summarizeChunk` on both summarizers returns a chunk that has already been
 attested, so a step that stores per-chunk results cannot store unchecked
 model output.
+
+## Addendum, 2026-11-07: definitions in the prompt, and a summary field that says what it is for
+
+Read back from the live demo's stored chunks (a 23-minute review, three
+chunks), nothing was lost in reconciliation: every chunk dropped no
+decisions and no action items. What was wrong came from the model's reply:
+
+- **The overview contradicted the lists.** The stored overview is the chunks'
+  summaries joined (`mergeReconciled`). The first chunk's summary said no
+  decisions or action items were assigned, which was true of that chunk only.
+  The other chunks had them, so the overview said "none" above a list that had
+  some. The prompt never said what the summary is for.
+- **Some items were missed or wrongly included**, because the prompt never said
+  what counts. A line that made someone responsible for another team's change
+  landing was never reported, since it was not announced as an action. A
+  fallback that applied only if another step failed was reported as a task. A
+  task the speaker took on themselves had no rule for its assignee.
+
+What changed, in `server/utils/summary/groq.ts` and `shared/schemas/summary.ts`:
+
+- **The wire schema carries field descriptions.** `z.toJSONSchema` writes a
+  `.describe()` as the field's `description`, and `toStrictJsonSchema` keeps
+  it. It is an annotation, so `additionalProperties: false` and the required
+  lists are unchanged; `groq-summarizer.spec.ts` checks both. `summary` is "two
+  or three sentences on what this part of the meeting discussed", and it never
+  says what was or was not decided or assigned, since the lists carry that.
+  `assignee` is the person given responsibility, or null.
+- **The instructions define both kinds of item.** A decision is something the
+  meeting agreed: a rule, a choice, or rejecting an option. An action item is
+  work someone is to do or own after the meeting. That includes making sure
+  someone else's work happens, whether or not it is called an action. A
+  fallback that applies only if something else fails is not one. The assignee
+  is the person given it, including a speaker who takes it on, when the line
+  names that speaker. Whisper's transcript has no speaker labels, so "I'll
+  take that one" alone still has no assignee, as before.
+- **Each item is reported once**, quoted from the line where it was agreed or
+  assigned when it is proposed first and confirmed later. Merging removes a
+  repeat only when it cites the same line in the same words.
+
+The definitions are general, not fitted to the demo. They cost about 280
+tokens a request: the fixed part is now about 910 of the 1,000 that
+`groq-token-budget.spec.ts` allows beside a full chunk and its output budget.
+
+Not changed: an item spoken across a chunk boundary can still be reported by
+both chunks, in different words on neighbouring lines. Neither the prompt nor
+the merge's same-line check catches that, since each chunk sees only its own
+lines. Whether the new prompt finds the items it missed is unproven until the
+demo is extracted again.

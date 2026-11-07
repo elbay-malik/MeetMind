@@ -13,6 +13,17 @@ import type { ActionItem, Decision, MeetingSummary } from '../types/meeting'
  * Key order is load-bearing. Under constrained decoding the model emits keys in
  * schema order, so putting `quote` first makes "find the evidence, then state
  * the claim" a property of the schema rather than a request in prose.
+ *
+ * The descriptions are part of the contract too: `z.toJSONSchema` writes each
+ * one as the field's `description`, which strict mode passes to the model
+ * beside the field it describes (tests/unit/groq-summarizer.spec.ts checks
+ * that they survive `toStrictJsonSchema`). `summary` needs one most. The
+ * meeting's overview is the chunks' summaries joined (mergeReconciled in
+ * server/utils/summary/reconcile.ts), so a chunk that says "nothing was
+ * decided" contradicts the lists as soon as another chunk decides something.
+ * The definitions of a decision and an action item are in the instructions
+ * (server/utils/summary/groq.ts); these stay short, since every character is
+ * sent with every chunk (tests/unit/groq-token-budget.spec.ts).
  */
 export const wireDecisionSchema = z.object({
   quote: z.string(),
@@ -26,12 +37,15 @@ export const wireActionItemSchema = z.object({
   task: z.string(),
   // Nullable, never optional. A present null is an answer — "nobody was named".
   // An absent key is a protocol violation and should be retried, not coerced.
-  assignee: z.string().nullable(),
+  assignee: z.string().nullable().describe('The person given responsibility, or null.'),
   dueDateText: z.string().nullable(),
 })
 
 export const wireSummarySchema = z.object({
-  summary: z.string(),
+  summary: z.string().describe(
+    'Two or three sentences on what this part of the meeting discussed. Never state what '
+    + 'was or was not decided or assigned; the lists carry that.',
+  ),
   decisions: z.array(wireDecisionSchema),
   actionItems: z.array(wireActionItemSchema),
 })
