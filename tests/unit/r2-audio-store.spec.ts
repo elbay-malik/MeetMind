@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createR2AudioStore } from '../../server/utils/storage/r2'
 import { RangeNotSatisfiableError } from '../../server/utils/storage/audio-store'
+import { UPLOAD_URL_TTL_SEC } from '../../server/utils/storage-budget'
 
 const store = createR2AudioStore({
   accountId: '0123456789abcdef',
@@ -37,13 +38,44 @@ describe('presignPut', () => {
     expect(url.searchParams.get('X-Amz-Algorithm')).toBe('AWS4-HMAC-SHA256')
     expect(url.searchParams.get('X-Amz-Credential')).toMatch(/^AKIAEXAMPLE\/\d{8}\/auto\/s3\/aws4_request$/)
     expect(url.searchParams.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/)
-    // Host-only signature: the browser may send any content-type, which is why
-    // the completion route verifies the stored object instead.
-    expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('host')
+    // The media type and the exact length are signed, so the store refuses a
+    // PUT with any other.
+    expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;content-type;host')
 
     expect(upload.method).toBe('PUT')
+    // Content-Length is signed but never handed to the browser, which may not
+    // set it and derives it from the Blob it sends.
     expect(upload.headers).toEqual({ 'content-type': 'audio/ogg' })
     expect(new Date(upload.expiresAt).getTime()).toBeGreaterThan(Date.now())
+  })
+
+  it('lives as long as the route asks, which is five minutes', async () => {
+    const upload = await store.presignPut({
+      key: KEY, contentType: 'audio/ogg', contentLength: 8_500_000, expiresInSec: UPLOAD_URL_TTL_SEC,
+    })
+    expect(new URL(upload.url).searchParams.get('X-Amz-Expires')).toBe('300')
+    expect(Date.parse(upload.expiresAt) - Date.now()).toBeLessThanOrEqual(300_000)
+    expect(Date.parse(upload.expiresAt) - Date.now()).toBeGreaterThan(290_000)
+  })
+
+  // The signature has to depend on the values, not only on which headers are
+  // named: otherwise a URL minted for one length would serve another.
+  it('produces a different signature for a different length or type', async () => {
+    const sig = async (contentType: string, contentLength: number) => new URL((await store.presignPut({
+      key: KEY, contentType, contentLength, expiresInSec: 60,
+    })).url).searchParams.get('X-Amz-Signature')
+    // The signing time is in the signature, so it is held still: the
+    // differences below then come from the length and the type alone.
+    vi.useFakeTimers({ now: new Date('2026-11-07T12:00:00Z'), toFake: ['Date'] })
+    try {
+      const base = await sig('audio/ogg', 1000)
+      expect(await sig('audio/ogg', 1000)).toBe(base)
+      expect(await sig('audio/ogg', 1001)).not.toBe(base)
+      expect(await sig('video/mp4', 1000)).not.toBe(base)
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 
   it('never omits the lifetime, which would silently mean 24 hours', async () => {

@@ -241,10 +241,10 @@ describe('DELETE /api/meetings/:id while the meeting may still be written', () =
 
     const refused = await del(meeting.id)
     expect(refused.status).toBe(409)
-    // URL lifetime (15 min) plus grace (15 min), counted from just now.
+    // URL lifetime (5 min) plus grace (15 min), counted from just now.
     const retryAfter = Number(refused.headers.get('retry-after'))
-    expect(retryAfter).toBeGreaterThan(29 * 60)
-    expect(retryAfter).toBeLessThanOrEqual(30 * 60)
+    expect(retryAfter).toBeGreaterThan(19 * 60)
+    expect(retryAfter).toBeLessThanOrEqual(20 * 60)
     expect((await fetch(`/api/meetings/${meeting.id}`)).status).toBe(200)
   })
 

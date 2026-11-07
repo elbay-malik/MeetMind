@@ -51,7 +51,7 @@ meeting too, not only a `pending_upload` one.
 The route refuses with **409 and a `Retry-After`** while a writer could still be
 active:
 
-- **Within 30 minutes of registration.** That is the 15-minute upload URL plus 15
+- **Within 20 minutes of registration.** That is the 5-minute upload URL plus 15
   minutes of grace, because R2 checks expiry when a PUT *starts*, not when it
   finishes. Measured from `createdAt`, which is written just after the URL is
   minted, so it can only overestimate how long the URL lives.
@@ -93,7 +93,7 @@ answering 404.
   counter to keep in step.
 - Deleting is an operator task: `curl -X DELETE -H "Authorization: Bearer $TOKEN"`.
   There is no button in the UI. A user cannot delete their own meeting.
-- A meeting cannot be deleted in the first 30 minutes after it is registered.
+- A meeting cannot be deleted in the first 20 minutes after it is registered.
   This is deliberate, and the 409 says when to retry.
 - One case is still open. If the row is deleted but the audio delete then fails,
   and the request is never repeated, the object stays billable but uncounted

@@ -1,4 +1,4 @@
-import { AwsClient } from 'aws4fetch'
+import { AwsClient, AwsV4Signer } from 'aws4fetch'
 import { RangeNotSatisfiableError } from './audio-store'
 import type {
   AudioStore,
@@ -75,17 +75,39 @@ export function createR2AudioStore(options: R2Options): R2AudioStore {
       const url = objectUrl(input.key)
       // Must be set before signing; aws4fetch otherwise defaults to 24 h.
       url.searchParams.set('X-Amz-Expires', String(input.expiresInSec))
-      // Host-only signature (X-Amz-SignedHeaders=host), as in Cloudflare's own
-      // example: aws4fetch deliberately leaves content-type/content-length out
-      // of the signature, so neither can be pinned here. Size and type are
-      // verified after the upload by the completion route instead.
-      const signed = await client.sign(
-        new Request(url, { method: 'PUT' }),
-        { aws: { signQuery: true } },
-      )
+      // The signature covers the media type and the exact byte count as well as
+      // the host (X-Amz-SignedHeaders=content-length;content-type;host), so R2
+      // refuses a PUT whose Content-Type or Content-Length differs from what the
+      // meeting registered. aws4fetch leaves both headers out unless asked:
+      // `allHeaders` puts every header given here into the signature. The signer
+      // is called directly, not through `client.sign`, which would rebuild a
+      // Request from the result -- and Content-Length is a header a Request may
+      // drop. Only the URL is used, so nothing else of that Request matters.
+      //
+      // The completion route still checks the stored object's size and type
+      // afterwards, as it does for the local driver: the signature decides what
+      // may be written, that check decides what is accepted.
+      const signer = new AwsV4Signer({
+        url: url.toString(),
+        method: 'PUT',
+        headers: {
+          'content-type': input.contentType,
+          'content-length': String(input.contentLength),
+        },
+        accessKeyId: options.accessKeyId,
+        secretAccessKey: options.secretAccessKey,
+        service: 's3',
+        region: 'auto',
+        signQuery: true,
+        allHeaders: true,
+      })
+      const signed = await signer.sign()
       return {
-        url: signed.url,
+        url: signed.url.toString(),
         method: 'PUT' as const,
+        // Content-Length is signed but not handed over: a browser may not set it,
+        // and sets it itself from the Blob it sends, whose size is the very
+        // number the meeting registered (useMeetingUpload sends both from it).
         headers: { 'content-type': input.contentType },
         expiresAt: new Date(Date.now() + input.expiresInSec * 1000).toISOString(),
       }

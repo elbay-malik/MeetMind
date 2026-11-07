@@ -142,7 +142,7 @@ Honest limits, all accepted for a demo:
 
 - **A leaked link cannot be revoked.** There is no rotating an id. The only remedy is the
   admin delete (ADR-0011), which removes the meeting for everyone and is refused for the
-  first 30 minutes after registration. An uploader cannot do it themselves.
+  first 20 minutes after registration. An uploader cannot do it themselves.
 - **Losing the link loses the meeting.** Clearing site data, a different browser or a new
   device leaves no way back. Nothing recovers it, short of an operator finding the row.
 - **The URL is stored in places this app does not control.** Browser history, bookmarks

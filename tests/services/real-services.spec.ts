@@ -44,12 +44,51 @@ describe.skipIf(!has('NUXT_R2_ACCOUNT_ID', 'NUXT_R2_ACCESS_KEY_ID', 'NUXT_R2_SEC
     }
     const body = new Uint8Array(2048).map((_, i) => i % 251)
 
+    // Built lazily for the same reason as the client.
+    const store = async () => (await import('../../server/utils/storage/r2')).createR2AudioStore({
+      accountId: process.env.NUXT_R2_ACCOUNT_ID!,
+      accessKeyId: process.env.NUXT_R2_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.NUXT_R2_SECRET_ACCESS_KEY!,
+      bucket: process.env.NUXT_R2_BUCKET!,
+    })
+
+    // As the browser sends it: the headers the route hands over, and a body
+    // whose length fetch sets itself.
     it('accepts a browser PUT to the presigned URL we mint', async () => {
-      const url = objectUrl()
-      url.searchParams.set('X-Amz-Expires', '900')
-      const signed = await client().sign(new Request(url, { method: 'PUT' }), { aws: { signQuery: true } })
-      const put = await fetch(signed.url, { method: 'PUT', headers: { 'content-type': 'audio/ogg' }, body })
+      const upload = await (await store()).presignPut({
+        key: objectKey, contentType: 'audio/ogg', contentLength: body.byteLength, expiresInSec: 300,
+      })
+      expect(new URL(upload.url).searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;content-type;host')
+      const put = await fetch(upload.url, { method: upload.method, headers: upload.headers, body })
       expect(put.ok, `HTTP ${put.status}: ${await put.text()}`).toBe(true)
+    })
+
+    // The URL signs the type and the exact length, so R2 itself has to refuse
+    // any other. Each refusal is checked to have stored nothing.
+    it('refuses a PUT to that URL with another length or another type, and stores nothing', async () => {
+      const r2 = await store()
+      const key = `verify-${Date.now()}/signed-length.ogg`
+      try {
+        const upload = await r2.presignPut({
+          key, contentType: 'audio/ogg', contentLength: body.byteLength, expiresInSec: 300,
+        })
+
+        const longer = await fetch(upload.url, { method: 'PUT', headers: upload.headers, body: new Uint8Array(body.byteLength + 1) })
+        expect(longer.ok, `a longer body answered HTTP ${longer.status}`).toBe(false)
+        const shorter = await fetch(upload.url, { method: 'PUT', headers: upload.headers, body: body.subarray(1) })
+        expect(shorter.ok, `a shorter body answered HTTP ${shorter.status}`).toBe(false)
+        const otherType = await fetch(upload.url, { method: 'PUT', headers: { 'content-type': 'video/mp4' }, body })
+        expect(otherType.ok, `another type answered HTTP ${otherType.status}`).toBe(false)
+        expect(await r2.head(key)).toBeNull()
+
+        // The same URL still takes exactly what it was minted for.
+        const exact = await fetch(upload.url, { method: 'PUT', headers: upload.headers, body })
+        expect(exact.ok, `HTTP ${exact.status}: ${await exact.text()}`).toBe(true)
+        expect((await r2.head(key))?.size).toBe(body.byteLength)
+      }
+      finally {
+        await r2.delete(key)
+      }
     })
 
     it('reports the exact byte count on HEAD, which the completion check depends on', async () => {
@@ -67,25 +106,19 @@ describe.skipIf(!has('NUXT_R2_ACCOUNT_ID', 'NUXT_R2_ACCESS_KEY_ID', 'NUXT_R2_SEC
     // ADR-0012 step 7: a page checks it is reading the reply the Whisper step
     // stored. The validator from the PUT has to be the one a range read reports.
     it('reports the same validator on a server PUT and on a range read of it, and serves the range', async () => {
-      const { createR2AudioStore } = await import('../../server/utils/storage/r2')
-      const store = createR2AudioStore({
-        accountId: process.env.NUXT_R2_ACCOUNT_ID!,
-        accessKeyId: process.env.NUXT_R2_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.NUXT_R2_SECRET_ACCESS_KEY!,
-        bucket: process.env.NUXT_R2_BUCKET!,
-      })
+      const r2 = await store()
       const key = `verify-${Date.now()}/whisper-reply.json`
       const reply = new TextEncoder().encode('{"segments":[{"start":0,"end":1,"text":"hello"}]}')
       try {
-        const { etag } = await store.put(key, reply, 'application/json')
+        const { etag } = await r2.put(key, reply, 'application/json')
         expect(etag).toBeTruthy()
-        const opened = (await store.openRange(key, { start: 13, end: 20 }))!
+        const opened = (await r2.openRange(key, { start: 13, end: 20 }))!
         expect(opened.etag).toBe(etag)
         expect(opened.size).toBe(reply.byteLength)
         expect(new TextDecoder().decode(await new Response(opened.body).arrayBuffer())).toBe('{"start"')
       }
       finally {
-        await store.delete(key)
+        await r2.delete(key)
       }
     })
 
