@@ -40,6 +40,7 @@ const fakeCache = {
   }),
 }
 const event = () => ({ context: {} })
+const cacheHeaders: string[] = []
 
 beforeAll(async () => {
   vi.stubGlobal('defineEventHandler', (fn: Handler) => fn)
@@ -49,6 +50,7 @@ beforeAll(async () => {
 })
 beforeEach(() => {
   vi.stubGlobal('caches', { default: fakeCache })
+  vi.stubGlobal('setResponseHeader', (_event: unknown, name: string, value: string) => cacheHeaders.push(`${name}=${value}`))
   store.clear()
   fakeCache.match.mockClear()
   fakeCache.put.mockClear()
@@ -74,6 +76,7 @@ describe('the transcript route', () => {
     expect(repo.listForMeeting).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(second)).toBe(JSON.stringify(first))
     expect(first).toEqual({ segments: repo.segments })
+    expect(cacheHeaders.slice(-2)).toEqual(['x-demo-cache=miss', 'x-demo-cache=hit'])
   })
 
   it('stores the entry for an hour, as JSON, under the demo\'s own key', async () => {
