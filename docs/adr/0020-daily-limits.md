@@ -1,8 +1,8 @@
-# ADR-0020: Daily limits on every meeting's questions
+# ADR-0020: Daily limits on every meeting's questions, and on new meetings
 
 - **Status:** Accepted, and **not yet deployed**
 - **Date:** 2026-11-07
-- **Supersedes:** Nothing whole. Amends ADR-0019 (meetings other than the demo now have a daily count of their own) and ADR-0015 (what guards the question route).
+- **Supersedes:** Nothing whole. Amends ADR-0019 (meetings other than the demo now have a daily count of their own), ADR-0015 (what guards the question route and registration) and ADR-0010 (a daily ceiling on new meetings beside the storage budget).
 
 ## Context
 
@@ -12,6 +12,10 @@ whoever they gave it to, and only slot pacing (ADR-0012) and the providers' own 
 what one link could ask. Every meeting, and extraction, draws on the same daily allowances of the
 answering model and the embedding service, so the free quotas stay available to all of them only
 if no one link can take what it likes of them in a day.
+
+New meetings had no daily bound either. Registering one takes the shared invite code (ADR-0015),
+and each can go on to spend the transcription, extraction and indexing quotas and stored bytes.
+The storage budget (ADR-0010) bounds the bytes kept, not how many meetings a day ask for the rest.
 
 ## Decision
 
@@ -57,19 +61,48 @@ The sentence goes through `server/utils/public-errors.ts`, and the question form
 every question on every meeting is then refused with the fixed sentence. README's deploy steps
 apply the migrations before the Worker is deployed, which is the order this needs.
 
+**New meetings across the whole app are at most `MEETINGS_PER_DAY` a UTC day: 30, in
+`server/utils/registration-limit.ts`.** Thirty is more recordings in a day than the handful of
+people with the code upload, and a constant for the same reasons as the question count.
+
+```
+invite code → body → storage budget → take the day's count → upload URL → row
+```
+
+- **The invite code runs first,** as ADR-0015 decided, so a request without a valid code never
+  counts. So does a body the schema refuses, and one the storage budget has no room for.
+- **The take comes before the upload URL is issued,** so a refusal mints nothing. There is no gate
+  before it: no slot comes between, so a read first would only add a call.
+- **A registration whose upload never arrives has still used its count,** as a URL was issued.
+
+`meeting_registration_days` has one row per UTC day, with RLS on and grants to `service_role`
+alone, and `take_meeting_registration` is the only way in, one statement as the others are. The
+local driver keeps one file per day, and `tests/unit/helpers/registration-cases.ts` holds the two
+to the same cases.
+
+| Refused because | Status | The sentence | Try again |
+| --- | --- | --- | --- |
+| Over the ceiling | 429, with `data.retryAfterSec` and `retry-after` | `New uploads have reached today's limit.` | The next 00:00 UTC |
+| The take failed | 503, and a log line | `Uploads are not available just now.` | Not said |
+
+The upload form adds "Try again at <time>." from the delay, as the question form does. The take
+fails closed, as the counts above do, and so does the migration not being applied yet.
+
 ## Consequences
 
 - **Whoever holds a link shares its 100.** There is no identity to count by, so one person can
   use a meeting's day. That costs that meeting's questions until 00:00 UTC, and nothing else.
 - **A bound per meeting, not across them.** Someone with the invite code can register more
-  meetings, and each has its own count.
+  meetings, and each has its own count. The daily ceiling on new meetings bounds that.
+- **The ceiling is shared by everyone with the code.** One person can use the day's 30, and the
+  others are refused until 00:00 UTC. That costs uploads for a day, and nothing already stored.
 - **Two more subrequests on a question,** the gate and the take, as the demo's have.
 - **Under the local driver, a deleted meeting's count stays** until the next day's first take
   deletes it. No new meeting can have its id, so it is never read again.
 
 ## What stays unproven until deployed
 
-- Whether 100 is the right number. Read Groq's dashboard after the first days, as for the demo's 25.
+- Whether 100 and 30 are the right numbers. Read Groq's dashboard after the first days, as for the demo's 25.
 - The SQL and both drivers have run against a throwaway Postgres behind PostgREST and the local
   driver, not against Supabase. `pnpm db:migrate` has not applied this migration.
 
@@ -82,3 +115,7 @@ apply the migrations before the Worker is deployed, which is the order this need
 - **Counting the demo here as well.** It already has a count, with its own number and reasons, and
   two counts on one question would refuse it on whichever ran out first.
 - **Counting before the slot.** Simpler, and a question refused its slot would use the day's count.
+- **Counting new meetings before the invite code.** A request without the code would use the
+  day's ceiling, and refuse everyone who has it.
+- **A ceiling on new meetings per invite code.** There is one code (ADR-0015), so it would be the
+  same ceiling.

@@ -9,6 +9,8 @@ import fsDriver from 'unstorage/drivers/fs'
 import { fetch, getServerLogs, setup } from '@nuxt/test-utils/e2e'
 import { signToken } from '../../server/utils/signed-token'
 import type { CreateMeetingResponse } from '../../shared/types/meeting'
+import { NEW_MEETINGS_USED_MESSAGE } from '../../shared/utils/meeting'
+import { MEETINGS_PER_DAY } from '../../server/utils/registration-limit'
 import { INVITE_CODE, inviteHeaders } from './helpers/invite'
 import { LOCAL_DRIVERS } from './helpers/local-drivers'
 
@@ -153,6 +155,42 @@ describe('POST /api/meetings with the code', () => {
   it('still validates what it is given', async () => {
     const res = await fetch('/api/meetings', { method: 'POST', headers: { ...json, ...inviteHeaders }, body: '{"title":""}' })
     expect(res.status).toBe(400)
+  })
+})
+
+describe('the day\'s ceiling on new meetings (ADR-0020)', () => {
+  const key = () => `meeting-registrations/${new Date().toISOString().slice(0, 10)}`
+  const counted = async () => (await db.getItem<number>(key())) ?? 0
+
+  it('counts a registration with the code, and none without one or with a body it refuses', async () => {
+    const before = await counted()
+    for (const [, headers] of REFUSED) expect((await register(headers)).status).toBe(401)
+    expect((await fetch('/api/meetings', { method: 'POST', headers: { ...json, ...inviteHeaders }, body: '{"title":""}' })).status).toBe(400)
+    expect(await counted()).toBe(before)
+    expect((await register(inviteHeaders)).status).toBe(201)
+    expect(await counted()).toBe(before + 1)
+  })
+
+  it('refuses over it until the next 00:00 UTC, in plain words, and registers nothing', async () => {
+    await db.setItem(key(), MEETINGS_PER_DAY)
+    try {
+      const before = await meetingRows()
+      const res = await register(inviteHeaders)
+      expect(res.status).toBe(429)
+      const refused = await res.json() as { message: string, data: { retryAt: string, retryAfterSec: number } }
+      expect(refused.message).toBe(NEW_MEETINGS_USED_MESSAGE)
+      const now = new Date()
+      expect(Date.parse(refused.data.retryAt)).toBe(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+      expect(Number(res.headers.get('retry-after'))).toBe(refused.data.retryAfterSec)
+      expect(await meetingRows()).toEqual(before)
+      expect(await counted()).toBe(MEETINGS_PER_DAY)
+      // Without the code it is the invite's refusal, whatever the day's count.
+      expect((await register()).status).toBe(401)
+    }
+    finally {
+      await db.removeItem(key())
+    }
+    expect((await register(inviteHeaders)).status).toBe(201)
   })
 })
 

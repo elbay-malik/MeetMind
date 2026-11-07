@@ -36,6 +36,12 @@ export interface Database {
         Update: Partial<{ day: string, taken: number }>
         Relationships: []
       }
+      meeting_registration_days: {
+        Row: { day: string, taken: number }
+        Insert: { day: string, taken?: number }
+        Update: Partial<{ day: string, taken: number }>
+        Relationships: []
+      }
       meeting_question_days: {
         Row: { day: string, meeting_id: string, taken: number }
         Insert: { day: string, meeting_id: string, taken?: number }
@@ -125,6 +131,10 @@ export interface Database {
       }
       meeting_question_gate: {
         Args: { p_limit: number, p_meeting: string }
+        Returns: boolean
+      }
+      take_meeting_registration: {
+        Args: { p_limit: number }
         Returns: boolean
       }
       take_meeting_question: {

@@ -136,7 +136,7 @@ health check also answers 503 when [ADR-0016](0016-real-services-or-nothing.md) 
 
 | Route | Guard | What it can write or spend | On the demo |
 | --- | --- | --- | --- |
-| `POST /api/meetings` | Invite code, first | A `pending_upload` row and an upload grant | Same. The id is minted here, and a body naming one is refused |
+| `POST /api/meetings` | Invite code, first, then a daily ceiling on new meetings before the grant ([ADR-0020](0020-daily-limits.md)) | A `pending_upload` row and an upload grant | Same. The id is minted here, and a body naming one is refused |
 | `POST /api/invite-check` | Invite code, then ADR-0016's check, which reads only settings | Nothing | Same |
 | `PUT /api/uploads/:token` | Signed grant for one key, type and byte count, 5 minutes. Local store only: 404 with R2 | The grant's audio object | Same. Only whoever registered a meeting ever holds its grant |
 | R2's presigned `PUT` (not our route) | Signed URL for one key, type and byte count, 5 minutes, handed only to whoever registered. Size and type are checked again at `complete` | The audio object | Same |

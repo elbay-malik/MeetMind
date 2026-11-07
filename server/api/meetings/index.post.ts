@@ -2,11 +2,12 @@ import { createMeetingBodySchema } from '#shared/schemas/meeting'
 import type { CreateMeetingResponse } from '#shared/types/meeting'
 import { AUDIO_MIME, audioObjectKey } from '#shared/utils/meeting'
 import { useAudioStore } from '../../utils/storage'
-import { useMeetingRepository } from '../../utils/db'
+import { useMeetingRepository, useRegistrationRepository } from '../../utils/db'
 import { requireDrivers } from '../../utils/drivers'
 import { badRequest } from '../../utils/http'
 import { requireInviteCode } from '../../utils/invite'
 import { toPublicMeeting } from '../../utils/public-errors'
+import { takeRegistration } from '../../utils/registration-limit'
 import { assertStorageBudget, UPLOAD_URL_TTL_SEC } from '../../utils/storage-budget'
 
 /**
@@ -22,7 +23,8 @@ const MAX_BODY_BYTES = 4096
  * the upload via `POST /api/meetings/:id/complete`.
  *
  * Nothing else creates a meeting, and everything that spends quota needs one, so
- * this is where uploading is closed to anyone without the invite code (ADR-0015).
+ * this is where uploading is closed to anyone without the invite code (ADR-0015), and
+ * where the whole app's daily ceiling on new meetings is counted (ADR-0020).
  */
 export default defineEventHandler(async (event): Promise<CreateMeetingResponse> => {
   await requireInviteCode(event)
@@ -46,6 +48,10 @@ export default defineEventHandler(async (event): Promise<CreateMeetingResponse> 
   // this upload would add, so the ceiling cannot be stepped over by one large
   // recording.
   await assertStorageBudget(event, input.audioBytes)
+
+  // Last before the URL, so only a request with a valid code and body that the store has room
+  // for uses one of the day's new meetings, and over the ceiling nothing is minted.
+  await takeRegistration(event, useRegistrationRepository(event))
 
   const id = crypto.randomUUID()
   const audioKey = audioObjectKey(id)
