@@ -13,6 +13,42 @@ import { windowOver } from './windows'
  */
 export const TOP_K = 4
 
+/**
+ * Longest answer text returned, in characters. The model is asked for one to three
+ * sentences, and its output budget bounds the reply in tokens, but the text shown is
+ * bounded here too, the same for every answerer, so an answer is never longer than
+ * this whatever wrote it. Cited quotes are returned separately and are not counted.
+ */
+export const MAX_ANSWER_CHARS = 1200
+
+const ELLIPSIS = '…'
+
+/**
+ * `text` cut to at most `MAX_ANSWER_CHARS`, ellipsis included. Cut at the last sentence
+ * end before the limit when that keeps at least half of it, else at the last space,
+ * else at the limit itself (text with no spaces, such as Chinese or Japanese). A cut
+ * never splits a surrogate pair. Text within the limit is returned unchanged.
+ */
+export function capAnswer(text: string, max = MAX_ANSWER_CHARS): string {
+  if (text.length <= max) return text
+  // Room for a space and the ellipsis after a sentence cut.
+  const room = max - 2
+  let head = text.slice(0, room)
+  if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1)
+
+  // A stop counts as a sentence end when the full text goes on with a space after it, so
+  // "3.5" cut after "3." is not one. The CJK stops take no space after them.
+  let sentenceEnd = -1
+  for (const m of head.matchAll(/[.!?。！？]/g)) {
+    if (/[。！？]/.test(m[0]) || /\s/.test(text.charAt(m.index + 1))) sentenceEnd = m.index + 1
+  }
+  if (sentenceEnd >= max / 2) return `${head.slice(0, sentenceEnd)} ${ELLIPSIS}`
+
+  const space = head.search(/\s\S*$/)
+  if (space >= max / 2) return `${head.slice(0, space).trimEnd()}${ELLIPSIS}`
+  return `${head}${ELLIPSIS}`
+}
+
 /** A refusal the caller can act on: the index needs building, or the question is empty. */
 export class QuestionError extends Error {
   constructor(message: string, readonly statusCode: number) {
@@ -145,7 +181,7 @@ export async function askMeeting(input: AskInput): Promise<QuestionAnswer> {
   }
   citations.sort((a, b) => a.startMs - b.startMs || a.segmentIdx - b.segmentIdx)
 
-  const answer = wire.answer.trim()
+  const answer = capAnswer(wire.answer.trim())
   if (citations.length === 0 || !answer) return NOT_FOUND
   return { found: true, answer, citations }
 }

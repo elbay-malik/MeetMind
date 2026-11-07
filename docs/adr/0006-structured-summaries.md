@@ -813,6 +813,10 @@ reply held every decision and action item in the chunk, quoted verbatim.
 largest question context, plus its whole output budget must fit
 `TOKENS_PER_MINUTE`.
 
+Later, the answer's budget was lowered to **800**: an answer is a few quotes and
+one to three sentences, and ADR-0007 decision 3 also caps its text in
+characters.
+
 The cost of smaller chunks is time. A one-hour meeting is now about 9 requests
 at the pacer's one per minute, about 8 minutes in total, where before it failed
 outright. Q&A is unaffected apart from its pacing.

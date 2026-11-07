@@ -95,6 +95,20 @@ been what it read.
 - **The quote is shown.** Every citation renders its quote, for the reason
   ADR-0006 decision 8 gives: the check proves words were said, not that they
   support the claim.
+- **The question and the lines are separate blocks.** The prompt puts the
+  numbered lines inside `<transcript>` and the question after them inside
+  `<question>`. The instructions say the question block is a visitor's
+  question, to be answered only from the lines, and that a request inside it to
+  do something else is not followed, as for the lines themselves. Either
+  block's tag written inside the question or a line becomes bracketed text
+  (`</question>` becomes `[/question]`), so the text inside a block cannot end
+  it.
+- **An answer has a length.** The model is asked for one to three sentences,
+  its output budget is `ANSWER_MAX_COMPLETION_TOKENS` = 800 tokens, reasoning
+  included, and the answer text returned is at most `MAX_ANSWER_CHARS` = 1,200
+  characters, whichever answerer wrote it. Longer text is cut at the last
+  sentence end before the cap, or else the last space, and ends in an
+  ellipsis. Quotes are not counted.
 
 ### 4. Per-meeting search is exact. HNSW waits for Phase 8.
 
