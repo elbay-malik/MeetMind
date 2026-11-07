@@ -1,5 +1,6 @@
 import type { MeetingSummary } from '#shared/types/meeting'
 import { useMeetingRepository, useSummaryRepository } from '../../../utils/db'
+import { readThroughDemoCache } from '../../../utils/demo-cache'
 import { notFound, requireMeetingId } from '../../../utils/http'
 
 /**
@@ -23,6 +24,11 @@ import { notFound, requireMeetingId } from '../../../utils/http'
  * read mid-repair; re-reading the status right after closes that window down
  * to whatever is left between this second read and the response being sent,
  * which is not literally zero but is no longer application logic.
+ *
+ * On the public demo a `ready` summary is read from the edge cache (see
+ * {@link readThroughDemoCache}). Both status checks still decide what is stored: an answer
+ * of null, from either one, is sent but never kept, and neither is one read while the row
+ * changed.
  */
 export default defineEventHandler(async (event): Promise<{ summary: MeetingSummary | null }> => {
   const id = requireMeetingId(event)
@@ -31,10 +37,22 @@ export default defineEventHandler(async (event): Promise<{ summary: MeetingSumma
   if (!meeting) throw notFound('Meeting not found')
   if (meeting.status !== 'ready') return { summary: null }
 
-  const summary = await useSummaryRepository(event).getForMeeting(id)
+  // Kept only if the row did not move while the summary was read, so an entry always
+  // belongs to the row whose `updatedAt` names it.
+  let unchanged = false
+  return readThroughDemoCache(
+    event,
+    meeting,
+    'summary',
+    { finished: true, cacheable: answer => unchanged && answer.summary !== null },
+    async () => {
+      const summary = await useSummaryRepository(event).getForMeeting(id)
 
-  const after = await repo.get(id)
-  if (after?.status !== 'ready') return { summary: null }
+      const after = await repo.get(id)
+      if (after?.status !== 'ready') return { summary: null }
 
-  return { summary }
+      unchanged = after.updatedAt === meeting.updatedAt
+      return { summary }
+    },
+  )
 })

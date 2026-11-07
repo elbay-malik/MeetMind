@@ -163,6 +163,13 @@ describe('supabase transcript repository', () => {
     expect(urls).toHaveLength(1)
   })
 
+  it('asks only for the columns a segment is made of', async () => {
+    const urls = stubPaged(3)
+    await repo.listForMeeting('m1')
+    await repo.listRange('m1', 0, 2)
+    expect(urls.map(url => url.searchParams.get('select'))).toEqual(['idx,start_ms,end_ms,text', 'idx,start_ms,end_ms,text'])
+  })
+
   it('pages past the server-side row cap instead of truncating silently', async () => {
     // PostgREST caps result sets and returns a short array with no error. An
     // unpaged read would return 1000 of these 2500 segments and look complete.
@@ -210,6 +217,7 @@ describe('supabase transcript repository', () => {
       expect(url.searchParams.get('limit')).toBe('256')
       expect(url.searchParams.get('order')).toBe('idx.asc')
       expect(requests[0]!.headers.get('prefer')).toMatch(/count=exact/)
+      expect(url.searchParams.get('select')).toBe('idx,start_ms,end_ms,text')
       expect(page).toMatchObject({ more: false })
       expect(page.segments.map(s => s.idx)).toEqual([5, 6, 7])
     })

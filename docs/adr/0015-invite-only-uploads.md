@@ -99,11 +99,39 @@ The invite code makes no difference on the demo. It is for uploading, and a seco
 would be a second route to guess it against. An operator finishes or repairs the meeting
 with the variable unset (see below).
 
+### 5. The demo's reads come from the edge cache.
+
+The demo is public and, once finished, cannot change, so every visit reading its transcript
+and summary from Supabase again would spend database egress on the same bytes. On a Worker,
+`GET .../transcript` and `GET .../summary` keep the demo's answer in this data centre's Cache
+API for an hour (`server/utils/demo-cache.ts`), and later visits there read it from the cache.
+The cache is per data centre, so each one reads the database once an hour at most, and the
+first visit to each pays for it.
+
+- **Only the demo.** Every other meeting is private to whoever holds its link (ADR-0013),
+  and nothing of it is stored.
+- **Only finished data.** The transcript once transcription has finished, the summary once the
+  meeting is `ready`, as each route already decides. A summary answer of null, an error, or a
+  summary read while the meeting row changed is sent and not stored.
+- **The meeting row is still read on every visit.** It is small, it says whether the meeting
+  exists and is finished, and its `updatedAt` is part of the cache key. Repairing the demo with
+  the variable unset changes the row, so the repaired meeting is read under a new key rather
+  than served the old data for the rest of the hour.
+- **The same bytes either way.** The stored body is the JSON the route would have sent, and a
+  hit is parsed from it. A cache that fails to answer or to store only makes the read slower.
+- **Nothing to set up.** Where there is no Cache API, in development, the unit tests and the
+  end-to-end tests on Node, the routes read the repository as before. On a `workers.dev` address
+  Cloudflare's Cache API does not store anything, so there too every visit reads the database.
+
+Every transcript read, the demo's or not, also asks only for the four columns a segment is
+made of (`idx`, `start_ms`, `end_ms`, `text`), not the meeting id each row repeats or its
+`created_at`.
+
 ## What guards each route
 
 Checked against the code on 2026-11-02. `tests/unit/adr-consistency.spec.ts` fails if a file under
 `server/api` that is not a `GET` is missing here, including one with no method in its name, which
-answers every method. No `GET` route writes anything. After the guards below, every route but the
+answers every method. No `GET` route writes anything, apart from the demo's entries in the edge cache (decision 5). After the guards below, every route but the
 health check also answers 503 when [ADR-0016](0016-real-services-or-nothing.md) says this server may not run.
 
 | Route | Guard | What it can write or spend | On the demo |

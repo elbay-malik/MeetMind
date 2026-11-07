@@ -31,7 +31,10 @@ export type TranscriptSegmentRow = {
   created_at: string
 }
 
-export function rowToSegment(row: TranscriptSegmentRow): TranscriptSegment {
+/** The columns a read selects: see `SEGMENT_COLUMNS` in transcripts-supabase.ts. */
+export type TranscriptSegmentReadRow = Pick<TranscriptSegmentRow, 'idx' | 'start_ms' | 'end_ms' | 'text'>
+
+export function rowToSegment(row: TranscriptSegmentReadRow): TranscriptSegment {
   return { idx: row.idx, startMs: row.start_ms, endMs: row.end_ms, text: row.text }
 }
 
