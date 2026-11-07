@@ -7,6 +7,13 @@ import {
 } from './transcripts'
 import type { SupabaseOptions } from './supabase'
 
+/**
+ * The columns {@link rowToSegment} reads, and the only ones a read asks for: the meeting id
+ * is already the filter and `created_at` is never shown, so fetching them would only make
+ * every transcript read larger.
+ */
+const SEGMENT_COLUMNS = 'idx, start_ms, end_ms, text'
+
 const clients = new Map<string, SupabaseClient<Database>>()
 
 function clientFor(options: SupabaseOptions): SupabaseClient<Database> {
@@ -61,7 +68,7 @@ export function createSupabaseTranscriptRepository(options: SupabaseOptions): Tr
       const segments = []
       for (let from = 0; ; from += PAGE) {
         const { data, error } = await table()
-          .select()
+          .select(SEGMENT_COLUMNS)
           .eq('meeting_id', meetingId)
           .order('idx', { ascending: true })
           .range(from, from + PAGE - 1)
@@ -78,7 +85,7 @@ export function createSupabaseTranscriptRepository(options: SupabaseOptions): Tr
       const segments = []
       for (let offset = 0; ; offset += PAGE) {
         const { data, error } = await table()
-          .select()
+          .select(SEGMENT_COLUMNS)
           .eq('meeting_id', meetingId)
           .gte('idx', from)
           .lte('idx', to)
@@ -94,7 +101,7 @@ export function createSupabaseTranscriptRepository(options: SupabaseOptions): Tr
       // The exact count over this filter is an index scan, and says whether anything
       // lies past this page even if a row cap has shortened it.
       const { data, error, count } = await table()
-        .select('*', { count: 'exact' })
+        .select(SEGMENT_COLUMNS, { count: 'exact' })
         .eq('meeting_id', meetingId)
         .gte('idx', from)
         .order('idx', { ascending: true })
