@@ -3,6 +3,7 @@ import { nextTick, reactive } from 'vue'
 import { flushPromises } from '@vue/test-utils'
 import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import UploadPage from '~/pages/index.vue'
+import { NEW_MEETINGS_USED_MESSAGE } from '../../shared/utils/meeting'
 
 const ID = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'
 const CODE = 'a-right-code-a-right-code-a-right-code'
@@ -27,7 +28,7 @@ const extract = vi.fn()
 mockNuxtImport('useAudioExtract', () => () => ({ state: extraction, extract, cancel: () => {}, reset: () => {} }))
 
 type Handler = { node: { res: { statusCode: number } }, headers: Headers, path: string }
-type Reply = { statusCode: number, message?: string }
+type Reply = { statusCode: number, message?: string, data?: { retryAt: string, retryAfterSec: number } }
 
 /** What each route answers, and the Authorization header each was sent. */
 let checkReply: Reply
@@ -476,6 +477,19 @@ describe('uploading', () => {
     const page = await readyToUpload()
     await uploadButton(page).trigger('click')
     await vi.waitFor(() => expect(alerts(page).join(' ')).toContain('The audio archive is full.'))
+    expect(codeField(page).exists()).toBe(false)
+  })
+
+  // ADR-0020: as the question form says the demo's count, with the time it gave.
+  it('says when to try again over the day\'s ceiling on new meetings, and keeps the code', async () => {
+    const retryAfterSec = 2 * 3600
+    registerReply = { statusCode: 429, message: NEW_MEETINGS_USED_MESSAGE, data: { retryAt: new Date(Date.now() + retryAfterSec * 1000).toISOString(), retryAfterSec } }
+    const page = await readyToUpload()
+    await uploadButton(page).trigger('click')
+    await vi.waitFor(() => expect(alerts(page).join(' ')).toContain(NEW_MEETINGS_USED_MESSAGE))
+    const at = new Date(Date.now() + retryAfterSec * 1000)
+    const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    expect(alerts(page).join(' ')).toMatch(new RegExp(`${NEW_MEETINGS_USED_MESSAGE.replace(/[.']/g, '.')} Try again (at|on \\w+ at) ${time}\\.`))
     expect(codeField(page).exists()).toBe(false)
   })
 })

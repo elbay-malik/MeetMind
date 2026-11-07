@@ -169,6 +169,14 @@ export const DEMO_QUESTIONS_PAUSED_MESSAGE = 'The demo pauses its questions whil
 export const MEETING_QUESTIONS_USED_MESSAGE = 'This meeting has used its questions for today.'
 
 /**
+ * What `POST /api/meetings` answers over the whole app's daily ceiling on new meetings, and when
+ * it could not count one (ADR-0020). The upload form follows the first with its own "Try again
+ * at <time>.", so neither says when.
+ */
+export const NEW_MEETINGS_USED_MESSAGE = 'New uploads have reached today\'s limit.'
+export const UPLOADS_UNAVAILABLE_MESSAGE = 'Uploads are not available just now.'
+
+/**
  * Whether this id is the public demo's (ADR-0015), for the guard on the server and for a page
  * deciding not to drive. Compared in lower case: `requireMeetingId` accepts a UUID in capitals,
  * which is the same row to Postgres, and the configured id may be written either way. Trimmed,

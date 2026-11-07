@@ -171,9 +171,23 @@ export function useMeetingUpload() {
 
 function describeError(err: unknown): string {
   if (err && typeof err === 'object' && 'data' in err) {
-    const data = (err as { data?: { message?: string, statusMessage?: string } }).data
-    if (data?.message) return data.message
+    const data = (err as { data?: { message?: string, statusMessage?: string, data?: { retryAfterSec?: unknown } } }).data
+    const when = retryWhen(data?.data?.retryAfterSec)
+    if (data?.message) return when ? `${data.message} Try again ${when}.` : data.message
     if (data?.statusMessage) return data.statusMessage
   }
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * When a refusal said to try again, as the question form says it (ADR-0020): by this browser's
+ * clock, from the relative delay, with the day when it is not today.
+ */
+function retryWhen(seconds: unknown): string | null {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return null
+  const at = new Date(Date.now() + seconds * 1000)
+  const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return at.toDateString() === new Date().toDateString()
+    ? `at ${time}`
+    : `on ${at.toLocaleDateString([], { weekday: 'long' })} at ${time}`
 }

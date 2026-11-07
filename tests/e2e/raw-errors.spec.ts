@@ -125,6 +125,8 @@ async function sweep(id: string, where: string): Promise<Record<string, number>>
 const audio = new Uint8Array(20_000).map((_, i) => i % 251)
 
 async function register(bytes: Uint8Array): Promise<CreateMeetingResponse> {
+  // This file registers more meetings than the app's day allows (ADR-0020), which is not what it is about.
+  await db.removeItem(`meeting-registrations/${new Date().toISOString().slice(0, 10)}`)
   const created = await $fetch<CreateMeetingResponse>('/api/meetings', {
     method: 'POST',
     headers: inviteHeaders,

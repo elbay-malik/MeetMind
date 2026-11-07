@@ -1,6 +1,6 @@
 # ADR-0010: Bounding R2 cost when R2 itself cannot be bounded
 
-- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md), [ADR-0015](0015-invite-only-uploads.md) and [ADR-0018](0018-ffmpeg-wasm-from-private-r2.md)
+- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md), [ADR-0015](0015-invite-only-uploads.md), [ADR-0018](0018-ffmpeg-wasm-from-private-r2.md) and [ADR-0020](0020-daily-limits.md), which adds a daily ceiling on new meetings beside the storage budget
 - **Date:** 2026-10-23
 
 ## Context

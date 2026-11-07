@@ -24,6 +24,9 @@ import type { DemoQuestionRepository } from './demo-questions'
 import { createLocalMeetingQuestionRepository } from './meeting-questions-local'
 import { createSupabaseMeetingQuestionRepository } from './meeting-questions-supabase'
 import type { MeetingQuestionRepository } from './meeting-questions'
+import { createLocalRegistrationRepository } from './registrations-local'
+import { createSupabaseRegistrationRepository } from './registrations-supabase'
+import type { RegistrationRepository } from './registrations'
 
 /**
  * Pick the meeting repository: Supabase Postgres when the URL and service-role key
@@ -89,5 +92,13 @@ export function useMeetingQuestionRepository(event: H3Event): MeetingQuestionRep
   return selectDriver<MeetingQuestionRepository>(event, 'supabase', {
     real: config => createSupabaseMeetingQuestionRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey }),
     local: config => createLocalMeetingQuestionRepository({ dataDir: config.dataDir }),
+  })
+}
+
+/** The whole app's daily count of new meetings (ADR-0020), chosen the same way as the other repositories. */
+export function useRegistrationRepository(event: H3Event): RegistrationRepository {
+  return selectDriver<RegistrationRepository>(event, 'supabase', {
+    real: config => createSupabaseRegistrationRepository({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey }),
+    local: config => createLocalRegistrationRepository({ dataDir: config.dataDir }),
   })
 }

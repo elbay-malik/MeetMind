@@ -1845,5 +1845,55 @@ check_mq_posture "after a second apply"
 gone "$SW1"
 psql -q -c "delete from public.meeting_question_days;"
 
+echo "checking the day's ceiling on new meetings (ADR-0020) ..."
+REG_MIGRATION=supabase/migrations/20261107140000_meeting_registration_cap.sql
+psql -q -c "delete from public.meeting_registration_days;"
+reg_take() { psql -q -At -c "select public.take_meeting_registration($1);"; }
+check "meeting_registration_days has RLS on and no policies" \
+  "select c.relrowsecurity and not exists (select 1 from pg_policy where polrelid = c.oid)
+   from pg_class c where c.oid = 'public.meeting_registration_days'::regclass"
+expect_mq "a new meeting within the limit is counted" "$(reg_take 2)" t
+expect_mq "and the next" "$(reg_take 2)" t
+expect_mq "one past the limit is refused" "$(reg_take 2)" f
+check "and counts nothing" "select taken = 2 from public.meeting_registration_days where day = $TODAY"
+expect_mq "a limit of zero takes nothing" "$(reg_take 0)" f
+expect_mq "and nor does a negative one" "$(reg_take -1)" f
+reject "a take has no safe reading of no limit" "select public.take_meeting_registration(null);" "the limit must be given"
+reject "a count below nothing is refused" "insert into public.meeting_registration_days (day, taken) values ('2000-01-01', -1);" "meeting_registration_days_taken_check"
+psql -q -c "insert into public.meeting_registration_days (day, taken) values ($TODAY - 1, 99), ($TODAY - 40, 7);"
+expect_mq "a take refused over the limit" "$(reg_take 2)" f
+check "still deletes earlier days, so the table never grows" \
+  "select count(*) = 1 and bool_and(day = $TODAY) from public.meeting_registration_days"
+psql -q -c "delete from public.meeting_registration_days;"
+for i in $(seq 1 20); do reg_take 5 > "$TMPDIR_SWEEP/reg_take_$i" & done
+wait
+granted=$(cat "$TMPDIR_SWEEP"/reg_take_* | grep -c '^t$' || true)
+[ "$granted" = "5" ] || fail "20 registrations at once with a limit of 5 granted $granted"
+echo "  ok: 20 registrations at once with a limit of 5 grant exactly 5"
+psql -q -c "delete from public.meeting_registration_days;"
+reject "a read-only transaction cannot take one" \
+  "begin read only; select public.take_meeting_registration(5); commit;" "read-only transaction"
+check "the ceiling's function pins its search_path" \
+  "select coalesce('search_path=public' = any(proconfig), false) from pg_proc where proname = 'take_meeting_registration'"
+check_reg_posture() {
+  check "$1: take_meeting_registration is executable by service_role and not by PUBLIC, anon or authenticated" \
+    "select has_function_privilege('service_role', 'public.take_meeting_registration(integer)', 'execute')
+            and not has_function_privilege('anon', 'public.take_meeting_registration(integer)', 'execute')
+            and not has_function_privilege('authenticated', 'public.take_meeting_registration(integer)', 'execute')
+            and not exists (select 1 from pg_proc p, aclexplode(p.proacl) a
+                             where p.oid = 'public.take_meeting_registration(integer)'::regprocedure and a.grantee = 0)"
+  check "$1: meeting_registration_days is for service_role and neither API role" \
+    "select has_table_privilege('service_role', 'public.meeting_registration_days', 'select, insert, update, delete')
+            and not has_table_privilege('anon', 'public.meeting_registration_days', 'select, insert, update, delete')
+            and not has_table_privilege('authenticated', 'public.meeting_registration_days', 'select, insert, update, delete')"
+}
+check_reg_posture "as applied"
+expect_mq "a new meeting counted before applying again" "$(reg_take 5)" t
+psql -q < "$REG_MIGRATION"
+check "applying the ceiling's migration again keeps the count" \
+  "select count(*) = 1 and bool_and(taken = 1) from public.meeting_registration_days"
+check_reg_posture "after a second apply"
+psql -q -c "delete from public.meeting_registration_days;"
+
 echo
 echo "RESULT: PASS — $(ls supabase/migrations/*.sql | wc -l | tr -d ' ') migrations applied, all invariants hold"
