@@ -1,6 +1,6 @@
 # ADR-0020: Daily limits on every meeting's questions, and on new meetings
 
-- **Status:** Accepted, and **not yet deployed**
+- **Status:** Accepted, and **deployed on 2026-11-07**, after its three migrations were applied
 - **Date:** 2026-11-07
 - **Supersedes:** Nothing whole. Amends ADR-0019 (meetings other than the demo now have a daily count of their own), ADR-0015 (what guards the question route and registration) and ADR-0010 (a daily ceiling on new meetings beside the storage budget).
 
@@ -100,11 +100,11 @@ fails closed, as the counts above do, and so does the migration not being applie
 - **Under the local driver, a deleted meeting's count stays** until the next day's first take
   deletes it. No new meeting can have its id, so it is never read again.
 
-## What stays unproven until deployed
+## What stays unproven
 
 - Whether 100 and 30 are the right numbers. Read Groq's dashboard after the first days, as for the demo's 25.
-- The SQL and both drivers have run against a throwaway Postgres behind PostgREST and the local
-  driver, not against Supabase. `pnpm db:migrate` has not applied this migration.
+- The SQL and both drivers were tested against a throwaway Postgres behind PostgREST and the
+  local driver. `pnpm db:migrate` applied the migrations to Supabase on 2026-11-07, before the deploy.
 
 ## Alternatives considered
 
