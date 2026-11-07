@@ -90,12 +90,12 @@ fails closed, as the counts above do, and so does the migration not being applie
 
 ## Consequences
 
-- **Whoever holds a link shares its 100.** There is no identity to count by, so one person can
-  use a meeting's day. That costs that meeting's questions until 00:00 UTC, and nothing else.
+- **The count is per meeting and shared by everyone with its link,** as there is no identity to
+  count by. It resets at 00:00 UTC, and touches no other meeting.
 - **A bound per meeting, not across them.** Someone with the invite code can register more
   meetings, and each has its own count. The daily ceiling on new meetings bounds that.
-- **The ceiling is shared by everyone with the code.** One person can use the day's 30, and the
-  others are refused until 00:00 UTC. That costs uploads for a day, and nothing already stored.
+- **The ceiling is shared by everyone with the code,** and resets at 00:00 UTC. It bounds new
+  uploads only, and nothing already stored.
 - **Two more subrequests on a question,** the gate and the take, as the demo's have.
 - **Under the local driver, a deleted meeting's count stays** until the next day's first take
   deletes it. No new meeting can have its id, so it is never read again.
