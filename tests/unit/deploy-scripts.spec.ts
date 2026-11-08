@@ -309,6 +309,8 @@ fi
     const { child, exited } = start({ FAKE_SLOW_WORKER_BUILD: '1', FAKE_STUBBORN_WORKER_BUILD: '1' })
     await reached('worker-building')
     process.kill(child.pid!, 'SIGINT')
+    // Two signals sent at once can be taken by two threads, so they may arrive in either order.
+    await new Promise(resolve => setTimeout(resolve, 250))
     process.kill(child.pid!, 'SIGTERM')
     expect(await exited).toBe(130)
     await expect(access(join(root, 'deploying'))).rejects.toThrow()
