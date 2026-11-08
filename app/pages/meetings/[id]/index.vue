@@ -644,7 +644,11 @@ onMounted(() => {
               @click="onSelect(segment, index)"
               @keydown="onKeydown($event, index)"
             >
-              <span class="w-16 shrink-0 text-right font-mono text-xs text-muted tabular-nums">
+              <!-- Muted grey on the active line's tint is 4.46:1, under WCAG AA's 4.5:1. -->
+              <span
+                class="w-16 shrink-0 text-right font-mono text-xs tabular-nums"
+                :class="index === activeIndex ? 'text-toned' : 'text-muted'"
+              >
                 {{ formatDuration(segment.startMs / 1000) }}
               </span>
               <span>{{ segment.text }}</span>
