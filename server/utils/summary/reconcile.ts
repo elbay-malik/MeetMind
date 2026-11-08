@@ -438,6 +438,13 @@ export function attestChunk(model: WireSummary, segments: readonly TranscriptSeg
 /**
  * Join attested chunks, in chunk order, into the stored summary: duplicates
  * removed, items in time order and numbered without gaps.
+ *
+ * Two rules remove duplicates. The same item cited on the same line in the
+ * same words is one item, wherever it came from. And an item two neighbouring
+ * chunks each report from their side of the boundary between them is one item
+ * (see BOUNDARY_LINES): the fuller action item is kept, or the earlier when
+ * neither has more details. Works on chunk results as stored, so meetings
+ * extracted before the second rule finalize the same way.
  */
 export function mergeReconciled(chunks: readonly AttestedChunk[]): Reconciled & { summary: string } {
   let droppedDecisions = 0
@@ -454,9 +461,15 @@ export function mergeReconciled(chunks: readonly AttestedChunk[]): Reconciled & 
   const decisions: Decision[] = []
   const seenActions = new Set<string>()
   const actionItems: ActionItem[] = []
+  // Positions, in the lists above, of what the PREVIOUS chunk kept and no
+  // boundary pair has claimed yet: the only items the boundary rule may join
+  // a chunk's items to (see sameAcrossBoundary).
+  let previousDecisions: number[] = []
+  let previousActions: number[] = []
   for (const chunk of chunks) {
     droppedDecisions += chunk.droppedDecisions
     droppedActionItems += chunk.droppedActionItems
+    const currentDecisions: number[] = []
     for (const item of chunk.decisions) {
       const key = `${item.segmentIdx}:${normalise(item.decision)}`
       if (seenDecisions.has(key)) {
@@ -464,8 +477,16 @@ export function mergeReconciled(chunks: readonly AttestedChunk[]): Reconciled & 
         continue
       }
       seenDecisions.add(key)
-      decisions.push({ idx: 0, ...item })
+      const partner = takePartner<Omit<Decision, 'idx'>>(previousDecisions, decisions, item, d => d.decision, () => true)
+      if (partner !== null) {
+        // A decision has no field for either side to fill, so the earlier
+        // report is kept as it stands.
+        droppedDecisions++
+        continue
+      }
+      currentDecisions.push(decisions.push({ idx: 0, ...item }) - 1)
     }
+    const currentActions: number[] = []
     for (const item of chunk.actionItems) {
       const key = `${item.segmentIdx}:${normalise(item.task)}`
       if (seenActions.has(key)) {
@@ -473,8 +494,16 @@ export function mergeReconciled(chunks: readonly AttestedChunk[]): Reconciled & 
         continue
       }
       seenActions.add(key)
-      actionItems.push({ idx: 0, ...item })
+      const partner = takePartner<Omit<ActionItem, 'idx'>>(previousActions, actionItems, item, a => a.task, sameAssignee)
+      if (partner !== null) {
+        if (filledFields(item) > filledFields(actionItems[partner]!)) actionItems[partner] = { idx: 0, ...item }
+        droppedActionItems++
+        continue
+      }
+      currentActions.push(actionItems.push({ idx: 0, ...item }) - 1)
     }
+    previousDecisions = currentDecisions
+    previousActions = currentActions
   }
 
   const finalDecisions = renumber(decisions.sort(byTime))
@@ -504,6 +533,89 @@ export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Re
   const { summary: _summary, ...reconciled } = mergeReconciled([attestChunk(model, segments)])
   return reconciled
 }
+
+/**
+ * How far apart, in lines, two reports from neighbouring chunks may cite and
+ * still be one item spoken across the boundary between them.
+ *
+ * Each chunk is shown only its own lines (ADR-0006, chunk-local attestation),
+ * so an item proposed on a chunk's last line and settled on the next chunk's
+ * first ("Let me look into that first." / "So the action is: Tom checks
+ * whether...") is read in part by both, and each reports it from its side, in
+ * its own words. The same-line key above cannot join those: they cite
+ * different lines, and the wording differs too much for a similarity score to
+ * be trusted. Two lines either side is a proposal and its confirmation, not
+ * a stretch of discussion. Items cite only lines of their own chunk, so a pair
+ * from neighbouring chunks this close together is necessarily at the boundary;
+ * items within one chunk are never compared.
+ */
+export const BOUNDARY_LINES = 2
+
+/**
+ * Shortest word two boundary reports must share to be one item. Being next
+ * to each other is not enough on its own: two different things are sometimes
+ * agreed one line apart, and joining them loses one. Sharing a longer word
+ * ("paging", "directory") is what a restatement of the same task does and two
+ * unrelated tasks seldom do; short words ("the", "with", "team") are shared by
+ * almost anything. Counted in characters, so a script written without spaces,
+ * whose tokens are single characters (see tokenize), never meets it: those
+ * meetings keep the same-line rule alone, as before, rather than a guess.
+ */
+const BOUNDARY_SHARED_WORD_CHARS = 5
+
+const contentWords = (text: string): Set<string> =>
+  new Set(tokenize(normalise(text)).filter(word => [...word].length >= BOUNDARY_SHARED_WORD_CHARS))
+
+/**
+ * Whether `earlier`, kept from the previous chunk, and `later`, reported by
+ * the next one, are the same item spoken across the boundary between them: at
+ * most {@link BOUNDARY_LINES} apart, sharing a word of
+ * {@link BOUNDARY_SHARED_WORD_CHARS} characters or more, and allowed by
+ * `compatible` (for action items, no two different assignees).
+ */
+function sameAcrossBoundary<T extends { segmentIdx: number }>(
+  earlier: T,
+  later: T,
+  text: (item: T) => string,
+  compatible: (a: T, b: T) => boolean,
+): boolean {
+  if (Math.abs(later.segmentIdx - earlier.segmentIdx) > BOUNDARY_LINES) return false
+  if (!compatible(earlier, later)) return false
+  const words = contentWords(text(earlier))
+  for (const word of contentWords(text(later))) if (words.has(word)) return true
+  return false
+}
+
+/**
+ * The position in `kept` of the previous chunk's item that `item` restates
+ * across the boundary, the nearest by line when several do, or null. A
+ * position is taken out of `candidates` once used, so each item joins at most
+ * one other.
+ */
+function takePartner<T extends { segmentIdx: number }>(
+  candidates: number[],
+  kept: readonly T[],
+  item: T,
+  text: (item: T) => string,
+  compatible: (a: T, b: T) => boolean,
+): number | null {
+  const distance = (position: number) => Math.abs(kept[position]!.segmentIdx - item.segmentIdx)
+  let best = -1
+  for (const [i, position] of candidates.entries()) {
+    if (!sameAcrossBoundary(kept[position]!, item, text, compatible)) continue
+    if (best < 0 || distance(position) < distance(candidates[best]!)) best = i
+  }
+  if (best < 0) return null
+  return candidates.splice(best, 1)[0]!
+}
+
+/** Two assignees that can be the same person: the same name, or one not given. */
+const sameAssignee = (a: { assignee: string | null }, b: { assignee: string | null }): boolean =>
+  a.assignee === null || b.assignee === null || normalise(a.assignee) === normalise(b.assignee)
+
+/** How many of an action item's optional details are given; the fuller of a boundary pair is kept. */
+const filledFields = (item: { assignee: string | null, dueDateText: string | null }): number =>
+  Number(item.assignee !== null) + Number(item.dueDateText !== null)
 
 const byTime = (a: { startMs: number }, b: { startMs: number }) => a.startMs - b.startMs
 const renumber = <T extends { idx: number }>(items: T[]): T[] =>

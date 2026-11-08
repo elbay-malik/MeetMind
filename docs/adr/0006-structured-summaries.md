@@ -946,3 +946,45 @@ both chunks, in different words on neighbouring lines. Neither the prompt nor
 the merge's same-line check catches that, since each chunk sees only its own
 lines. Whether the new prompt finds the items it missed is unproven until the
 demo is extracted again.
+
+## Addendum, 2026-11-08: an item spoken across a chunk boundary is one item
+
+The live demo showed the case the addendum above left open. Tom's task to
+check whether the paging tool can sync with the directory was proposed on
+the last line of one chunk and assigned on the first line of the next. The
+first chunk reported it unassigned, as "Investigate syncing paging tool with
+directory"; the second reported it as Tom's, in other words. The two cite
+different lines, and their wording overlaps too little for a similarity
+score, so the same-line key kept both.
+
+`mergeReconciled` now has a second rule, limited to the boundary. A report
+from one chunk and a report from the chunk right after it are one item when:
+
+- they cite lines at most `BOUNDARY_LINES` (2) apart. Every item cites a line
+  of its own chunk, so a pair this close is necessarily at the boundary, and
+  items of one chunk are never compared;
+- they share a word of five characters or more, after `normalise`. Being next
+  to each other is not enough on its own, since two different things are
+  sometimes agreed one line apart;
+- for action items, the assignees are the same name or one is not given.
+
+The action item with more details (assignee, spoken due date) is kept, or
+the earlier one when neither has more; for decisions the earlier one is
+kept. The other counts in `droppedActionItems` or `droppedDecisions`. Each
+item joins at most one other, the nearest by line.
+
+Why this and not neighbouring lines in each request: showing each chunk a
+few read-only lines of its neighbours would cost tokens the fixed part of
+the prompt no longer has (about 910 of the 1,000 that
+`groq-token-budget.spec.ts` allows), and it would not join this case anyway.
+The first chunk would still cite its own last line and the second its own
+first line, so both would still report it.
+
+The rule reads chunk results as they are stored, with no new field, so
+meetings extracted before it finalize with the new rule applied. Transcripts
+in a script written without spaces have single-character tokens, never meet
+the shared-word test, and keep the same-line rule alone.
+
+Not changed: an item reported twice within one chunk, from its proposal and
+again from its confirmation, is still stored twice; the prompt asks the
+model to report it once.

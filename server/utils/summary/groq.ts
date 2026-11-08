@@ -122,9 +122,11 @@ const INSTRUCTIONS = [
   'Quote the line that assigns it.',
   '',
   // Merging (mergeReconciled in reconcile.ts) drops a repeat only when it
-  // cites the same line in the same words, so an item reported from its
-  // proposal and again from its confirmation is stored twice. Asking for the
-  // line where it was settled gives one, cited at the moment that counts.
+  // cites the same line in the same words, or when two neighbouring chunks
+  // each report it from their side of the boundary between them. Within a
+  // chunk, an item reported from its proposal and again from its
+  // confirmation is stored twice. Asking for the line where it was settled
+  // gives one, cited at the moment that counts.
   'Report each decision and action item once. When it is proposed and then confirmed or',
   'restated, quote the line where it was agreed or assigned.',
   '',
