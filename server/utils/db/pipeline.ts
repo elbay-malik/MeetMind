@@ -229,7 +229,10 @@ export interface PipelineRepository {
 export interface SweepOptions {
   /** The current embedding model, since an index belongs to one. */
   model: string
-  /** The public demo, which nothing moves. Null when no meeting is the demo. */
+  /**
+   * The public demo, which is chosen only for an extraction step ({@link sweepCanExtract}), as
+   * only an operator's `POST .../resummarize` starts one on it. Null when no meeting is the demo.
+   */
   excludeId: string | null
   /** The one error on an index's run that ends by itself, once its time has passed: the daily limit. */
   limitError: string
@@ -279,16 +282,14 @@ export function busyProviders(slots: Partial<Record<SlotProvider, SlotState>>, n
  */
 export function sweepCanMove(facts: SweepFacts, { model, limitError, busy, now }: Pick<SweepOptions, 'model' | 'limitError'> & { busy: readonly SlotProvider[], now: number }): boolean {
   const { status, failedStage, runs } = facts
-  const waiting = (run: SweepFacts['runs'][PipelineStage]) =>
-    (run?.stepLeaseUntil != null && run.stepLeaseUntil.getTime() > now) || (run?.retryAt != null && run.retryAt.getTime() > now)
 
   if (status === 'uploaded') return !busy.includes('groq-whisper')
   if (status === 'transcribing') {
-    if (waiting(runs.transcription)) return false
+    if (waiting(runs.transcription, now)) return false
     return (runs.transcription?.cursor as { reply?: unknown } | undefined)?.reply != null || !busy.includes('groq-whisper')
   }
   if (status === 'summarizing' || status === 'indexing') {
-    if (!waiting(runs.summarization) && (!facts.unfinishedChunk || !busy.includes('groq-chat'))) return true
+    if (sweepCanExtract(facts, { busy, now })) return true
   }
   else if (status !== 'ready' && !(status === 'failed' && failedStage === 'summarization')) {
     return false
@@ -297,12 +298,29 @@ export function sweepCanMove(facts: SweepFacts, { model, limitError, busy, now }
   if (busy.includes('workers-ai-embed')) return false
   if (facts.marker?.complete || (facts.marker && facts.marker.model !== model)) return false
   const index = runs.search_index
-  if (waiting(index)) return false
+  if (waiting(index, now)) return false
   if (index?.lastError != null && (index.lastError !== limitError || index.retryAt == null)) return false
   const pass = (index?.cursor as { pass?: { model?: string } } | undefined)?.pass
   if (pass?.model != null && pass.model !== model) return false
   if (facts.hasOtherModelWindows) return false
   return facts.hasLines || facts.hasWindows
+}
+
+/** Whether a step lease of this run is live, or it is parked until later. */
+function waiting(run: SweepFacts['runs'][PipelineStage], now: number): boolean {
+  return (run?.stepLeaseUntil != null && run.stepLeaseUntil.getTime() > now) || (run?.retryAt != null && run.retryAt.getTime() > now)
+}
+
+/**
+ * Whether an extraction step of this meeting can be taken now, with nobody watching: the
+ * extraction part of {@link sweepCanMove}, and all that is asked of the public demo. A
+ * deliberate mirror of `public.sweep_can_extract`, and of `unattendedStep` with
+ * `only: 'extraction'`. A failed extraction is not retried, as everywhere unattended.
+ */
+export function sweepCanExtract(facts: Pick<SweepFacts, 'status' | 'runs' | 'unfinishedChunk'>, { busy, now }: { busy: readonly SlotProvider[], now: number }): boolean {
+  if (facts.status !== 'summarizing' && facts.status !== 'indexing') return false
+  // Planning and finalizing ask no provider. Only a chunk does.
+  return !waiting(facts.runs.summarization, now) && (!facts.unfinishedChunk || !busy.includes('groq-chat'))
 }
 
 /** Whether `row` comes after the meeting the rotation last chose, by when it was created and then its id. */

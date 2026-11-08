@@ -80,14 +80,15 @@ export async function advancePipeline(meetingId: string, deps: PipelineDeps): Pr
 /**
  * One tick's step of one meeting (ADR-0012's step 11 addendum): the same step `/advance` takes,
  * from the same read, chosen by {@link unattendedStep}. Nobody is waiting to be told where
- * that leaves it, so the second read is not made. Null when no step can be taken.
+ * that leaves it, so the second read is not made. Null when no step can be taken, or none
+ * of the kind `only` names: see {@link unattendedStep}.
  */
-export async function advanceUnattended(meetingId: string, deps: PipelineDeps, busy: readonly SlotProvider[]): Promise<{ step: PipelineStep, outcome: string } | null> {
+export async function advanceUnattended(meetingId: string, deps: PipelineDeps, busy: readonly SlotProvider[], only?: 'extraction'): Promise<{ step: PipelineStep, outcome: string } | null> {
   const now = deps.now ?? Date.now
   const { model } = deps.embedder
   const snapshot = await readPipeline(meetingId, model, deps)
   if (!snapshot) return null
-  const step = unattendedStep(snapshot, { model, now: now(), busy })
+  const step = unattendedStep(snapshot, { model, now: now(), busy, only })
   if (!step) return null
   return { step, outcome: await takeStep(step, meetingId, deps) }
 }

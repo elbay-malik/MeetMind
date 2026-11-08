@@ -18,6 +18,7 @@ import {
   assertValidPlan,
   busyProviders,
   parseStoredResult,
+  sweepCanExtract,
   sweepCanMove,
   SWEEP_POOL,
   type PipelineRepository,
@@ -463,10 +464,10 @@ export function createLocalPipelineRepository(options: { dataDir: string }): Pip
         const rotated = [...inOrder.filter(m => afterInRotation(m, lastChosen)), ...inOrder.filter(m => !afterInRotation(m, lastChosen))]
 
         for (const meeting of rotated) {
-          if (excludeId !== null && meeting.id.toLowerCase() === excludeId.toLowerCase()) continue
+          const demo = excludeId !== null && meeting.id.toLowerCase() === excludeId.toLowerCase()
           // In the meeting's own queue, as a read can otherwise land inside a write of its ledger.
           const facts = await serialize(meeting.id, () => factsOf(s, meeting))
-          if (!sweepCanMove(facts, { model, limitError, busy, now })) continue
+          if (!(demo ? sweepCanExtract(facts, { busy, now }) : sweepCanMove(facts, { model, limitError, busy, now }))) continue
           await s.setItem<LocalSweepState>(SWEEP_STATE_KEY, { lastTickAt: now, createdAt: meeting.createdAt, id: meeting.id })
           return { meetingId: meeting.id, busy }
         }

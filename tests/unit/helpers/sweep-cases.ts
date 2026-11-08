@@ -136,6 +136,27 @@ export const SWEEP_CASES: SweepCase[] = [
   { name: 'ready, a complete marker that no longer adds up', meeting: { status: 'ready', marker: { model: MODEL, complete: true, windowCount: 3 }, windows: { count: 1, model: MODEL } }, picks: false, step: 'indexing' },
 ]
 
+/**
+ * The public demo, which is chosen only for an extraction step: what an operator's
+ * `POST .../resummarize` leaves it in (ADR-0011's resummarize addendum). Its transcript and
+ * its index are not moved, however ready they are, and a failed extraction is not retried.
+ * `step` is what `unattendedStep` with `only: 'extraction'` says of it.
+ */
+export const DEMO_SWEEP_CASES: SweepCase[] = [
+  { name: 'uploaded', meeting: { status: 'uploaded' }, picks: false, step: null },
+  { name: 'transcribing, its park over', meeting: { status: 'transcribing', runs: { transcription: LONG_PAST } }, picks: false, step: null },
+  { name: 'summarizing, with no plan yet', meeting: { status: 'summarizing' }, picks: true, step: 'extraction' },
+  { name: 'indexing, a chunk left, the chat slot free', meeting: { status: 'indexing', chunks: SOME }, picks: true, step: 'extraction' },
+  { name: 'indexing, with a chunk live', meeting: { status: 'indexing', chunks: SOME, runs: { summarization: LIVE } }, picks: false, step: null },
+  { name: 'indexing, a chunk parked and the index free', meeting: { status: 'indexing', chunks: SOME, runs: { summarization: PARKED } }, picks: false, step: null },
+  { name: 'indexing, the chat slot taken', meeting: { status: 'indexing', chunks: SOME }, slots: CHAT_SLOT_TAKEN, picks: false, step: null },
+  { name: 'indexing, planning with Groq blocked', meeting: { status: 'indexing' }, slots: CHAT_BLOCKED, picks: true, step: 'extraction' },
+  { name: 'indexing, every chunk done and the index free: the summary is written', meeting: { status: 'indexing', chunks: ALL }, picks: true, step: 'extraction' },
+  { name: 'indexing, every chunk done with both providers blocked', meeting: { status: 'indexing', chunks: ALL }, slots: { ...CHAT_BLOCKED, ...EMBED_BLOCKED }, picks: true, step: 'extraction' },
+  { name: 'failed at extraction, cooled down, the index not started', meeting: { status: 'failed', failedStage: 'summarization', errorMessage: 'it broke', ...COOLED }, picks: false, step: null },
+  { name: 'ready, the index not started', meeting: { status: 'ready' }, picks: false, step: null },
+]
+
 /** What a driver under test has to do for these cases. */
 export interface SweepDriver {
   pipeline: Pick<PipelineRepository, 'nextForSweep' | 'nextExpired'>
@@ -164,7 +185,19 @@ export function describeSweepSelection(name: string, driver: () => SweepDriver) 
       expect(unattendedStep(await snapshot(id), { model: MODEL, now: Date.now(), busy })).toBe(sweepCase.step)
     })
 
-    it('never picks the public demo, however ready it is to move', async () => {
+    it.each(DEMO_SWEEP_CASES.map(c => [c.name, c] as const))('the public demo, %s', async (_name, sweepCase) => {
+      const { pipeline, seed, seedSlots, snapshot } = driver()
+      const demo = randomUUID()
+      await seed(demo, sweepCase.meeting)
+      await seedSlots(sweepCase.slots ?? {})
+
+      // Written as it may be configured, in capitals.
+      const { meetingId, busy } = await pipeline.nextForSweep(options(demo.toUpperCase()))
+      expect(meetingId).toBe(sweepCase.picks ? demo : null)
+      expect(unattendedStep(await snapshot(demo), { model: MODEL, now: Date.now(), busy, only: 'extraction' })).toBe(sweepCase.step)
+    })
+
+    it('never picks the public demo for its transcript or its index, however ready it is to move', async () => {
       const { pipeline, seed } = driver()
       const demo = randomUUID()
       await seed(demo, { status: 'uploaded' })

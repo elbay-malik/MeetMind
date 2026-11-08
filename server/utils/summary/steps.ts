@@ -4,6 +4,7 @@ import type { MeetingRepository } from '../db/meetings'
 import type { ClaimOptions, PipelineRepository, PipelineRun, ReleaseOutcome, StepClaim, SummaryChunk } from '../db/pipeline'
 import type { SummaryRepository } from '../db/summaries'
 import type { TranscriptRepository } from '../db/transcripts'
+import { readyWindowCount, type TranscriptIndexRepository } from '../db/windows'
 import { CHUNK_BUDGET_TOKENS } from './groq'
 import { planChunks } from './plan'
 import { mergeReconciled } from './reconcile'
@@ -166,6 +167,45 @@ export async function advanceExtraction(meetingId: string, deps: ExtractionDeps)
   return steps.next({ status: 'indexing' }, run)
 }
 
+export interface RestartDeps extends ExtractionDeps {
+  index: Pick<TranscriptIndexRepository, 'readState'>
+  /** The current embedding model, which the finished index has to be of. */
+  model: string
+}
+
+/** Why a meeting cannot have its summary made again, as `POST .../resummarize` answers. */
+export const RESTART_REFUSALS = {
+  notFinished: (status: MeetingStatus) =>
+    `Meeting is ${status}; only a ready meeting, or one whose summary failed, can have its summary made again`,
+  tooLong: 'This transcript is over the extraction limit, so a new summary would be refused the same way',
+  noIndex: 'The meeting\'s search index is not complete for the current model, so it is not finished',
+  moved: 'The meeting changed while this was decided, or a summary step is running; try again shortly',
+} as const
+
+/**
+ * Make a finished meeting's summary again from its stored transcript (ADR-0011's
+ * resummarize addendum): the operator's `POST .../resummarize`. Only a meeting that is
+ * finished in every other way -- `ready`, or `failed` at extraction, with a complete
+ * index of the current model -- is moved, and only by one claim fenced on the row this
+ * checked, which starts a new summarization run and moves the meeting to `indexing`.
+ * The planning step is taken here too, since it makes no provider call. From there it is
+ * an ordinary extraction: each chunk one step of the page's `/advance` or the cron
+ * sweeper, and the old summary stays stored until `finalizeSummary` replaces it, with
+ * `ready`, in one write. The transcript, the index and the audio are not touched.
+ */
+export async function restartExtraction(meetingId: string, deps: RestartDeps): Promise<ExtractionOutcome> {
+  const meeting = await deps.meetings.get(meetingId)
+  if (!meeting) return { kind: 'refused', statusCode: 404, message: 'Meeting not found' }
+  const finished = meeting.status === 'ready' || (meeting.status === 'failed' && meeting.failedStage === 'summarization')
+  if (!finished) return { kind: 'refused', statusCode: 409, message: RESTART_REFUSALS.notFinished(meeting.status) }
+  if (refusedAsTooLong(meeting)) return { kind: 'refused', statusCode: 409, message: RESTART_REFUSALS.tooLong }
+  if (readyWindowCount(await deps.index.readState(meetingId, deps.model), deps.model) === null) {
+    return { kind: 'refused', statusCode: 409, message: RESTART_REFUSALS.noIndex }
+  }
+  const restarted = await stepsFor(meetingId, deps, deps.now ?? Date.now).restart(meeting)
+  return restarted ?? { kind: 'refused', statusCode: 409, message: RESTART_REFUSALS.moved }
+}
+
 /** The moment a failed run may be retried: the cooldown, or the provider's own block if longer. */
 export function cooldownEnds(meeting: Meeting, run: PipelineRun | undefined): number {
   return Math.max(Date.parse(meeting.updatedAt) + RETRY_COOLDOWN_MS, run?.retryAt?.getTime() ?? 0)
@@ -270,6 +310,26 @@ function stepsFor(meetingId: string, deps: ExtractionDeps, now: () => number) {
   async function plan(options: ClaimOptions): Promise<ExtractionOutcome> {
     const claimed = await claim(options)
     if (!claimed) return snapshot()
+    return planUnder(claimed)
+  }
+
+  /**
+   * Start extraction over from a finished meeting, under one claim fenced on the row as it was
+   * read, so the checks made on that read still hold when it moves. Null when the claim is
+   * refused: the row changed since, or a step of the stage is in flight.
+   */
+  async function restart(meeting: Meeting): Promise<ExtractionOutcome | null> {
+    const claimed = await claim({
+      status: meeting.status,
+      moveTo: 'indexing',
+      newRun: true,
+      expectedUpdatedAt: meeting.updatedAt,
+      leaseMs: SHORT_STEP_LEASE_MS,
+    })
+    return claimed ? planUnder(claimed) : null
+  }
+
+  async function planUnder(claimed: StepClaim): Promise<ExtractionOutcome> {
     const exhausted = overTried(claimed, 'Planning the extraction')
     if (exhausted) return exhausted
     try {
@@ -396,5 +456,5 @@ function stepsFor(meetingId: string, deps: ExtractionDeps, now: () => number) {
     return { kind: 'done', meeting, summary: stored }
   }
 
-  return { next, plan, progress }
+  return { next, plan, progress, restart }
 }

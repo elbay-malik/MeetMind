@@ -1,6 +1,6 @@
 # ADR-0015: Visitors get the demo meeting, and uploading takes an invite code
 
-- **Status:** Accepted, amended by [ADR-0016](0016-real-services-or-nothing.md), [ADR-0019](0019-demo-question-cap.md) and [ADR-0020](0020-daily-limits.md)
+- **Status:** Accepted, amended by [ADR-0016](0016-real-services-or-nothing.md), [ADR-0019](0019-demo-question-cap.md), [ADR-0020](0020-daily-limits.md) and [ADR-0011](0011-admin-meeting-delete.md)'s resummarize addendum
 - **Date:** 2026-11-02
 - **Supersedes:** Nothing whole. Amends ADR-0010 (open registration is no longer what is left for rate limiting to cover), ADR-0012 (a question takes its request slot before it is embedded) and ADR-0013 (registration is closed, and its decision 5's demo meeting can now only be read and asked).
 
@@ -147,6 +147,7 @@ health check also answers 503 when [ADR-0016](0016-real-services-or-nothing.md) 
 | `POST /api/meetings/:id/advance` | Meeting id, whatever the step it takes needs, a claim per step. Never replaces an index holding another model's or transcript's work, and never repairs a `ready` meeting with no summary | Whatever its one step spends: Whisper, Groq or Workers AI quota, or nothing | **Refused, 403** |
 | `POST /api/meetings/:id/ask` | Meeting id, a finished transcript, a complete index, a 4 KB body, and a daily count per meeting ([ADR-0020](0020-daily-limits.md)) | Workers AI and Groq quota, and the shared Groq slot. Nothing about the meeting but its count | **Open, on purpose**, and on the demo within its own daily count and not while an extraction is pending ([ADR-0019](0019-demo-question-cap.md)) |
 | `DELETE /api/meetings/:id` | `NUXT_ADMIN_TOKEN` (ADR-0011) | Removes everything stored for the meeting | Same. This is how an operator removes it |
+| `POST /api/meetings/:id/resummarize` | `NUXT_ADMIN_TOKEN` (ADR-0011's resummarize addendum), first, then a finished meeting with a complete index, and one fenced claim | The chunk ledger and the row. The first step plans, with no provider call, and Groq quota is spent by the steps after it. The summary is replaced only at the end | **Open, on purpose.** The token admits the caller, and the cron sweeper finishes the extraction, as no page drives the demo |
 
 ## Creating the demo meeting
 
@@ -195,7 +196,9 @@ fetches a copy while the object still exists. This has not yet been run against 
 alternative is to create a new demo and change the id. The storage budget's estimate stops counting
 the object after `NUXT_R2_RETENTION_DAYS`, which for one recording is small enough to ignore.
 
-To repair or replace it, clear the variable with `wrangler secret delete NUXT_PUBLIC_DEMO_MEETING_ID`,
+To make its summary again, with the variable left set, use the admin `POST .../resummarize`
+(ADR-0011's resummarize addendum): the cron sweeper then finishes it. To repair or replace it
+otherwise, clear the variable with `wrangler secret delete NUXT_PUBLIC_DEMO_MEETING_ID`,
 finish the work and set it again. A change of embedding model needs this, since questions are
 refused until the index is rebuilt. To remove it, use the admin delete (ADR-0011, refused for 30
 minutes after registration), and clear the variable, or the home page goes on linking to a 404.
@@ -233,7 +236,9 @@ Honest limits, all accepted for a demo:
   page can read the field, and there is no CSP yet (SEC-18).
 - **A demo that is not finished stays that way.** Its pipeline page says so and sends nothing:
   no `POST .../advance`, no lock and no timer, and it has no button to press (ADR-0012's step 10
-  addendum). A demo left in that state is the operator's to fix. `GET .../pipeline` agrees: there
+  addendum). A demo left in that state is the operator's to fix. The one exception is an extraction
+  under way, which the cron sweeper finishes, since `POST .../resummarize` starts one (ADR-0011's
+  resummarize addendum). `GET .../pipeline` agrees: there
   it answers `wait` with no time, not `continue` (ADR-0012's step 9 addendum).
 
 ## Alternatives considered
