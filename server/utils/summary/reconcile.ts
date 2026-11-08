@@ -443,8 +443,9 @@ export function attestChunk(model: WireSummary, segments: readonly TranscriptSeg
  * same words is one item, wherever it came from. And an item two neighbouring
  * chunks each report from their side of the boundary between them is one item
  * (see BOUNDARY_LINES): the fuller action item is kept, or the earlier when
- * neither has more details. Works on chunk results as stored, so meetings
- * extracted before the second rule finalize the same way.
+ * neither has more details, with a detail only the other gives filled in.
+ * Works on chunk results as stored, so meetings extracted before the second
+ * rule finalize the same way.
  */
 export function mergeReconciled(chunks: readonly AttestedChunk[]): Reconciled & { summary: string } {
   let droppedDecisions = 0
@@ -496,7 +497,7 @@ export function mergeReconciled(chunks: readonly AttestedChunk[]): Reconciled & 
       seenActions.add(key)
       const partner = takePartner<Omit<ActionItem, 'idx'>>(previousActions, actionItems, item, a => a.task, sameAssignee)
       if (partner !== null) {
-        if (filledFields(item) > filledFields(actionItems[partner]!)) actionItems[partner] = { idx: 0, ...item }
+        actionItems[partner] = joinActions(actionItems[partner]!, item)
         droppedActionItems++
         continue
       }
@@ -552,26 +553,59 @@ export function reconcile(model: WireSummary, segments: TranscriptSegment[]): Re
 export const BOUNDARY_LINES = 2
 
 /**
- * Shortest word two boundary reports must share to be one item. Being next
- * to each other is not enough on its own: two different things are sometimes
- * agreed one line apart, and joining them loses one. Sharing a longer word
- * ("paging", "directory") is what a restatement of the same task does and two
- * unrelated tasks seldom do; short words ("the", "with", "team") are shared by
- * almost anything. Counted in characters, so a script written without spaces,
- * whose tokens are single characters (see tokenize), never meets it: those
- * meetings keep the same-line rule alone, as before, rather than a guess.
+ * How two boundary reports must overlap in words to be one item. Being next to
+ * each other is not enough on its own: two different things are sometimes
+ * agreed one line apart, and joining them loses one. Nor is one shared word:
+ * reports of different items open with the same verbs ("Agreed to ship the
+ * release on Friday" / "Agreed to freeze the public API until March", "Update
+ * the onboarding guide" / "Update the billing service client"), and decisions
+ * have no assignee to tell them apart. So the pair must share at least
+ * {@link BOUNDARY_SHARED_WORDS} content words, and those must be at least
+ * {@link BOUNDARY_SHARED_SHARE} of the shorter report's content words: what a
+ * restatement of the same task does ("paging", "tool", "directory"), and two
+ * different tasks seldom do.
+ *
+ * A content word is a token of {@link BOUNDARY_WORD_CHARS} characters or
+ * more that is not in {@link BOUNDARY_COMMON_WORDS}. Counted in characters, so
+ * a script written without spaces, whose tokens are single characters (see
+ * tokenize), never has one: those meetings keep the same-line rule alone, as
+ * before, rather than a guess.
  */
-const BOUNDARY_SHARED_WORD_CHARS = 5
+const BOUNDARY_WORD_CHARS = 4
+const BOUNDARY_SHARED_WORDS = 2
+const BOUNDARY_SHARED_SHARE = 0.5
+
+/**
+ * Words that say nothing about which item a report is: function words long
+ * enough to pass {@link BOUNDARY_WORD_CHARS}, and the verbs and phrases
+ * decisions and action items are usually reported with. Lowercase, as after
+ * `normalise`.
+ */
+const BOUNDARY_COMMON_WORDS = new Set([
+  // Function words.
+  'about', 'above', 'after', 'again', 'also', 'been', 'before', 'being', 'both', 'could', 'does', 'doing',
+  'done', 'each', 'even', 'every', 'from', 'have', 'having', 'here', 'into', 'just', 'like', 'more', 'most',
+  'much', 'must', 'once', 'only', 'onto', 'other', 'over', 'same', 'shall', 'should', 'some', 'such', 'than',
+  'that', 'their', 'them', 'then', 'there', 'these', 'they', 'this', 'those', 'through', 'under', 'until',
+  'upon', 'very', 'want', 'wants', 'well', 'were', 'what', 'when', 'where', 'whether', 'which', 'while',
+  'will', 'with', 'within', 'without', 'would', 'your',
+  // How decisions and action items are reported.
+  'agree', 'agreed', 'agrees', 'assign', 'assigned', 'back', 'check', 'checks', 'confirm', 'confirmed',
+  'confirms', 'decide', 'decided', 'decides', 'decision', 'follow', 'follows', 'going', 'investigate',
+  'investigates', 'look', 'looks', 'make', 'makes', 'need', 'needs', 'next', 'report', 'reports', 'review',
+  'reviews', 'sure', 'take', 'takes', 'task', 'team', 'update', 'updates', 'week',
+])
 
 const contentWords = (text: string): Set<string> =>
-  new Set(tokenize(normalise(text)).filter(word => [...word].length >= BOUNDARY_SHARED_WORD_CHARS))
+  new Set(tokenize(normalise(text)).filter(word =>
+    [...word].length >= BOUNDARY_WORD_CHARS && !BOUNDARY_COMMON_WORDS.has(word)))
 
 /**
  * Whether `earlier`, kept from the previous chunk, and `later`, reported by
  * the next one, are the same item spoken across the boundary between them: at
- * most {@link BOUNDARY_LINES} apart, sharing a word of
- * {@link BOUNDARY_SHARED_WORD_CHARS} characters or more, and allowed by
- * `compatible` (for action items, no two different assignees).
+ * most {@link BOUNDARY_LINES} apart, overlapping in content words as
+ * {@link BOUNDARY_SHARED_WORDS} describes, and allowed by `compatible` (for
+ * action items, no two different assignees).
  */
 function sameAcrossBoundary<T extends { segmentIdx: number }>(
   earlier: T,
@@ -581,9 +615,11 @@ function sameAcrossBoundary<T extends { segmentIdx: number }>(
 ): boolean {
   if (Math.abs(later.segmentIdx - earlier.segmentIdx) > BOUNDARY_LINES) return false
   if (!compatible(earlier, later)) return false
-  const words = contentWords(text(earlier))
-  for (const word of contentWords(text(later))) if (words.has(word)) return true
-  return false
+  const a = contentWords(text(earlier))
+  const b = contentWords(text(later))
+  let shared = 0
+  for (const word of b) if (a.has(word)) shared++
+  return shared >= BOUNDARY_SHARED_WORDS && shared >= BOUNDARY_SHARED_SHARE * Math.min(a.size, b.size)
 }
 
 /**
@@ -612,6 +648,21 @@ function takePartner<T extends { segmentIdx: number }>(
 /** Two assignees that can be the same person: the same name, or one not given. */
 const sameAssignee = (a: { assignee: string | null }, b: { assignee: string | null }): boolean =>
   a.assignee === null || b.assignee === null || normalise(a.assignee) === normalise(b.assignee)
+
+/**
+ * One action item from a boundary pair: the report with more details kept,
+ * or the earlier when neither has more, with a detail only the other gives
+ * (an assignee, a spoken due date) filled in from it rather than lost.
+ */
+function joinActions(earlier: ActionItem, later: Omit<ActionItem, 'idx'>): ActionItem {
+  const [fuller, other] = filledFields(later) > filledFields(earlier) ? [later, earlier] : [earlier, later]
+  return {
+    ...fuller,
+    idx: 0,
+    assignee: fuller.assignee ?? other.assignee,
+    dueDateText: fuller.dueDateText ?? other.dueDateText,
+  }
+}
 
 /** How many of an action item's optional details are given; the fuller of a boundary pair is kept. */
 const filledFields = (item: { assignee: string | null, dueDateText: string | null }): number =>

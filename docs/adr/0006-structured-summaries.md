@@ -963,14 +963,19 @@ from one chunk and a report from the chunk right after it are one item when:
 - they cite lines at most `BOUNDARY_LINES` (2) apart. Every item cites a line
   of its own chunk, so a pair this close is necessarily at the boundary, and
   items of one chunk are never compared;
-- they share a word of five characters or more, after `normalise`. Being next
-  to each other is not enough on its own, since two different things are
-  sometimes agreed one line apart;
+- they share at least two content words, after `normalise`, and those are
+  at least half of the shorter report's content words. A content word has
+  four characters or more and is not a function word or one of the verbs
+  items are reported with ("agreed", "decided", "update", "check" and the
+  like). Being next to each other is not enough on its own, since two
+  different things are sometimes agreed one line apart, and neither is one
+  shared word: "Agreed to ship the release on Friday" and "Agreed to freeze
+  the public API until March" are two decisions;
 - for action items, the assignees are the same name or one is not given.
 
 The action item with more details (assignee, spoken due date) is kept, or
-the earlier one when neither has more; for decisions the earlier one is
-kept. The other counts in `droppedActionItems` or `droppedDecisions`. Each
+the earlier one when neither has more, and a detail only the other gives is
+filled in from it; for decisions the earlier one is kept. The other counts in `droppedActionItems` or `droppedDecisions`. Each
 item joins at most one other, the nearest by line.
 
 Why this and not neighbouring lines in each request: showing each chunk a
@@ -982,8 +987,8 @@ first line, so both would still report it.
 
 The rule reads chunk results as they are stored, with no new field, so
 meetings extracted before it finalize with the new rule applied. Transcripts
-in a script written without spaces have single-character tokens, never meet
-the shared-word test, and keep the same-line rule alone.
+in a script written without spaces have single-character tokens, have no
+content words, and keep the same-line rule alone.
 
 Not changed: an item reported twice within one chunk, from its proposal and
 again from its confirmation, is still stored twice; the prompt asks the

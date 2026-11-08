@@ -227,10 +227,10 @@ describe('mergeReconciled', () => {
     })
 
     it('treats a decision the same way, keeping the earlier report', () => {
-      const before = said(123, 'Database connection pool limits are reviewed before release')
+      const before = said(123, 'Connection pool limits are reviewed before each release')
       const merged = mergeReconciled([
         kept({ decisions: [before] }),
-        kept({ decisions: [said(124, 'Every connection pool change gets a second reviewer'), said(140, 'Keep the status page')] }),
+        kept({ decisions: [said(124, 'Every release gets a connection pool limit review'), said(140, 'Keep the status page')] }),
       ])
       expect(merged.decisions.map(d => d.segmentIdx)).toEqual([123, 140])
       expect(merged.decisions[0]).toEqual({ idx: 0, ...before })
@@ -243,6 +243,54 @@ describe('mergeReconciled', () => {
         kept({ decisions: [said(124, 'Drop the cache layer')] }),
       ])
       expect(merged.decisions).toHaveLength(2)
+    })
+
+    // Reports of different items open with the same verbs, and one shared
+    // word of any length is not enough to join them.
+    it('keeps two different decisions that open with the same verb as two', () => {
+      const merged = mergeReconciled([
+        kept({ decisions: [said(99, 'Agreed to ship the release on Friday')] }),
+        kept({ decisions: [said(100, 'Agreed to freeze the public API until March')] }),
+      ])
+      expect(merged.decisions.map(d => d.decision)).toEqual([
+        'Agreed to ship the release on Friday',
+        'Agreed to freeze the public API until March',
+      ])
+      expect(merged.droppedDecisions).toBe(0)
+    })
+
+    it('keeps two different decisions that share one content word as two', () => {
+      const merged = mergeReconciled([
+        kept({ decisions: [said(99, 'Decided to postpone the release')] }),
+        kept({ decisions: [said(100, 'The release notes are written in German')] }),
+      ])
+      expect(merged.decisions).toHaveLength(2)
+    })
+
+    it('keeps two different tasks that open with the same verb as two, even with no assignee on one', () => {
+      const merged = mergeReconciled([
+        kept({ actionItems: [task(99, 'Tom', 'Update the onboarding guide')] }),
+        kept({ actionItems: [task(100, null, 'Update the billing service client')] }),
+      ])
+      expect(merged.actionItems.map(a => a.task)).toEqual(['Update the onboarding guide', 'Update the billing service client'])
+      expect(merged.droppedActionItems).toBe(0)
+    })
+
+    it('keeps two tasks that share a word but are mostly about different things as two', () => {
+      const merged = mergeReconciled([
+        kept({ actionItems: [task(99, null, 'Write the deployment checklist for the mobile release')] }),
+        kept({ actionItems: [task(100, null, 'Book the room for the release party with catering')] }),
+      ])
+      expect(merged.actionItems).toHaveLength(2)
+    })
+
+    it('keeps a due date only the later report gives when the earlier one is kept', () => {
+      const merged = mergeReconciled([
+        kept({ actionItems: [{ ...proposed, assignee: 'Tom' }] }),
+        kept({ actionItems: [{ ...assigned, assignee: null, dueDateText: 'by Friday' }] }),
+      ])
+      expect(merged.actionItems).toEqual([{ idx: 0, ...proposed, assignee: 'Tom', dueDateText: 'by Friday' }])
+      expect(merged.droppedActionItems).toBe(1)
     })
 
     // Chunk rows stored before this rule are plain AttestedChunk JSON, with
