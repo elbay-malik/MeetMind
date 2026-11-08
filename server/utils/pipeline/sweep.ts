@@ -55,9 +55,11 @@ export async function sweepOnce(deps: PipelineDeps, settings: SweepSettings): Pr
     excludeId: demoIdOf(demoMeetingId),
     limitError: DAILY_LIMIT_MESSAGE,
   })
-  // The database was told, and this is the one thing here not to take on trust.
-  if (meetingId !== null && !isDemoMeetingId(demoMeetingId, meetingId)) {
-    const taken = await advanceUnattended(meetingId, deps, busy)
+  if (meetingId !== null) {
+    // The database was told, and this is the one thing here not to take on trust: the demo
+    // has only an extraction step taken, the one an operator's `POST .../resummarize` starts.
+    const only = isDemoMeetingId(demoMeetingId, meetingId) ? 'extraction' : undefined
+    const taken = await advanceUnattended(meetingId, deps, busy, only)
     if (taken) return { kind: 'step', ...taken }
   }
   const idle: SweepOutcome = { kind: meetingId === null ? 'idle' : 'no-step' }

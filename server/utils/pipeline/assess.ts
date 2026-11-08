@@ -172,17 +172,21 @@ function firstStep(transcription: Turn, extraction: Turn, index: IndexTurn): Pip
  *
  * What stays is each step's own second attempt, since that is bounded and stored.
  * `sweepCanMove` in server/utils/db/pipeline.ts and `public.sweep_can_move` mirror this.
+ *
+ * With `only: 'extraction'`, the public demo's case (ADR-0011's resummarize addendum): its
+ * extraction and nothing else, neither its transcript nor its index. `sweepCanExtract` and
+ * `public.sweep_can_extract` mirror that.
  */
-export function unattendedStep(snapshot: PipelineSnapshot, { model, now, busy }: { model: string, now: number, busy: readonly SlotProvider[] }): PipelineStep | null {
+export function unattendedStep(snapshot: PipelineSnapshot, { model, now, busy, only }: { model: string, now: number, busy: readonly SlotProvider[], only?: 'extraction' }): PipelineStep | null {
   const { runs, chunks } = snapshot
   const transcription = transcriptionTurn(snapshot, now)
-  if (transcription.kind === 'run') {
+  if (transcription.kind === 'run' && !only) {
     const reply = (runOf(runs, 'transcription')?.cursor as { reply?: unknown } | undefined)?.reply
     return reply || !busy.includes('groq-whisper') ? 'transcription' : null
   }
   const extraction = extractionTurn(snapshot, now)
   if (extraction.kind === 'run' && (chunks.done >= chunks.total || !busy.includes('groq-chat'))) return 'extraction'
-  if (indexTurn(snapshot, model, now).kind === 'run' && !busy.includes('workers-ai-embed')) {
+  if (!only && indexTurn(snapshot, model, now).kind === 'run' && !busy.includes('workers-ai-embed')) {
     const lastError = runOf(runs, 'search_index')?.lastError
     if (!lastError || lastError === DAILY_LIMIT_MESSAGE) return 'indexing'
   }

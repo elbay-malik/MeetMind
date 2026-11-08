@@ -7,7 +7,7 @@ import { fixedSentence, PUBLIC_RULES, publicMessage, toPublicMeeting, withoutLas
 import type { PublicRule, PublicStage } from '../../server/utils/public-errors'
 import { AnswerSlotBusyError } from '../../server/utils/qa/answerer'
 import { DAILY_LIMIT_MESSAGE, EmbeddingInputTooLongError, dailyLimitReached } from '../../server/utils/qa/embedder'
-import { tooManyChunksMessage } from '../../server/utils/summary/steps'
+import { RESTART_REFUSALS, tooManyChunksMessage } from '../../server/utils/summary/steps'
 import { inspectStoredAudio } from '../../server/utils/verify-upload'
 
 /** What a real failure can hold: a database's code and constraint, an object's key, a provider's reply. */
@@ -57,6 +57,10 @@ const AUTHORED: Record<PublicStage, string[]> = {
     'The last extraction failed recently; wait 12s before retrying',
     'This meeting has no transcript to summarise yet',
     'Meeting is failed; it has no transcript ready to summarise',
+    RESTART_REFUSALS.notFinished('summarizing'),
+    RESTART_REFUSALS.tooLong,
+    RESTART_REFUSALS.noIndex,
+    RESTART_REFUSALS.moved,
   ],
   indexing: [
     'Meeting not found',

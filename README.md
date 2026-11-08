@@ -92,7 +92,7 @@ that can write, and what this does not do.
 | [0008](docs/adr/0008-cross-meeting-search.md) | Cross-meeting search: passages across meetings, not a synthesized answer; still no HNSW. Superseded by ADR-0013 |
 | [0009](docs/adr/0009-workers-measurement-spike.md) | Workers measurement spike before Phase 9: what the runtime actually does, measured rather than inferred |
 | [0010](docs/adr/0010-r2-cost-controls.md) | R2 cost controls: a lifecycle rule bounds growth, an application storage budget is the hard stop, per-request op metering rejected |
-| [0011](docs/adr/0011-admin-meeting-delete.md) | Deleting a meeting is admin-only, behind `NUXT_ADMIN_TOKEN`; refused while anything could still write its data |
+| [0011](docs/adr/0011-admin-meeting-delete.md) | Deleting a meeting is admin-only, behind `NUXT_ADMIN_TOKEN`; refused while anything could still write its data. Its addendum adds the admin route that makes a finished meeting's summary again, the demo's included |
 | [0012](docs/adr/0012-pipeline-orchestration.md) | Pipeline orchestration on the Workers free plan: one bounded step per request, driven by the open page with no click and one driving tab per browser, Postgres rate-limit slots, polling not SSE, and a cron that moves a closed tab's meeting very slowly |
 | [0013](docs/adr/0013-private-meeting-links.md) | A meeting is reached only through its unguessable link: no global list or cross-meeting search, \"Your meetings\" lives in this browser |
 | [0014](docs/adr/0014-workers-ai-embeddings.md) | Embeddings from Cloudflare Workers AI's bge-m3 at 1024 dimensions, replacing a provider whose terms require a paid plan in the EEA: measured batch limits, and a plain message at the daily limit |
@@ -396,6 +396,21 @@ changed and does not say any of this, so if it lists the name, answer no.
 afterwards is no repair, as wrangler refuses `wrangler secret put` while the latest version is not the
 deployed one. If no version after step 10 has the code you want, check out the last good commit and run
 `pnpm deploy:worker` rather than rolling back. A deploy should keep the secrets.
+
+**To make a finished meeting's summary again,** the demo's included and with
+`NUXT_PUBLIC_DEMO_MEETING_ID` left set, send the admin token:
+
+```bash
+curl -X POST -H "Authorization: Bearer $NUXT_ADMIN_TOKEN" https://<host>/api/meetings/<id>/resummarize
+```
+
+It answers 202 once the meeting is back in extraction with a new plan, and the cron finishes it, one
+chunk a tick. Its transcript, index and audio are not touched, and the old summary stays stored until
+the new one replaces it, though the meeting page shows no summary until then, and the demo's questions
+pause meanwhile. It answers 409 for a meeting that is not `ready` (or failed at extraction) with a
+complete index, and 404 with no token configured. The cron takes the demo's steps only once
+`20261108120000_sweep_demo_extraction.sql` is applied. See [ADR-0011](docs/adr/0011-admin-meeting-delete.md)'s
+resummarize addendum.
 
 **To stop the ticks,** set `"crons": []` in `wrangler.jsonc` and run `pnpm exec wrangler triggers deploy`,
 which changes the triggers and uploads no code, or remove the trigger in the dashboard. Do not use

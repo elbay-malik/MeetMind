@@ -1,6 +1,6 @@
 # ADR-0011: Deleting a meeting is an admin operation
 
-- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md) and [ADR-0017](0017-retention-purge.md)
+- **Status:** Accepted, amended by [ADR-0013](0013-private-meeting-links.md) and [ADR-0017](0017-retention-purge.md), and extended by its resummarize addendum (2026-11-08)
 - **Date:** 2026-10-25
 
 ## Context
@@ -132,3 +132,54 @@ Two things follow for the operator. A delete needs an id, which now comes from w
 reports the meeting or from the Supabase table, not from the API. And this route is now
 the only way to revoke a leaked link, since an id cannot be rotated. That is the same
 route with the same 30-minute refusal, used for a new reason.
+
+## Addendum (2026-11-08): making a finished meeting's summary again
+
+An operator sometimes needs a finished meeting's summary made again from the transcript it
+already has: after the extraction prompt improves, say, or when it failed at extraction. Until
+now the only way on the public demo was to unset `NUXT_PUBLIC_DEMO_MEETING_ID` (ADR-0015), which
+takes away its read-only guard, its question count and the home page's link while the work runs.
+So there is a second admin route:
+
+```bash
+curl -X POST -H "Authorization: Bearer $NUXT_ADMIN_TOKEN" https://<host>/api/meetings/<id>/resummarize
+```
+
+- **The same check as the delete,** `requireAdmin`, before the id is looked at: 404 with no token
+  configured, 401 with `WWW-Authenticate: Bearer` for a missing or wrong one, and a short one refused.
+- **Not refused on the demo.** Every other route that moves a pipeline is (ADR-0015), because there
+  holding the id proves nothing. Here the token is what admits the caller, so the demo is treated
+  like any meeting and the variable stays set.
+- **Only a finished meeting.** `ready`, or `failed` at extraction, with a finished transcript and a
+  complete index of the current model. Anything else is a 409 and nothing moves. A transcript that
+  was refused as too long is a 409 too, as planning it again would be refused the same way.
+- **One fenced claim.** `restartExtraction` in `server/utils/summary/steps.ts` claims the
+  summarization stage with the meeting's `status` and `updated_at` as it read them, starting a new
+  run and moving the meeting to `indexing` in the same write, as the existing repair of a `ready`
+  meeting with no summary row does. A row that moved since the read, or a step of the stage in
+  flight, gets a 409, and a second request finds `indexing` and gets one too. No migration was
+  needed for this: `claim_step` already takes a status, a new run and an expected `updated_at`.
+- **The planning step runs in the request,** as it calls no provider, and the answer is a 202 with
+  the plan's size, shaped like `POST .../summarize`'s. A recording with no speech is finished at
+  once, with a 200 and its empty summary.
+- **The rest is ordinary extraction.** Each chunk is one step of a page's `/advance`, or of the cron
+  sweeper. On the demo, where no page drives (ADR-0015), **the cron finishes it**: the sweeper now
+  chooses the demo, and only for an extraction step, through `sweep_can_extract` in
+  `20261108120000_sweep_demo_extraction.sql`. Its transcript and index are still never moved
+  unattended, and a failed extraction is not retried, as for any meeting (ADR-0012's step 11
+  addendum). That migration has to be applied before the demo can be finished this way. Without
+  it the demo stays `indexing` and nothing breaks, and another meeting is chosen as before.
+- **The old summary stays stored until the new one replaces it.** `finalize_summary` swaps the
+  summary, its decisions and its action items in the one transaction that moves the meeting to
+  `ready`. It is not served meanwhile: `GET .../summary` answers null for a meeting that is not
+  `ready`, as it always has, so the summary card is missing until the new one is in. On the
+  demo, its questions pause while it is summarizing too (ADR-0019).
+- **The transcript, the index and the audio are not touched,** so questions work again once it
+  is `ready`. `finalize_summary` moves `updated_at`, which the demo's edge cache keys on
+  (ADR-0015's decision 5), so the new summary is read under a new key and not served from the
+  old one.
+
+On the demo that is one tick for each chunk and one to write the summary, 5 minutes apart,
+taking turns with any other meeting that can move. Elsewhere a page can drive it faster. A
+failure leaves it `failed` at extraction, and the same request starts it over. This has been
+run against the local drivers and the unit and end-to-end tests, not yet on the deployed Worker.

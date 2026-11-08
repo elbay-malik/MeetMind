@@ -1491,6 +1491,57 @@ check "applying the sweeper's migration again keeps the rotation, and its postur
      from public.sweep_state"
 gone "$SW1"
 
+echo "checking the sweeper's extraction of the demo (ADR-0011's resummarize addendum) ..."
+DEMO_SWEEP_MIGRATION=supabase/migrations/20261108120000_sweep_demo_extraction.sql
+# The sweeper's own migration was applied again just above, which put its older choice back.
+psql -q < "$DEMO_SWEEP_MIGRATION"
+psql -q -c "delete from public.provider_slots; update public.sweep_state set last_created_at = null, last_meeting_id = null;"
+mk "$SW1" uploaded
+expect_pick "the demo's transcription is still left out" none "'$SW1'"
+gone "$SW1"
+mk "$SW1" ready
+lines "$SW1"
+expect_pick "and its index, however ready to start" none "'$SW1'"
+expect_pick "which any other meeting's is" "$SW1"
+gone "$SW1"
+mk "$SW1" failed "'summarization'" 3600
+lines "$SW1"
+expect_pick "a failed extraction of the demo is not retried, nor its index started" none "'$SW1'"
+gone "$SW1"
+mk "$SW1" indexing
+lines "$SW1"
+expect_pick "the demo's extraction, with no plan yet, is planned" "$SW1" "'$SW1'"
+psql -q -c "insert into public.pipeline_runs (meeting_id, stage) values ('$SW1', 'summarization');
+            insert into public.summary_chunks (meeting_id, chunk_no, run_id, seg_from, seg_to, est_tokens)
+              select '$SW1', 0, run_id, 0, 0, 1 from public.pipeline_runs where meeting_id = '$SW1' and stage = 'summarization';"
+expect_pick "and its chunk taken with the slot free" "$SW1" "'$SW1'"
+psql -q -c "select public.reserve_slot('groq-chat', 60000, 0);" >/dev/null
+expect_pick "but not with the slot taken, though its index could start" none "'$SW1'"
+psql -q -c "delete from public.provider_slots;
+            update public.pipeline_runs set step_token = gen_random_uuid(), step_lease_until = now() + interval '1 minute' where meeting_id = '$SW1';"
+expect_pick "nor with a step of it live" none "'$SW1'"
+psql -q -c "update public.pipeline_runs set step_token = null, step_lease_until = null, retry_at = now() + interval '1 minute' where meeting_id = '$SW1';"
+expect_pick "nor parked" none "'$SW1'"
+psql -q -c "update public.pipeline_runs set retry_at = null where meeting_id = '$SW1';
+            update public.summary_chunks set result = '{}' where meeting_id = '$SW1';
+            select public.note_rate_limit('groq-chat', 60000);" >/dev/null
+expect_pick "every chunk done, its summary is written with Groq blocked" "$SW1" "'$SW1'"
+psql -q -c "delete from public.provider_slots;"
+check "sweep_can_extract is executable by service_role and not by anon or authenticated, and pins its search_path" \
+  "select has_function_privilege('service_role', 'public.sweep_can_extract(uuid, text, text[], timestamptz)', 'execute')
+          and not has_function_privilege('anon', 'public.sweep_can_extract(uuid, text, text[], timestamptz)', 'execute')
+          and not has_function_privilege('authenticated', 'public.sweep_can_extract(uuid, text, text[], timestamptz)', 'execute')
+          and not has_function_privilege('anon', 'public.sweep_next_meeting(text, uuid, text)', 'execute')
+          and (select coalesce('search_path=public' = any(proconfig), false) from pg_proc where proname = 'sweep_can_extract')"
+psql -q < "$DEMO_SWEEP_MIGRATION"
+check "applying it again keeps the rotation, and its posture" \
+  "select last_meeting_id = '$SW1'
+          and has_function_privilege('service_role', 'public.sweep_next_meeting(text, uuid, text)', 'execute')
+          and not has_function_privilege('anon', 'public.sweep_can_extract(uuid, text, text[], timestamptz)', 'execute')
+     from public.sweep_state"
+expect_pick "and still takes the demo's extraction" "$SW1" "'$SW1'"
+gone "$SW1"
+
 echo "checking the retention purge's selection (ADR-0017) ..."
 PURGE_MIGRATION=supabase/migrations/20261103190000_retention_purge.sql
 DEMO_ID=dddddddd-dddd-4ddd-8ddd-dddddddddddd

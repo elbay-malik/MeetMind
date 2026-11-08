@@ -11,6 +11,7 @@ import { reportTick, sweepOnce, type SweepOutcome } from '../../server/utils/pip
 import { DAILY_LIMIT_MESSAGE, EmbeddingError } from '../../server/utils/qa/embedder'
 import { planWindows } from '../../server/utils/qa/windows'
 import { withoutLogs } from '../../server/utils/quiet-logs'
+import { restartExtraction } from '../../server/utils/summary/steps'
 import { SummarizationError } from '../../server/utils/summary/summarizer'
 import { TranscriptionError } from '../../server/utils/transcription/transcriber'
 import { longLine, pipelineHarness, scriptedProviders, segmentsOf, shortLine, tallied, type ScriptedProviders } from './helpers/pipeline'
@@ -55,11 +56,11 @@ const meetingOf = async (id: string) => (await repos().meetings.get(id))!
 const WORST_CASE_SUBREQUESTS = 23
 
 /** Tick until nothing can move, holding every tick to what one may spend. */
-async function sweepUntilIdle(deps: PipelineDeps, maxTicks = 300) {
+async function sweepUntilIdle(deps: PipelineDeps, maxTicks = 300, demoMeetingId: unknown = '') {
   const counted = tallied(deps)
   const outcomes: SweepOutcome[] = []
   for (let i = 0; i < maxTicks; i++) {
-    const outcome = await sweep(counted.deps)
+    const outcome = await sweep(counted.deps, demoMeetingId)
     const spent = counted.take()
     expect(spent.calls.filter(call => call === 'pipeline.nextForSweep')).toHaveLength(1)
     expect(spent.claims, 'more than one claim').toBeLessThanOrEqual(1)
@@ -218,13 +219,51 @@ describe('the public demo', () => {
   })
 
   it('is not moved even when the database answers with it anyway', async () => {
+    // Read, since only an extraction step may be taken of it and only its rows say whether
+    // there is one, and then left as it is.
     const providers = scriptedProviders(lines(2))
     const demo = await uploadedMeeting()
     const deps = depsWith(providers)
     const counted = tallied({ ...deps, pipeline: { ...deps.pipeline, nextForSweep: async () => ({ meetingId: demo, busy: [] }) } })
+    const before = await stored(demo)
     expect(await sweep(counted.deps, demo)).toEqual({ kind: 'no-step' })
-    expect(counted.take().calls).toEqual(['pipeline.nextForSweep'])
+    expect(counted.take().claims).toBe(0)
     expect(providers.calls).toEqual([])
+    expect(await stored(demo)).toEqual(before)
+  })
+
+  it('has the summary an operator asked for again written, and nothing else of it moved', async () => {
+    const providers = scriptedProviders(lines(3))
+    const demo = await uploadedMeeting()
+    const deps = depsWith(providers)
+    await sweepUntilIdle(deps)
+    const old = { summary: 'An earlier summary.', decisions: [], actionItems: [], provider: 'groq' as const }
+    await deps.summaries.replaceForMeeting(demo, old)
+    const finished = await meetingOf(demo)
+    const { transcript, windows } = await stored(demo) as { transcript: unknown, windows: unknown }
+    const audio = await deps.store.get(finished.audioKey)
+    const asked = providers.calls.length
+
+    const restarted = await restartExtraction(demo, { ...deps, model: 'model-a' })
+    expect(restarted).toMatchObject({ kind: 'progress', meeting: { status: 'indexing' }, progress: { done: 0, total: 3 } })
+    // The old summary is kept until the new one replaces it.
+    expect(await deps.summaries.getForMeeting(demo)).toEqual(old)
+
+    nextTick()
+    const outcomes = await sweepUntilIdle(deps, 300, demo)
+    expect(outcomes.map(o => o.kind === 'step' && o.step)).toEqual(['extraction', 'extraction', 'extraction', 'extraction'])
+    expect(providers.calls.slice(asked)).toEqual(['chunk', 'chunk', 'chunk'])
+
+    const after = await meetingOf(demo)
+    expect(after).toMatchObject({ status: 'ready', errorMessage: null, failedStage: null })
+    // What the demo's edge cache keys on, so the new summary is read under a new key.
+    expect(Date.parse(after.updatedAt)).toBeGreaterThan(Date.parse(finished.updatedAt))
+    const summary = await deps.summaries.getForMeeting(demo)
+    expect(summary).toMatchObject({ provider: 'stub' })
+    expect(summary!.summary).not.toBe(old.summary)
+    expect(await stored(demo)).toMatchObject({ transcript, windows })
+    expect(await deps.store.get(finished.audioKey)).toEqual(audio)
+    expect(readyWindowCount(await repos().index.readState(demo, 'model-a'), 'model-a')).not.toBeNull()
   })
 
   it('goes unnamed to the database when the setting is not an id, as that can be no meeting', async () => {

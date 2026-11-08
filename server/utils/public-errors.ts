@@ -85,6 +85,11 @@ export const PUBLIC_RULES: Record<PublicStage, readonly PublicRule[]> = {
     /^The last extraction failed recently; wait \d+s before retrying$/,
     'This meeting has no transcript to summarise yet',
     new RegExp(`^Meeting is ${STATUS}; it has no transcript ready to summarise$`),
+    // The operator's `POST .../resummarize`, as `RESTART_REFUSALS` in server/utils/summary/steps.ts words them.
+    new RegExp(`^Meeting is ${STATUS}; only a ready meeting, or one whose summary failed, can have its summary made again$`),
+    'This transcript is over the extraction limit, so a new summary would be refused the same way',
+    'The meeting\'s search index is not complete for the current model, so it is not finished',
+    'The meeting changed while this was decided, or a summary step is running; try again shortly',
   ],
   indexing: [
     MEETING_NOT_FOUND,
