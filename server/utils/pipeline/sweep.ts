@@ -37,9 +37,12 @@ export interface SweepSettings {
   purgeDays?: number | null
 }
 
-/** The configured demo as the database can be told it, or null when no meeting can be it. */
+/**
+ * The configured demo as the database can be told it, or null when no meeting can be it. In lower
+ * case, as `requireMeetingId` gives it, so the local drivers find it on any file system.
+ */
 function demoIdOf(configured: unknown): string | null {
-  const id = String(configured ?? '').trim()
+  const id = String(configured ?? '').trim().toLowerCase()
   return meetingIdSchema.safeParse(id).success ? id : null
 }
 
