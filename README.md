@@ -2,47 +2,221 @@
 
 **Meeting videos in. Searchable, timestamped knowledge out. No raw video ever leaves your browser.**
 
-MeetMind turns recorded meetings into timestamped transcripts, structured summaries
-(decisions and action items with assignees), and semantic Q&A over each meeting — while keeping
-the entire video on the user's machine. Audio is extracted and compressed **in the
-browser** with ffmpeg.wasm; only ~7-11 MB of 16 kHz mono Opus per meeting hour is ever
-uploaded. The whole stack runs on free tiers (target: 0 EUR/month).
+MeetMind turns a recorded meeting into a timestamped transcript, a summary of its decisions and
+action items, and questions answered from what was said. Every summary item and every answer cites
+the transcript line it comes from, and clicking the citation plays that moment. The video itself
+stays on the user's machine. The browser extracts the audio with ffmpeg.wasm and compresses it to
+16 kHz mono Opus, about 8.5 MB per meeting hour as measured, and only that audio is uploaded. Every
+service it runs on is on its free plan.
 
-> Status: early development. Currently built: repo scaffold, five-screen skeleton, the
-> ffmpeg.wasm audio-extraction spike ([ADR-0002](docs/adr/0002-ffmpeg-spike-results.md)),
-> in-browser audio extraction on the home screen, upload & storage
-> ([ADR-0003](docs/adr/0003-upload-and-storage.md)): the compressed audio goes straight
-> from the browser to Cloudflare R2 via a presigned URL, the meeting row to Supabase
-> Postgres — and transcription ([ADR-0004](docs/adr/0004-transcription.md)) via Groq
-> Whisper, with local drivers and a stub transcriber so dev and CI need no credentials.
-> Live at <https://meetmind.elbaymalik.com> since 2026-11-06, with a public demo meeting.
+**Live at <https://meetmind.elbaymalik.com>** since 2026-11-06, on a Cloudflare Worker with a public
+demo meeting anyone can read and ask questions of. Uploading takes an invite code (below).
+
+> Status: phases 0-9 and 13 of the [playbook](docs/PLAYBOOK.md) are built and deployed, and
+> phase 10 in part (a rate rule at the edge and daily limits). A demo video is not recorded yet.
+> What stays unproven is listed under [Limits](#limits).
+
+This README is the design write-up. Each section gives the decision, the measurement behind it, and
+the [ADR](#architecture-decision-records) that holds the full reasoning and the alternatives turned down.
 
 ## Architecture
 
-```
-┌────────────────────────── Browser ──────────────────────────┐
-│ video file ─► ffmpeg.wasm (Web Worker, single-thread)       │
-│              -vn, 16 kHz mono Opus @16 kbps (~7 MB/hour)    │
-└───────────────┬──────────────────────────────────────────────┘
-                │ compressed audio only (<25 MB), PUT to a
-                │ presigned URL ─► Cloudflare R2 (audio blobs)
-                ▼
-┌─────────────── Nitro server routes (secrets live here) ─────┐
-│ register meeting ─► Supabase Postgres row; verify upload    │
-│ Groq Whisper Large v3 Turbo ─► timestamped transcript       │
-│   (one request per meeting; segments in integer ms)         │
-│ Groq gpt-oss ─► decisions & action items, each citing a     │
-│   transcript segment that is verified before storage        │
-│ Workers AI bge-m3 (1024d) ─► Supabase pgvector; questions   │
-│   answered by gpt-oss, citations verified like summaries    │
-└───────────────┬──────────────────────────────────────────────┘
-                ▼
-   Transcript ↔ player over a byte-range route (click-to-seek both ways),
-   semantic Q&A with clickable timestamp citations, each meeting reachable
-   only through its own unguessable link
+```mermaid
+flowchart LR
+  V[Video file] --> F["ffmpeg.wasm in a Web Worker<br/>single-thread, 16 kHz mono Opus"]
+  F -- "presigned PUT, audio only, up to 25 MB" --> R2[(Cloudflare R2)]
+  F -- "register, then complete" --> W
+  subgraph W ["Cloudflare Worker, Nuxt 4 / Nitro"]
+    A["POST /advance<br/>one bounded step per request"]
+    C["cron every 5 min<br/>one step for a closed tab"]
+  end
+  A --> G1["Groq whisper-large-v3-turbo<br/>timestamped transcript"]
+  A --> G2["Groq gpt-oss-120b<br/>decisions, actions, answers"]
+  A --> E["Workers AI bge-m3<br/>1024-d embeddings"]
+  C --> A
+  W <--> P[("Supabase Postgres + pgvector<br/>rows, segments, slots, limits")]
+  R2 -- "byte-range audio route" --> W
+  W --> UI["Transcript synced with the player,<br/>cited summary, cited answers"]
 ```
 
-The full phased build plan lives in [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
+- **The browser** does the heavy media work and drives the pipeline. While a meeting's page is open,
+  it asks the server for one step at a time. One tab per browser drives, through `navigator.locks`,
+  and the others only watch.
+- **The Worker** holds every secret. Each request runs at most one provider call, which keeps it
+  inside the free plan's limits on CPU and on requests to other services.
+- **Postgres** keeps the meeting rows, the transcript segments, the embeddings, a ledger of provider
+  slots that paces calls to Groq across every request, and the daily counts.
+- **The cron** carries on with a meeting whose tab was closed, at one step every 5 minutes.
+
+## Design decisions
+
+### Audio is extracted in the browser ([ADR-0001](docs/adr/0001-client-side-audio-extraction.md), [ADR-0002](docs/adr/0002-ffmpeg-spike-results.md))
+
+An hour of 720p video is about 1 GB. Uploading it would take the raw video off the user's machine,
+and Groq takes at most 25 MB per transcription anyway. Whisper resamples everything to 16 kHz mono,
+so MeetMind does that first, in the browser: `-ac 1 -ar 16000 -c:a libopus -b:a 16k`. The input is
+mounted with WORKERFS, so the video is read in place and never copied into the 2 GB WebAssembly heap.
+
+The spike measured this before anything else was built (2026-07-08, MacBook Air M5, headless Chrome,
+production build):
+
+| Input | Output | Time | Notes |
+| --- | --- | --- | --- |
+| 1045.8 MB, 1:00:00 of 720p | 8.11 MB of Opus | 16.0 / 16.5 / 16.0 s | about 225× real time, no out-of-memory in 3 of 3 runs |
+| 30 s fixture | — | 140-145 ms | |
+
+The JavaScript heap peaked at about 31 MB, and the realized bitrate of 18.9 kbps leaves room for
+about 3 hours under the 25 MB cap. FLAC (about 55-75 MB an hour) and WAV (about 115 MB) would not
+fit. The fixture was synthetic, and Safari and Firefox were not part of the spike.
+
+**Single-thread, not multi-thread.** The multi-thread core is about twice as fast, but it needs
+`SharedArrayBuffer`, which needs COOP/COEP headers on the whole site, which breaks embeds. Its own
+project still calls it unstable. At 16 seconds for an hour, the faster core would save nothing worth
+that price. The wasm file is 30.7 MiB, over the Workers asset limit of 25 MiB, so the Worker serves
+it from the private bucket at the same path ([ADR-0018](docs/adr/0018-ffmpeg-wasm-from-private-r2.md)).
+
+**One exception: the demo plays AAC.** WebKit lands seeks in Opus-in-Ogg about 4% early, and Safari
+before 18.4 cannot play it at all. The public demo is the one meeting every visitor opens, so its
+audio alone is AAC in M4A, put there by an operator ([ADR-0015](docs/adr/0015-invite-only-uploads.md)).
+Uploads stay Ogg Opus.
+
+### One transcription request per meeting ([ADR-0004](docs/adr/0004-transcription.md))
+
+Groq's `whisper-large-v3-turbo` is free, fast, and returns segment timestamps. A 1-hour meeting is
+one call of about 11 seconds and comes back as 828 segments. The audio is not chunked: Groq documents
+no duration limit, the 25 MB cap is checked at registration, in the database and on completion, and
+chunking would not lift the limit that binds, which is 7,200 seconds of audio an hour. Times are
+stored as integer milliseconds from then on. The call is a plain `fetch`, with no SDK.
+
+### Summaries cite the transcript, and the citations are checked ([ADR-0006](docs/adr/0006-structured-summaries.md))
+
+Extraction uses `openai/gpt-oss-120b` on Groq, because only the gpt-oss models there support strict
+structured outputs. The transcript is split on segment boundaries into chunks of about 2,500 tokens,
+run one after another (about 9 chunks for an hour), and the results are reconciled into one summary.
+
+- **Every item carries a quote, and the quote is checked.** The schema asks for the quote before the
+  claim. Each quote is searched for in its own chunk of the transcript, and an item whose quote is not
+  found is dropped. The timestamp comes from the line the quote was found in, not from the model. A
+  quote may span up to 3 consecutive lines, which took the items kept on a test meeting from 16 of 73
+  to 72 of 73. The check proves the words were said. It does not prove that they support the claim.
+- **The chunk size was measured, not guessed.** A 5,000-token chunk came to about 9,800 tokens of
+  request, and Groq answered 413. The default reply cap was eaten by 2,850-4,413 reasoning tokens.
+  With reasoning set to low, a dense chunk's reply is about 1,780 tokens, 311 of them reasoning.
+- **Neighbouring chunks are reconciled.** When two adjacent chunks report the same item from either
+  side of their boundary, it is merged into one. That happens only if they cite lines at most 2 apart,
+  share at least 2 content words, and those words are at least half of the shorter item's. A detail
+  only one of them gives, such as a due date, is kept.
+
+The prompt defines what counts as a decision and as an action item, and tells the model never to
+report what was not decided. On the demo, regenerating the summary with these rules removed a
+self-contradicting overview and a duplicated action, and found an action it had missed.
+
+### Questions: dense retrieval over windows, answers held to the same check ([ADR-0007](docs/adr/0007-semantic-qa.md), [ADR-0014](docs/adr/0014-workers-ai-embeddings.md))
+
+The transcript is embedded in windows of about 45 seconds (or 1,500 tokens), overlapping by one line
+and never splitting one, with Cloudflare Workers AI's `@cf/baai/bge-m3` at 1024 dimensions. A
+question retrieves the 4 nearest windows and is answered by the same gpt-oss model, which has to
+quote the retrieved lines. Citations are checked against those lines only, and an answer with no
+citation left is not shown.
+
+- **Why bge-m3:** on a small test set it ranked the right passage first for 7 of 8 English and 8 of 8
+  German questions. bge-base-en managed 1 of 8 in German, and it silently cuts input at 512 tokens.
+- **Why dense only:** meetings are conversation, and people ask in other words than were spoken.
+  Keyword search cannot match a reworded question. Hybrid search (tsvector with rank fusion) stays the
+  next step if questions about names or figures start to miss.
+- **Why no HNSW index:** a meeting has about 100 windows, so an exact scan is cheap. A filtered HNSW
+  scan can also return fewer rows than asked for.
+
+### A pipeline that fits the Workers free plan ([ADR-0012](docs/adr/0012-pipeline-orchestration.md))
+
+The free plan gives a Worker 10 ms of CPU per request, 50 requests to other services, 100,000 requests
+a day and 5 cron triggers. A meeting is therefore processed as many small steps instead of one job:
+
+- `POST /advance` runs one bounded step (transcribe, one summary chunk, one batch of 16 embeddings,
+  and so on) with at most one provider call. Measured, the costliest route makes 19
+  requests to other services.
+- A Postgres ledger of provider slots spaces the Groq chat calls one a minute across every request
+  and every tab. A summary step does not wait for a slot. A question waits up to 20 seconds, then gets
+  a 429 with `Retry-After`.
+- Polling, not server-sent events. Queues, Durable Objects and Workflows were turned down: the page and
+  a 5-minute cron are enough, and both are free.
+
+Measured on the live site: a page costs about 96 ms of CPU cold and 13-19 ms warm, a cron tick 15-70
+ms. These are above the nominal 10 ms, and still no CPU-limit error (1102) was seen. A 73-second recording with no tab open reached `ready` on the
+cron alone, in 6 ticks.
+
+### Privacy: the link is the key ([ADR-0013](docs/adr/0013-private-meeting-links.md), [ADR-0016](docs/adr/0016-real-services-or-nothing.md), [ADR-0017](docs/adr/0017-retention-purge.md))
+
+There are no accounts. A meeting's link holds a random UUID, and no route lists meetings or searches
+across them. "Your meetings" lives in the browser that uploaded them. A deployment runs on the real
+services or answers 503: a stub or local store has to be turned on explicitly, and is refused on a
+Worker. An optional purge deletes meetings past a retention period, and is off unless set.
+
+## Performance and accessibility
+
+Lighthouse 13.6.0 against the live site on 2026-11-08, one run per page, headless Chromium, default
+mobile and desktop presets:
+
+| Page | Preset | Performance | Accessibility | Best practices | LCP | CLS | TBT |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Home | mobile | 100 | 100 | 100 | 1.0 s | 0 | 0 ms |
+| Home | desktop | 100 | 100 | 100 | 0.3 s | 0 | 0 ms |
+| Demo meeting | mobile | 99 | 96 | 100 | 1.1 s | 0 | 10 ms |
+| Demo meeting | desktop | 100 | 96 | 100 | 0.3 s | 0.001 | 0 ms |
+
+SEO scores 63 by design: every page sends `X-Robots-Tag: noindex, nofollow`, so no meeting page can
+be indexed. The demo's 96 is one finding, not fixed yet: the timestamp beside a highlighted item has a
+contrast of 4.46:1, just under the 4.5:1 required.
+
+What is built for assistive technology, and checked by the headless browser drivers:
+
+- The transcript is one tab stop with a roving focus. Arrow keys, Home and End move through the lines
+  without scrolling the page, and the line being played carries `aria-current`.
+- Progress, the countdown before a retry, and answers are announced through polite live regions, and
+  errors through alerts. The countdown is kept out of the live region so it is not read every second.
+- Focus moves to the answer once it arrives, and to the progress heading when the button just pressed
+  disappears.
+- The player is the browser's native `<audio controls>`, because the waveform library considered has
+  no accessibility support. The spinner stops under `prefers-reduced-motion`.
+
+## Cost and capacity
+
+Every service is on its free plan, and R2 has no spending cap, so the application enforces its own.
+The capacity figures below are arithmetic from the measurements above, not measured on the live site.
+
+| Service | Free plan | One meeting hour uses | What bounds it in MeetMind |
+| --- | --- | --- | --- |
+| Cloudflare R2 | 10 GB-month, 1M class A / 10M class B ops a month | about 8.5 MB | a storage budget (default 8 GiB) refuses new uploads with 507, and a lifecycle rule deletes audio after 30 days ([ADR-0010](docs/adr/0010-r2-cost-controls.md)) |
+| Groq Whisper | 7,200 audio seconds an hour | 3,600 seconds, one request | the 25 MB cap |
+| Groq gpt-oss-120b | 8K tokens a minute, 200K a day | about 9 requests, an estimated 50K tokens | one chat call a minute app-wide, and daily question counts |
+| Workers AI | 10,000 neurons a day | an estimated 20 neurons | — |
+| Cloudflare Workers | 100,000 requests a day, 10 ms CPU each | an estimated 40-60 requests | a rate rule at the edge |
+| Supabase | 500 MB database | segments and about 100 embeddings | — |
+
+Product limits, all in UTC days: the public demo answers 25 questions a day
+([ADR-0019](docs/adr/0019-demo-question-cap.md)), every other meeting 100, and at most 30 new
+meetings are registered across the app ([ADR-0020](docs/adr/0020-daily-limits.md)). The demo's reads
+are cached at the edge for an hour.
+
+## Testing
+
+About 4,200 tests: 3,323 unit and Nuxt-runtime tests, 703 against the built server routes, 137 that run
+the real Supabase drivers against a throwaway Postgres behind PostgREST, and 31 against the real R2,
+Supabase, Groq and Workers AI. `pnpm ci:local` runs the 8 CI jobs on this machine (lint, typecheck,
+unit tests, dependency audit, server routes, migrations, PostgREST, and the headless browser drivers),
+and it is the gate for every merge. Separate scripts run the built Worker under local workerd for
+its service gate, its cron and its streaming.
+
+## Limits
+
+- The extraction spike used a synthetic recording, in Chrome only. Safari and Firefox upload paths
+  are not measured.
+- There are no speaker labels, so an action someone takes on with "I'll do it" has no owner.
+- A due date is kept as said ("by next Friday"), not resolved to a date.
+- The citation check proves a quote exists, not that it supports the claim made from it.
+- The byte cap admits about 2.9 hours of audio, while Groq's hourly audio budget is 2 hours.
+- Whether the cron's database write counts as activity for Supabase's 7-day pause is unproven.
+- The capacity figures in the table above are estimates.
 
 ## Who can see a meeting
 
@@ -108,7 +282,7 @@ New decisions follow the [ADR template](docs/adr/0000-template.md).
 ## Project structure
 
 ```
-app/            Nuxt 4 app: pages (5 core screens), layouts, components, composables
+app/            Nuxt 4 app: pages (home, your meetings, a meeting, its progress), layouts, components, composables
 app/workers/    Web Worker sources (ffmpeg orchestration) — not auto-imported
 server/api/     Nitro routes — the only place secrets are read
 server/routes/  The one route outside /api: ffmpeg's wasm on a Worker
@@ -116,9 +290,10 @@ server/utils/   Storage drivers (R2 | local fs) and meeting repositories (Supaba
 shared/         Isomorphic code: `utils/` + `types/` (auto-imported), `schemas/` (zod, explicit import)
 supabase/       SQL migrations for the Postgres schema
 public/ffmpeg/  Self-hosted ffmpeg.wasm core assets (copied on postinstall, gitignored). A Worker build leaves the wasm out
-scripts/        Fixture generation and headless-browser drivers (spike, upload flow)
+scripts/        Fixtures, headless-browser drivers, local workerd checks, migrations and deploy
 docs/           Playbook + ADRs
-tests/          Vitest: `unit/`, Nuxt-runtime `nuxt/`, and server-route `e2e/` (built app)
+tests/          Vitest: `unit/`, Nuxt-runtime `nuxt/`, and server-route `e2e/` (built app),
+                `postgrest/` (throwaway Postgres) and `services/` (the real services)
 .data/          Local drivers' audio + meeting rows (gitignored; only without R2/Supabase)
 ```
 
@@ -481,9 +656,13 @@ most one step every 5 minutes ([ADR-0012](docs/adr/0012-pipeline-orchestration.m
 has no cron, and there a meeting waits for its page. The Worker has been live since 2026-11-06, and a
 meeting with its tab closed reached `ready` there on the cron alone ("Deploying the Worker", step 9).
 
+Phase 10 is built in part: the rate rule at the edge and the daily limits of
+[ADR-0019](docs/adr/0019-demo-question-cap.md) and [ADR-0020](docs/adr/0020-daily-limits.md). Next are
+phase 14's demo video, a check of the demo on real phones, and the open items under [Limits](#limits).
+
 ## Acknowledgements
 
-Claude, Anthropic's AI model, was also used for building DevSprint. Claude worked on some commits in this repository.
+Claude, Anthropic's AI model, was used in building MeetMind. Claude worked on some commits in this repository.
 
 ## License
 
