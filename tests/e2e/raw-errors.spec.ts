@@ -85,6 +85,8 @@ const ROUTES: Route[] = [
   post('summarize'),
   post('transcribe'),
   post('advance'),
+  // Last but the delete, as it moves a finished meeting back to extraction.
+  post('resummarize', { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } }),
   { name: 'DELETE /', url: id => `/api/meetings/${id}`, init: { method: 'DELETE', headers: { authorization: `Bearer ${ADMIN_TOKEN}` } } },
 ]
 
@@ -252,7 +254,8 @@ describe('what is stored stays stored, and goes nowhere', () => {
     expect((await storedRow(id)).errorMessage).toBe(INJECTED_FAILURE_TEXT)
     expect((await storedRun(id, 'summarization')).lastError).toBe(INJECTED_FAILURE_TEXT)
 
-    expect(await sweep(id, 'failed extraction')).toMatchObject({ 'GET /': 200, 'POST /summarize': 409, 'POST /transcribe': 409 })
+    // The sweep's own index requests finish the index first, so the operator's start-over is taken.
+    expect(await sweep(id, 'failed extraction')).toMatchObject({ 'GET /': 200, 'POST /summarize': 409, 'POST /transcribe': 409, 'POST /resummarize': 202 })
   })
 
   it('an upload that was refused: no retry for any route to offer', async () => {
@@ -328,7 +331,7 @@ describe('what is stored stays stored, and goes nowhere', () => {
       expect(res.status, step).toBe(200)
       expect((await res.json()).meeting, step).not.toHaveProperty('errorMessage')
     }
-    expect(await sweep(id, 'finished')).toMatchObject({ 'GET /': 200, 'POST /ask': 200, 'POST /search-index': 200, 'POST /summarize': 200, 'POST /transcribe': 200, 'DELETE /': 204 })
+    expect(await sweep(id, 'finished')).toMatchObject({ 'GET /': 200, 'POST /ask': 200, 'POST /search-index': 200, 'POST /summarize': 200, 'POST /transcribe': 200, 'POST /resummarize': 202, 'DELETE /': 204 })
   })
 
   it('an uploaded meeting with an error left on it: completing it again answers with the row', async () => {

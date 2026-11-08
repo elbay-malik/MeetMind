@@ -97,6 +97,7 @@ const ROUTES: { route: string, path: string, method: string, headers?: Record<st
   { route: 'GET /api/meetings/:id/pipeline', path: `/api/meetings/${MEETING}/pipeline`, method: 'GET' },
   { route: 'GET /api/meetings/:id/search-index', path: `/api/meetings/${MEETING}/search-index`, method: 'GET' },
   { route: 'POST /api/meetings/:id/search-index', path: `/api/meetings/${MEETING}/search-index`, method: 'POST' },
+  { route: 'POST /api/meetings/:id/resummarize', path: `/api/meetings/${MEETING}/resummarize`, method: 'POST', headers: { authorization: `Bearer ${ADMIN_TOKEN}` } },
   { route: 'POST /api/meetings/:id/summarize', path: `/api/meetings/${MEETING}/summarize`, method: 'POST' },
   { route: 'GET /api/meetings/:id/summary', path: `/api/meetings/${MEETING}/summary`, method: 'GET' },
   { route: 'POST /api/meetings/:id/transcribe', path: `/api/meetings/${MEETING}/transcribe`, method: 'POST' },
