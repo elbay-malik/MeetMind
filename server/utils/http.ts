@@ -31,9 +31,13 @@ export function conflict(message: string) {
   return createError({ statusCode: 409, statusMessage: 'Conflict', message })
 }
 
-/** Route param `id`, validated as a UUID so storage keys can never be steered. */
+/**
+ * Route param `id`, validated as a UUID so storage keys can never be steered, and in lower case:
+ * Postgres compares a uuid in either case, and the local drivers' keys must name the same row on
+ * a case-sensitive file system too.
+ */
 export function requireMeetingId(event: H3Event): string {
   const parsed = meetingIdSchema.safeParse(getRouterParam(event, 'id'))
   if (!parsed.success) throw notFound('Meeting not found')
-  return parsed.data
+  return parsed.data.toLowerCase()
 }
