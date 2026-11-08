@@ -161,12 +161,12 @@ mobile and desktop presets:
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Home | mobile | 100 | 100 | 100 | 1.0 s | 0 | 0 ms |
 | Home | desktop | 100 | 100 | 100 | 0.3 s | 0 | 0 ms |
-| Demo meeting | mobile | 99 | 96 | 100 | 1.1 s | 0 | 10 ms |
-| Demo meeting | desktop | 100 | 96 | 100 | 0.3 s | 0.001 | 0 ms |
+| Demo meeting | mobile | 98 | 100 | 100 | 1.1 s | 0 | 10 ms |
+| Demo meeting | desktop | 100 | 100 | 100 | 0.3 s | 0.001 | 0 ms |
 
 SEO scores 63 by design: every page sends `X-Robots-Tag: noindex, nofollow`, so no meeting page can
-be indexed. The demo's 96 is one finding, not fixed yet: the timestamp beside a highlighted item has a
-contrast of 4.46:1, just under the 4.5:1 required.
+be indexed. The demo first scored 96 for accessibility: the timestamp on the playing line had a
+contrast of 4.46:1, under the 4.5:1 required. It was fixed and the demo measured again the same day.
 
 What is built for assistive technology, and checked by the headless browser drivers:
 
