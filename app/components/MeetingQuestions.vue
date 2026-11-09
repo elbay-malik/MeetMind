@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { PipelineResponse, QuestionAnswer, SearchIndexStatus } from '#shared/types/meeting'
 import { MAX_QUESTION_CHARS } from '#shared/schemas/qa'
+import { DEMO_QUESTION_PLACEHOLDER, DEMO_SAMPLE_QUESTIONS } from '~/utils/demo-guide'
 
 const props = defineProps<{ meetingId: string }>()
 const emit = defineEmits<{
@@ -61,6 +62,13 @@ const notFinished = computed(() => {
 })
 
 const question = ref('')
+const questionInput = ref<{ inputRef?: HTMLInputElement } | null>(null)
+
+/** Fills the field and nothing more: the demo's questions for the day are shared. */
+function useSample(sample: string) {
+  question.value = sample
+  questionInput.value?.inputRef?.focus()
+}
 const asking = ref(false)
 const result = ref<{ question: string, answer: QuestionAnswer } | null>(null)
 const failure = ref<string | null>(null)
@@ -238,12 +246,29 @@ const status = computed(() => {
         help="Your question is sent to Cloudflare to search this meeting and to Groq to answer it."
       >
         <UInput
+          ref="questionInput"
           v-model="question"
           :maxlength="MAX_QUESTION_CHARS"
           class="w-full"
-          placeholder="e.g. What did we decide about the budget?"
+          :placeholder="isDemo ? DEMO_QUESTION_PLACEHOLDER : 'e.g. What did we decide about the budget?'"
         />
       </UFormField>
+      <div
+        v-if="isDemo"
+        class="flex flex-wrap items-center gap-2"
+      >
+        <span class="text-sm text-muted">Try:</span>
+        <UButton
+          v-for="sample in DEMO_SAMPLE_QUESTIONS"
+          :key="sample"
+          size="xs"
+          color="neutral"
+          variant="subtle"
+          @click="useSample(sample)"
+        >
+          {{ sample }}
+        </UButton>
+      </div>
       <UButton
         type="submit"
         :loading="asking"

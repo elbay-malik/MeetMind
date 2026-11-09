@@ -402,6 +402,20 @@ const hasAudio = computed(() =>
  * numeric, or this is some other visit to the page, not a followed link — a
  * half-formed query string should render the page normally, not half-seek it.
  */
+/** The first-visit guide, on the public demo only. */
+const guide = useDemoGuide()
+const guideButton = ref<{ $el: HTMLElement } | null>(null)
+const focusGuideButton = () => guideButton.value?.$el.focus()
+/** Asked for, so focus goes to it: it is far from the button in the page. */
+async function openGuide() {
+  guide.reopen()
+  await nextTick()
+  document.getElementById('demo-guide-title')?.focus()
+}
+onMounted(() => {
+  if (isDemo.value) guide.hideIfDismissed()
+})
+
 onMounted(() => {
   // A failure before hydration fired its event with nobody listening.
   if (player.value?.error) onAudioError()
@@ -421,9 +435,24 @@ onMounted(() => {
 <template>
   <UContainer class="max-w-3xl space-y-6 py-10">
     <div>
-      <h1 class="text-2xl font-semibold tracking-tight">
-        {{ meeting.title }}
-      </h1>
+      <div class="flex items-start justify-between gap-3">
+        <h1 class="text-2xl font-semibold tracking-tight">
+          {{ meeting.title }}
+        </h1>
+        <UButton
+          v-if="isDemo"
+          ref="guideButton"
+          size="sm"
+          color="neutral"
+          variant="ghost"
+          icon="i-lucide-circle-help"
+          aria-controls="demo-guide"
+          :aria-expanded="guide.open.value"
+          @click="openGuide"
+        >
+          Guide
+        </UButton>
+      </div>
       <p class="mt-1 text-sm text-muted">
         {{ meeting.sourceFileName }}
         <template v-if="meeting.durationSec">
@@ -478,6 +507,11 @@ onMounted(() => {
         Select any line to jump there. The transcript follows playback until you scroll away.
       </p>
     </UCard>
+
+    <DemoGuide
+      v-if="isDemo"
+      @closed-with-focus="focusGuideButton"
+    />
 
     <UCard v-if="summary">
       <template #header>
