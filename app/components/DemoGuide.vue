@@ -2,8 +2,9 @@
 import { DEMO_GUIDE_HEAD_SCRIPT } from '~/utils/demo-guide'
 
 /**
- * A card for a first visit to the public demo, in the page below the player on a phone and
- * in the corner from `sm` up. It never takes focus by itself or blocks the page: there is no
+ * A card for a first visit to the public demo: in the page below the player, and in the
+ * corner only from 1344px, where the margin beside the 768px page holds its 256px and a gap,
+ * so it never covers the player's controls. It never takes focus by itself or blocks the page: there is no
  * backdrop, and Esc closes it from anywhere. It is rendered by the server, so it shifts
  * nothing when the page comes up.
  */
@@ -37,7 +38,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
     aria-labelledby="demo-guide-title"
     data-testid="demo-guide"
     data-demo-guide
-    class="rounded-lg border border-default bg-default p-4 sm:fixed sm:right-4 sm:bottom-4 sm:z-40 sm:w-80 sm:shadow-lg"
+    class="rounded-lg border border-default bg-default p-4 min-[1344px]:fixed min-[1344px]:right-4 min-[1344px]:bottom-4 min-[1344px]:z-40 min-[1344px]:w-64 min-[1344px]:shadow-lg"
   >
     <h2
       id="demo-guide-title"
